@@ -7,7 +7,7 @@ import * as inspect from '../sql/inspect.js';
 import { sqlErrorText } from '../sql/pool.js';
 import { publish } from '../bus.js';
 import { log } from '../log.js';
-import { MIN_MAJOR, isSupported, versionName, dataLimitBytes } from '../sqlversion.js';
+import { MIN_MAJOR, isSupported, versionName } from '../sqlversion.js';
 
 const state = new Map(); // serverId -> { ok, checkedAt, error, info, databases, warnings }
 let timer = null;
@@ -41,7 +41,6 @@ export async function checkServer(serverId) {
         const [info, dbs] = await Promise.all([inspect.serverInfo(serverId), inspect.databases(serverId)]);
         const warnings = [];
         info.versionName = versionName(info.majorVersion);
-        info.dataLimitBytes = dataLimitBytes(info.majorVersion, info.engineEdition);
         if (!isSupported(info.majorVersion)) {
             warnings.push(`${info.versionName} (${info.productVersion}) is not supported; cheap-log needs ${versionName(MIN_MAJOR)} or newer.`);
         }

@@ -1,0 +1,159 @@
+// Managed databases, their replicas, and databases discovered on servers.
+import { getDb, nowIso, tx } from '../db.js';
+import * as settings from './settings.js';
+import { nextRun } from '../../engine/schedule-math.js';
+
+export function list({ includeUnmanaged = false } = {}) {
+    return getDb()
+        .prepare(`SELECT id, name, family_guid, status, created_at, updated_at FROM databases ${includeUnmanaged ? '' : "WHERE status='managed'"} ORDER BY name`)
+        .all();
+}
+
+export function get(id) {
+    return getDb().prepare('SELECT id, name, family_guid, status, created_at, updated_at FROM databases WHERE id=?').get(id);
+}
+
+export function getByName(name) {
+    return getDb().prepare('SELECT id, name, family_guid, status, created_at, updated_at FROM databases WHERE name=?').get(name);
+}
+
+export function setFamilyGuid(id, familyGuid) {
+    getDb().prepare('UPDATE databases SET family_guid=?, updated_at=? WHERE id=?').run(familyGuid, nowIso(), id);
+}
+
+const REPLICA_COLS = `r.database_id, r.server_id, s.name AS server_name, r.role, r.chain_state, r.chain_reason,
+    r.restore_mode, r.disconnect_users, r.position_lsn, r.position_fork_guid, r.last_restored_file_id,
+    r.last_restored_at, r.updated_at`;
+
+export function replicas(databaseId) {
+    return getDb()
+        .prepare(`SELECT ${REPLICA_COLS} FROM database_replicas AS r JOIN servers AS s ON s.id=r.server_id WHERE r.database_id=? ORDER BY r.role, s.name`)
+        .all(databaseId);
+}
+
+export function primaryOf(databaseId) {
+    return getDb()
+        .prepare(`SELECT ${REPLICA_COLS} FROM database_replicas AS r JOIN servers AS s ON s.id=r.server_id WHERE r.database_id=? AND r.role='primary'`)
+        .get(databaseId);
+}
+
+export function replica(databaseId, serverId) {
+    return getDb()
+        .prepare(`SELECT ${REPLICA_COLS} FROM database_replicas AS r JOIN servers AS s ON s.id=r.server_id WHERE r.database_id=? AND r.server_id=?`)
+        .get(databaseId, serverId);
+}
+
+/** Every replica on a server, with the database name. */
+export function replicasOnServer(serverId) {
+    return getDb()
+        .prepare(
+            `SELECT ${REPLICA_COLS}, d.name AS database_name FROM database_replicas AS r
+             JOIN servers AS s ON s.id=r.server_id JOIN databases AS d ON d.id=r.database_id
+             WHERE r.server_id=? AND d.status='managed' ORDER BY d.name`,
+        )
+        .all(serverId);
+}
+
+function defaultSchedules(databaseId) {
+    const now = new Date();
+    const ins = getDb().prepare(
+        `INSERT INTO schedules (database_id, backup_type, enabled, kind, interval_minutes, at_time, weekday, next_run_at)
+         VALUES (@database_id, @backup_type, 1, @kind, @interval_minutes, @at_time, @weekday, @next_run_at)
+         ON CONFLICT (database_id, backup_type) DO UPDATE SET enabled=1, next_run_at=excluded.next_run_at`,
+    );
+    for (const [type, key] of [['FULL', 'schedule.default_full'], ['DIFF', 'schedule.default_diff'], ['LOG', 'schedule.default_log']]) {
+        const d = settings.get(key);
+        const sched = { kind: d.kind, interval_minutes: d.interval_minutes ?? null, at_time: d.at_time ?? null, weekday: d.weekday ?? null };
+        ins.run({ database_id: databaseId, backup_type: type, ...sched, next_run_at: nextRun(sched, now).toISOString() });
+    }
+}
+
+/**
+ * Start managing a database with the given primary. Re-managing a previously
+ * unmanaged database keeps its history but resets its replicas.
+ */
+export function manage({ name, familyGuid, primaryServerId }) {
+    return tx(() => {
+        const now = nowIso();
+        let row = getByName(name);
+        if (row) {
+            getDb().prepare("UPDATE databases SET status='managed', family_guid=?, updated_at=? WHERE id=?").run(familyGuid, now, row.id);
+            getDb().prepare('DELETE FROM database_replicas WHERE database_id=?').run(row.id);
+        } else {
+            const info = getDb()
+                .prepare("INSERT INTO databases (name, family_guid, status, created_at, updated_at) VALUES (?, ?, 'managed', ?, ?)")
+                .run(name, familyGuid, now, now);
+            row = { id: Number(info.lastInsertRowid) };
+        }
+        getDb()
+            .prepare("INSERT INTO database_replicas (database_id, server_id, role, chain_state, updated_at) VALUES (?, ?, 'primary', 'ok', ?)")
+            .run(row.id, primaryServerId, now);
+        defaultSchedules(row.id);
+        getDb().prepare('DELETE FROM discovered_databases WHERE name=?').run(name);
+        return get(row.id);
+    });
+}
+
+export function unmanage(id) {
+    tx(() => {
+        getDb().prepare("UPDATE databases SET status='unmanaged', updated_at=? WHERE id=?").run(nowIso(), id);
+        getDb().prepare('UPDATE schedules SET enabled=0 WHERE database_id=?').run(id);
+        getDb().prepare('DELETE FROM database_replicas WHERE database_id=?').run(id);
+    });
+}
+
+// --- discovery ---------------------------------------------------------------
+
+/**
+ * Replace the discovered set for one server. Returns the names that are new
+ * (never seen before and not dismissed).
+ */
+export function syncDiscovered(serverId, dbs) {
+    return tx(() => {
+        const now = nowIso();
+        const existing = new Map(
+            getDb()
+                .prepare('SELECT name, dismissed_at FROM discovered_databases WHERE server_id=?')
+                .all(serverId)
+                .map((r) => [r.name, r]),
+        );
+        const upsert = getDb().prepare(
+            `INSERT INTO discovered_databases (server_id, name, recovery_model, state, has_log_chain, first_seen_at, last_seen_at)
+             VALUES (@server_id, @name, @recovery_model, @state, @has_log_chain, @now, @now)
+             ON CONFLICT (server_id, name) DO UPDATE SET recovery_model=excluded.recovery_model, state=excluded.state,
+                 has_log_chain=excluded.has_log_chain, last_seen_at=excluded.last_seen_at`,
+        );
+        const added = [];
+        for (const d of dbs) {
+            upsert.run({ server_id: serverId, name: d.name, recovery_model: d.recoveryModel, state: d.state, has_log_chain: d.lastLogBackupLsn ? 1 : 0, now });
+            if (!existing.has(d.name)) added.push(d);
+            existing.delete(d.name);
+        }
+        const del = getDb().prepare('DELETE FROM discovered_databases WHERE server_id=? AND name=?');
+        for (const name of existing.keys()) del.run(serverId, name);
+        return added;
+    });
+}
+
+export function discovered({ includeDismissed = false } = {}) {
+    return getDb()
+        .prepare(
+            `SELECT dd.server_id, s.name AS server_name, dd.name, dd.recovery_model, dd.state, dd.has_log_chain,
+                    dd.first_seen_at, dd.last_seen_at, dd.dismissed_at
+             FROM discovered_databases AS dd JOIN servers AS s ON s.id=dd.server_id
+             ${includeDismissed ? '' : 'WHERE dd.dismissed_at IS NULL'}
+             ORDER BY dd.name, s.name`,
+        )
+        .all()
+        .map((r) => ({ ...r, has_log_chain: !!r.has_log_chain, shippable: r.recovery_model === 'FULL' }));
+}
+
+export function getDiscovered(serverId, name) {
+    return getDb().prepare('SELECT server_id, name, recovery_model, state, has_log_chain, dismissed_at FROM discovered_databases WHERE server_id=? AND name=?').get(serverId, name);
+}
+
+export function dismissDiscovered(serverId, name, dismissed = true) {
+    return getDb()
+        .prepare('UPDATE discovered_databases SET dismissed_at=? WHERE server_id=? AND name=?')
+        .run(dismissed ? nowIso() : null, serverId, name).changes > 0;
+}

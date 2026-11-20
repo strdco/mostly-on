@@ -35,16 +35,12 @@ SELECT d.name,
        CONVERT(char(36), drs.family_guid) AS family_guid,
        CONVERT(char(36), drs.recovery_fork_guid) AS recovery_fork_guid,
        CAST(drs.last_log_backup_lsn AS varchar(25)) AS last_log_backup_lsn,
-       files.data_bytes,
-       files.log_bytes,
        CAST(files.redo_start_lsn AS varchar(25)) AS redo_start_lsn,
        files.redo_start_fork_guid
 FROM sys.databases AS d
 LEFT JOIN sys.database_recovery_status AS drs ON drs.database_id=d.database_id
 OUTER APPLY (
-    SELECT SUM(CASE WHEN mf.type=0 THEN CAST(mf.size AS bigint) END)*8192 AS data_bytes,
-           SUM(CASE WHEN mf.type=1 THEN CAST(mf.size AS bigint) END)*8192 AS log_bytes,
-           MIN(CASE WHEN mf.type=0 THEN mf.redo_start_lsn END) AS redo_start_lsn,
+    SELECT MIN(CASE WHEN mf.type=0 THEN mf.redo_start_lsn END) AS redo_start_lsn,
            MIN(CASE WHEN mf.type=0 AND mf.file_id=1 THEN CONVERT(char(36), mf.redo_start_fork_guid) END) AS redo_start_fork_guid
     FROM sys.master_files AS mf
     WHERE mf.database_id=d.database_id
@@ -53,3 +49,83 @@ WHERE d.database_id>4
 ORDER BY d.name;`;
 
 export { utc };
+
+// --- backup engine ----------------------------------------------------------
+
+// Fresh state of one database on its primary, right before a backup.
+// differential_base_* identify the FULL a DIFF taken now would be based on.
+export const DB_BACKUP_STATE = `
+SELECT d.name,
+       d.state_desc,
+       d.recovery_model_desc,
+       d.is_read_only,
+       CONVERT(char(36), drs.family_guid) AS family_guid,
+       CONVERT(char(36), drs.recovery_fork_guid) AS recovery_fork_guid,
+       CAST(drs.last_log_backup_lsn AS varchar(25)) AS last_log_backup_lsn,
+       CAST(mf.differential_base_lsn AS varchar(25)) AS differential_base_lsn,
+       CONVERT(char(36), mf.differential_base_guid) AS differential_base_guid
+FROM sys.databases AS d
+LEFT JOIN sys.database_recovery_status AS drs ON drs.database_id=d.database_id
+LEFT JOIN sys.master_files AS mf ON mf.database_id=d.database_id AND mf.file_id=1
+WHERE d.name=@db;`;
+
+// All backups: CHECKSUM + INIT, never COMPRESSION. NO_COMPRESSION is explicit so
+// a non-Express instance with "backup compression default" on behaves the same.
+// DESCRIPTION tags the backup as ours in msdb (used for foreign-backup detection
+// and for recovering catalog entries after a crash).
+const BACKUP_OPTS = 'CHECKSUM, INIT, NO_COMPRESSION, NAME=@name, DESCRIPTION=@description, STATS=10';
+export const BACKUP = {
+    FULL: `BACKUP DATABASE @db TO DISK=@path WITH ${BACKUP_OPTS};`,
+    DIFF: `BACKUP DATABASE @db TO DISK=@path WITH DIFFERENTIAL, ${BACKUP_OPTS};`,
+    LOG: `BACKUP LOG @db TO DISK=@path WITH ${BACKUP_OPTS};`,
+};
+
+const BACKUPSET_COLUMNS = `
+       bs.backup_set_id,
+       CONVERT(char(36), bs.backup_set_uuid) AS backup_set_uuid,
+       bs.type,
+       bs.database_name,
+       bs.description,
+       bs.is_copy_only,
+       bs.has_backup_checksums,
+       bs.is_damaged,
+       CAST(bs.backup_size AS bigint) AS backup_size,
+       CAST(bs.first_lsn AS varchar(25)) AS first_lsn,
+       CAST(bs.last_lsn AS varchar(25)) AS last_lsn,
+       CAST(bs.checkpoint_lsn AS varchar(25)) AS checkpoint_lsn,
+       CAST(bs.database_backup_lsn AS varchar(25)) AS database_backup_lsn,
+       CAST(bs.differential_base_lsn AS varchar(25)) AS differential_base_lsn,
+       CONVERT(char(36), bs.differential_base_guid) AS differential_base_guid,
+       CONVERT(char(36), bs.family_guid) AS family_guid,
+       CONVERT(char(36), bs.first_recovery_fork_guid) AS first_recovery_fork_guid,
+       CONVERT(char(36), bs.last_recovery_fork_guid) AS last_recovery_fork_guid,
+       CAST(bs.fork_point_lsn AS varchar(25)) AS fork_point_lsn,
+       ${utc('bs.backup_start_date')} AS backup_start,
+       ${utc('bs.backup_finish_date')} AS backup_finish,
+       bmf.physical_device_name,
+       bmf.device_type`;
+
+// The backup set written to a given file (newest first, in case of reuse).
+export const BACKUPSET_BY_PATH = `
+SELECT TOP (1) ${BACKUPSET_COLUMNS}
+FROM msdb.dbo.backupset AS bs
+INNER JOIN msdb.dbo.backupmediafamily AS bmf ON bmf.media_set_id=bs.media_set_id
+WHERE bs.database_name=@db
+  AND bmf.physical_device_name=@path
+ORDER BY bs.backup_set_id DESC;`;
+
+// Every backup of a database (identified by family_guid, because msdb keeps
+// history of dropped databases with the same name) finished after @since_utc.
+export const BACKUPSETS_SINCE = `
+SELECT ${BACKUPSET_COLUMNS}
+FROM msdb.dbo.backupset AS bs
+INNER JOIN msdb.dbo.backupmediafamily AS bmf ON bmf.media_set_id=bs.media_set_id
+WHERE bs.database_name=@db
+  AND bs.family_guid=@family_guid
+  AND bs.backup_finish_date>=DATEADD(minute, DATEDIFF(minute, SYSUTCDATETIME(), SYSDATETIME()), @since_utc)
+ORDER BY bs.backup_set_id;`;
+
+// Optional msdb history cleanup (Agent would normally do this).
+export const PURGE_BACKUP_HISTORY = `
+DECLARE @oldest datetime2(0)=DATEADD(day, -@keep_days, GETDATE());
+EXEC msdb.dbo.sp_delete_backuphistory @oldest_date=@oldest;`;

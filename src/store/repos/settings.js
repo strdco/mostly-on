@@ -8,9 +8,6 @@ export const DEFAULTS = Object.freeze({
     'alerts.interval_seconds': 30,
     'alerts.lag_threshold_minutes': 30,
     'alerts.reminder_hours': 4,
-    // Warn when a database's data files reach this share of the Express limit
-    // for its version (10 GB up to 2022, 50 GB from 2025). 80% = 8 GB on 10 GB.
-    'size.warn_percent': 80,
     'retention.full_days': 28,
     'retention.diff_days': 14,
     'retention.log_days': 7,

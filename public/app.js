@@ -5,6 +5,9 @@ import { loginView } from './views/login.js';
 import { serversView, serverDetailView } from './views/servers.js';
 import { eventsView } from './views/events.js';
 import { placeholderView } from './views/placeholder.js';
+import { overviewView } from './views/overview.js';
+import { databaseView } from './views/database.js';
+import { operationsView } from './views/operations.js';
 
 const app = document.getElementById('app');
 const topbar = document.getElementById('topbar');
@@ -14,11 +17,12 @@ const state = { user: null, stream: null, current: null };
 
 // route table: [regex, view(params) => {render(el), onEvent?(evt)}]
 const routes = [
-    [/^\/$/, () => placeholderView('Overview', 'The database overview arrives with the backup and shipping engine.')],
+    [/^\/$/, () => overviewView()],
+    [/^\/databases\/(\d+)$/, (m) => databaseView(Number(m[1]))],
     [/^\/servers$/, () => serversView()],
     [/^\/servers\/(\d+)$/, (m) => serverDetailView(Number(m[1]))],
     [/^\/events$/, () => eventsView()],
-    [/^\/operations$/, () => placeholderView('Operations', 'Operations arrive with seeding and failover.')],
+    [/^\/operations$/, () => operationsView()],
     [/^\/settings$/, () => placeholderView('Settings', 'Settings UI arrives in a later phase.')],
 ];
 
@@ -81,7 +85,7 @@ function connectStream() {
         }
         state.current?.onEvent?.(evt);
     };
-    for (const type of ['event', 'server.health', 'database.changed', 'backup.finished', 'restore.finished', 'operation.updated', 'alert.changed']) {
+    for (const type of ['event', 'server.health', 'database.changed', 'backup.finished', 'restore.finished', 'operation.updated', 'alert.changed', 'backup.failed', 'discovery.changed', 'foreign.detected']) {
         es.addEventListener(type, dispatch);
     }
 }

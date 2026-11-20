@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, ago } from '../dom.js';
+import { h, clear, dataTable, badge, formDialog, field, toast, ago } from '../dom.js';
 import { get, post, put, del } from '../api.js';
 
 export function healthBadge(s) {
@@ -174,8 +174,6 @@ export function serverDetailView(id) {
                     { label: 'State', cell: (d) => badge(d.isInStandby ? 'STANDBY' : d.state, d.state === 'ONLINE' || d.state === 'RESTORING' ? 'ok' : 'warn') },
                     { label: 'Recovery model', cell: (d) => d.recoveryModel },
                     { label: 'Access', cell: (d) => d.userAccess },
-                    { label: 'Data size', num: true, cell: (d) => formatBytes(d.dataBytes) },
-                    { label: 'Log size', num: true, cell: (d) => formatBytes(d.logBytes) },
                 ],
             }),
         );

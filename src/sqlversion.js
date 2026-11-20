@@ -1,16 +1,14 @@
 // SQL Server version facts the controller depends on.
 //
-// Supported: SQL Server 2017 (14.x) and newer. The backup/restore mechanics
+// Supported: SQL Server 2019 (15.x) and newer. The backup/restore mechanics
 // cheap-log uses (BACKUP ... WITH CHECKSUM/INIT/NORECOVERY, RESTORE ... WITH
 // NORECOVERY/STANDBY/MOVE, msdb backupset/restorehistory, recovery forks) are
 // unchanged across this range. T-SQL sent by the controller must therefore
-// stay within the 2017 feature set (no IS NOT DISTINCT FROM, GREATEST/LEAST,
+// stay within the 2019 feature set (no IS NOT DISTINCT FROM, GREATEST/LEAST,
 // DATETRUNC, etc.).
-const GB = 1024 ** 3;
+export const MIN_MAJOR = 15;
 
-export const MIN_MAJOR = 14;
-
-const NAMES = { 14: '2017', 15: '2019', 16: '2022', 17: '2025' };
+const NAMES = { 15: '2019', 16: '2022', 17: '2025' };
 
 export function majorOf(productVersion) {
     const n = Number.parseInt(String(productVersion ?? '').split('.')[0], 10);
@@ -23,15 +21,6 @@ export function versionName(major) {
 
 export function isSupported(major) {
     return Number.isInteger(major) && major >= MIN_MAJOR;
-}
-
-/**
- * Express edition data size limit per database (data files only).
- * 10 GB up to 2022, 50 GB from 2025. null for editions without a limit.
- */
-export function dataLimitBytes(major, engineEdition) {
-    if (engineEdition !== 4) return null; // 4 = Express
-    return major >= 17 ? 50 * GB : 10 * GB;
 }
 
 /**

@@ -1,25 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { majorOf, isSupported, dataLimitBytes, restoreCompatibility, versionName } from '../../src/sqlversion.js';
-
-const GB = 1024 ** 3;
+import { majorOf, isSupported, restoreCompatibility, versionName } from '../../src/sqlversion.js';
 
 test('version parsing and support range', () => {
     assert.equal(majorOf('17.0.1000.7'), 17);
     assert.equal(majorOf('14.0.3456.2'), 14);
     assert.equal(majorOf(null), null);
-    assert.equal(isSupported(13), false);
-    assert.equal(isSupported(14), true);
+    assert.equal(isSupported(14), false);
+    assert.equal(isSupported(15), true);
     assert.equal(isSupported(17), true);
     assert.equal(versionName(15), 'SQL Server 2019');
     assert.equal(versionName(18), 'SQL Server 18.x');
-});
-
-test('Express data limit depends on version', () => {
-    assert.equal(dataLimitBytes(14, 4), 10 * GB);
-    assert.equal(dataLimitBytes(16, 4), 10 * GB);
-    assert.equal(dataLimitBytes(17, 4), 50 * GB);
-    assert.equal(dataLimitBytes(17, 3), null); // Enterprise/Developer: no limit
 });
 
 test('restore compatibility across versions', () => {

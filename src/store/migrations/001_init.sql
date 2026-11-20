@@ -32,7 +32,6 @@ CREATE TABLE databases (
     name                    text NOT NULL UNIQUE,
     family_guid             text NULL,
     status                  text NOT NULL DEFAULT 'managed' CHECK (status IN ('managed', 'unmanaged')),
-    size_warn_percent       integer NULL,                    -- NULL = global setting (share of the Express limit)
     created_at              text NOT NULL,
     updated_at              text NOT NULL
 ) STRICT;
@@ -42,7 +41,6 @@ CREATE TABLE discovered_databases (
     name                    text NOT NULL,
     recovery_model          text NULL,
     state                   text NULL,
-    data_bytes              integer NULL,
     has_log_chain           integer NULL,                    -- 0 = FULL recovery but no full backup yet (pseudo-simple)
     first_seen_at           text NOT NULL,
     last_seen_at            text NOT NULL,
