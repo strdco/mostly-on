@@ -1,0 +1,157 @@
+// Registered SQL Server instances.
+import { getDb, nowIso } from '../db.js';
+import { encrypt, decrypt } from '../../crypto.js';
+
+const PUBLIC_COLS = `id, name, host, port, username, encrypt, trust_server_cert, sql_backup_root,
+    controller_backup_root, standby_root, enabled, last_seen_at, last_error, product_version, edition,
+    engine_edition, default_data_path, default_log_path, created_at, updated_at`;
+
+const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+function toBool(r) {
+    if (!r) return r;
+    return { ...r, encrypt: !!r.encrypt, trust_server_cert: !!r.trust_server_cert, enabled: !!r.enabled };
+}
+
+export function list() {
+    return getDb().prepare(`SELECT ${PUBLIC_COLS} FROM servers ORDER BY name`).all().map(toBool);
+}
+
+export function get(id) {
+    return toBool(getDb().prepare(`SELECT ${PUBLIC_COLS} FROM servers WHERE id=?`).get(id));
+}
+
+export function getByName(name) {
+    return toBool(getDb().prepare(`SELECT ${PUBLIC_COLS} FROM servers WHERE name=?`).get(name));
+}
+
+/** Server row including the decrypted password. Only for building connections. */
+export function getWithSecret(id, key) {
+    const r = getDb().prepare(`SELECT ${PUBLIC_COLS}, password_enc FROM servers WHERE id=?`).get(id);
+    if (!r) return null;
+    const { password_enc: enc, ...rest } = r;
+    return { ...toBool(rest), password: decrypt(enc, key) };
+}
+
+/** Validates user input for create/update. Returns a normalized object or throws. */
+export function validate(input, { partial = false } = {}) {
+    const out = {};
+    const err = (m) => {
+        const e = new Error(m);
+        e.status = 400;
+        throw e;
+    };
+    const has = (k) => input[k] !== undefined;
+    const req = (k) => {
+        if (!partial && !has(k)) err(`${k} is required`);
+        return has(k);
+    };
+
+    if (req('name')) {
+        if (typeof input.name !== 'string' || !NAME_RE.test(input.name)) err('name may only contain letters, digits, _ . - (max 64)');
+        out.name = input.name;
+    }
+    if (req('host')) {
+        if (typeof input.host !== 'string' || !/^[A-Za-z0-9_.:-]{1,253}$/.test(input.host)) err('host is not a valid host name or address');
+        out.host = input.host;
+    }
+    if (has('port')) {
+        const p = Number(input.port);
+        if (!Number.isInteger(p) || p < 1 || p > 65535) err('port must be 1-65535');
+        out.port = p;
+    } else if (!partial) out.port = 1433;
+    if (req('username')) {
+        if (typeof input.username !== 'string' || !input.username || input.username.length > 128) err('username is invalid');
+        out.username = input.username;
+    }
+    if (has('password') && input.password !== '') {
+        if (typeof input.password !== 'string' || input.password.length > 256) err('password is invalid');
+        out.password = input.password;
+    } else if (!partial) err('password is required');
+    for (const k of ['encrypt', 'trust_server_cert', 'enabled']) {
+        if (has(k)) out[k] = input[k] ? 1 : 0;
+    }
+    const absPath = (k, required) => {
+        if (has(k) && input[k] !== null && input[k] !== '') {
+            const v = String(input[k]);
+            if (!v.startsWith('/') || v.includes('\0') || v.includes('..') || v.length > 400) err(`${k} must be an absolute POSIX path`);
+            out[k] = v.replace(/\/+$/, '') || '/';
+        } else if (has(k)) {
+            if (required) err(`${k} is required`);
+            out[k] = null;
+        } else if (required && !partial) err(`${k} is required`);
+    };
+    absPath('sql_backup_root', true);
+    absPath('controller_backup_root', false);
+    absPath('standby_root', false);
+    return out;
+}
+
+export function create(v, key) {
+    const now = nowIso();
+    const info = getDb()
+        .prepare(
+            `INSERT INTO servers (name, host, port, username, password_enc, encrypt, trust_server_cert,
+                sql_backup_root, controller_backup_root, standby_root, enabled, created_at, updated_at)
+             VALUES (@name, @host, @port, @username, @password_enc, @encrypt, @trust_server_cert,
+                @sql_backup_root, @controller_backup_root, @standby_root, @enabled, @now, @now)`,
+        )
+        .run({
+            name: v.name,
+            host: v.host,
+            port: v.port,
+            username: v.username,
+            password_enc: encrypt(v.password, key),
+            encrypt: v.encrypt ?? 1,
+            trust_server_cert: v.trust_server_cert ?? 0,
+            sql_backup_root: v.sql_backup_root,
+            controller_backup_root: v.controller_backup_root ?? null,
+            standby_root: v.standby_root ?? null,
+            enabled: v.enabled ?? 1,
+            now,
+        });
+    return get(Number(info.lastInsertRowid));
+}
+
+export function update(id, v, key) {
+    const cols = [];
+    const args = {};
+    for (const k of ['name', 'host', 'port', 'username', 'encrypt', 'trust_server_cert', 'sql_backup_root', 'controller_backup_root', 'standby_root', 'enabled']) {
+        if (v[k] !== undefined) {
+            cols.push(`${k}=@${k}`);
+            args[k] = v[k];
+        }
+    }
+    if (v.password !== undefined) {
+        cols.push('password_enc=@password_enc');
+        args.password_enc = encrypt(v.password, key);
+    }
+    if (!cols.length) return get(id);
+    cols.push('updated_at=@now');
+    args.now = nowIso();
+    args.id = id;
+    getDb().prepare(`UPDATE servers SET ${cols.join(', ')} WHERE id=@id`).run(args);
+    return get(id);
+}
+
+export function remove(id) {
+    return getDb().prepare('DELETE FROM servers WHERE id=?').run(id).changes > 0;
+}
+
+export function recordHealth(id, h) {
+    const now = nowIso();
+    if (h.ok) {
+        getDb()
+            .prepare(
+                `UPDATE servers SET last_seen_at=?, last_error=NULL, product_version=?, edition=?, engine_edition=?,
+                    default_data_path=?, default_log_path=? WHERE id=?`,
+            )
+            .run(now, h.productVersion, h.edition, h.engineEdition, h.defaultDataPath, h.defaultLogPath, id);
+    } else {
+        getDb().prepare('UPDATE servers SET last_error=? WHERE id=?').run(String(h.error).slice(0, 1000), id);
+    }
+}
+
+export function replicaCount(id) {
+    return getDb().prepare('SELECT COUNT(*) FROM database_replicas WHERE server_id=?').pluck().get(id);
+}

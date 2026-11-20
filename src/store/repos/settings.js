@@ -1,0 +1,57 @@
+// Key/value settings with typed defaults. Values are JSON.
+import { getDb } from '../db.js';
+
+export const DEFAULTS = Object.freeze({
+    'health.interval_seconds': 30,
+    'discovery.interval_seconds': 300,
+    'restore.poll_seconds': 30,
+    'alerts.interval_seconds': 30,
+    'alerts.lag_threshold_minutes': 30,
+    'alerts.reminder_hours': 4,
+    // Warn when a database's data files reach this share of the Express limit
+    // for its version (10 GB up to 2022, 50 GB from 2025). 80% = 8 GB on 10 GB.
+    'size.warn_percent': 80,
+    'retention.full_days': 28,
+    'retention.diff_days': 14,
+    'retention.log_days': 7,
+    'retention.interval_minutes': 60,
+    'retention.enabled': true,
+    'msdb_history.purge_enabled': false,
+    'msdb_history.keep_days': 90,
+    'schedule.default_full': { kind: 'weekly', weekday: 0, at_time: '01:00' },
+    'schedule.default_diff': { kind: 'daily', at_time: '01:30' },
+    'schedule.default_log': { kind: 'interval', interval_minutes: 5 },
+});
+
+const VALIDATORS = {
+    number: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
+    boolean: (v) => typeof v === 'boolean',
+    object: (v) => v !== null && typeof v === 'object' && !Array.isArray(v),
+};
+
+export function get(key) {
+    if (!(key in DEFAULTS)) throw new Error(`Unknown setting ${key}`);
+    const row = getDb().prepare('SELECT value FROM settings WHERE key=?').get(key);
+    return row ? JSON.parse(row.value) : DEFAULTS[key];
+}
+
+export function all() {
+    const stored = Object.fromEntries(
+        getDb()
+            .prepare('SELECT key, value FROM settings')
+            .all()
+            .map((r) => [r.key, JSON.parse(r.value)]),
+    );
+    const out = {};
+    for (const k of Object.keys(DEFAULTS)) out[k] = k in stored ? stored[k] : DEFAULTS[k];
+    return out;
+}
+
+export function set(key, value) {
+    if (!(key in DEFAULTS)) throw new Error(`Unknown setting ${key}`);
+    const kind = typeof DEFAULTS[key];
+    if (!VALIDATORS[kind](value)) throw new Error(`Setting ${key} must be a ${kind}`);
+    getDb()
+        .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value')
+        .run(key, JSON.stringify(value));
+}

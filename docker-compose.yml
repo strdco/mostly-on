@@ -1,0 +1,85 @@
+# Demo / development environment: two SQL Server 2025 Express instances and
+# the cheap-log controller, all sharing one backup volume.
+#
+#   cp .env.example .env    # then fill in the secrets
+#   docker compose up -d --build
+#   open http://localhost:8080
+name: cheap-log
+
+x-mssql: &mssql
+  image: mcr.microsoft.com/mssql/server:2025-latest
+  # The image is amd64-only. On Apple Silicon this runs under Rosetta
+  # (Docker Desktop > Settings > General > "Use Rosetta").
+  platform: linux/amd64
+  restart: unless-stopped
+  environment:
+    ACCEPT_EULA: "Y"
+    MSSQL_PID: Express
+    MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+    MSSQL_BACKUP_DIR: /var/opt/mssql/backup
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SET NOCOUNT ON; SELECT 1;' -b -o /dev/null"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 30s
+  depends_on:
+    init-perms:
+      condition: service_completed_successfully
+
+services:
+  # One-shot: gives the shared backup volume and the controller's state volume
+  # to uid 10001 (the uid both mssql and the controller run as), group 0,
+  # setgid so new directories keep group 0.
+  init-perms:
+    image: busybox:1.37
+    command: ["sh", "-c", "chown 10001:0 /backup /data && chmod 2770 /backup /data"]
+    volumes:
+      - backup:/backup
+      - controller-data:/data
+
+  sql1:
+    <<: *mssql
+    hostname: sql1
+    ports: ["14331:1433"]
+    volumes:
+      - sql1-data:/var/opt/mssql
+      - backup:/var/opt/mssql/backup
+
+  sql2:
+    <<: *mssql
+    hostname: sql2
+    ports: ["14332:1433"]
+    volumes:
+      - sql2-data:/var/opt/mssql
+      - backup:/var/opt/mssql/backup
+
+  controller:
+    build: .
+    image: cheap-log:dev
+    restart: unless-stopped
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Set ADMIN_PASSWORD_HASH in .env (npm run hash-password)}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env (npm run gen-secret)}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      TZ: ${TZ:-UTC}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PUSHOVER_APP_TOKEN: ${PUSHOVER_APP_TOKEN:-}
+      PUSHOVER_USER_KEY: ${PUSHOVER_USER_KEY:-}
+      PUSHOVER_API_URL: ${PUSHOVER_API_URL:-https://api.pushover.net/1/messages.json}
+    ports: ["8080:8080"]
+    volumes:
+      - controller-data:/data
+      - backup:/backup
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+
+volumes:
+  backup:
+  controller-data:
+  sql1-data:
+  sql2-data:

@@ -1,0 +1,259 @@
+/* cheap-log dashboard. Light/dark via color-scheme + light-dark(), with a
+   prefers-color-scheme fallback for browsers without light-dark(). */
+
+:root {
+    color-scheme: light dark;
+
+    --bg-light: #f6f7f9;        --bg-dark: #14161a;
+    --surface-light: #ffffff;   --surface-dark: #1d2026;
+    --surface-2-light: #eef0f4; --surface-2-dark: #262a31;
+    --text-light: #1b1e24;      --text-dark: #e6e8ec;
+    --muted-light: #5b6270;     --muted-dark: #9aa2b1;
+    --border-light: #d9dce3;    --border-dark: #343944;
+    --accent-light: #2f5bd3;    --accent-dark: #86a6ff;
+    --accent-text-light: #ffffff; --accent-text-dark: #0d1530;
+    --ok-light: #18794e;        --ok-dark: #4cc38a;
+    --warn-light: #9a5b00;      --warn-dark: #f0b44c;
+    --err-light: #c4271c;       --err-dark: #ff7a6e;
+    --ok-bg-light: #e3f5ea;     --ok-bg-dark: #173126;
+    --warn-bg-light: #fff3d6;   --warn-bg-dark: #3a2c10;
+    --err-bg-light: #fde6e4;    --err-bg-dark: #3d1915;
+
+    --bg: var(--bg-light);
+    --surface: var(--surface-light);
+    --surface-2: var(--surface-2-light);
+    --text: var(--text-light);
+    --muted: var(--muted-light);
+    --border: var(--border-light);
+    --accent: var(--accent-light);
+    --accent-text: var(--accent-text-light);
+    --ok: var(--ok-light);
+    --warn: var(--warn-light);
+    --err: var(--err-light);
+    --ok-bg: var(--ok-bg-light);
+    --warn-bg: var(--warn-bg-light);
+    --err-bg: var(--err-bg-light);
+
+    @media (prefers-color-scheme: dark) {
+        --bg: var(--bg-dark);
+        --surface: var(--surface-dark);
+        --surface-2: var(--surface-2-dark);
+        --text: var(--text-dark);
+        --muted: var(--muted-dark);
+        --border: var(--border-dark);
+        --accent: var(--accent-dark);
+        --accent-text: var(--accent-text-dark);
+        --ok: var(--ok-dark);
+        --warn: var(--warn-dark);
+        --err: var(--err-dark);
+        --ok-bg: var(--ok-bg-dark);
+        --warn-bg: var(--warn-bg-dark);
+        --err-bg: var(--err-bg-dark);
+    }
+
+    @supports (color: light-dark(white, black)) {
+        --bg: light-dark(var(--bg-light), var(--bg-dark));
+        --surface: light-dark(var(--surface-light), var(--surface-dark));
+        --surface-2: light-dark(var(--surface-2-light), var(--surface-2-dark));
+        --text: light-dark(var(--text-light), var(--text-dark));
+        --muted: light-dark(var(--muted-light), var(--muted-dark));
+        --border: light-dark(var(--border-light), var(--border-dark));
+        --accent: light-dark(var(--accent-light), var(--accent-dark));
+        --accent-text: light-dark(var(--accent-text-light), var(--accent-text-dark));
+        --ok: light-dark(var(--ok-light), var(--ok-dark));
+        --warn: light-dark(var(--warn-light), var(--warn-dark));
+        --err: light-dark(var(--err-light), var(--err-dark));
+        --ok-bg: light-dark(var(--ok-bg-light), var(--ok-bg-dark));
+        --warn-bg: light-dark(var(--warn-bg-light), var(--warn-bg-dark));
+        --err-bg: light-dark(var(--err-bg-light), var(--err-bg-dark));
+    }
+
+    accent-color: var(--accent);
+    --radius: 8px;
+    --gap: 1rem;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 100%;
+    line-height: 1.45;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+}
+
+a { color: var(--accent); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
+h1 { font-size: 1.4rem; margin: 0 0 var(--gap); }
+h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+.muted { color: var(--muted); }
+[hidden] { display: none !important; }
+
+/* --- top bar ---------------------------------------------------------- */
+.topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 0.6rem 1rem;
+    background: var(--surface);
+    border-block-end: 1px solid var(--border);
+    position: sticky;
+    inset-block-start: 0;
+    z-index: 10;
+}
+.brand { font-weight: 700; text-decoration: none; color: var(--text); }
+.topbar nav { flex: 1 1 auto; overflow-x: auto; }
+.topbar nav ul { display: flex; gap: 0.25rem; list-style: none; margin: 0; padding: 0; }
+.topbar nav a {
+    display: block;
+    padding: 0.35rem 0.6rem;
+    border-radius: var(--radius);
+    text-decoration: none;
+    color: var(--muted);
+    white-space: nowrap;
+}
+.topbar nav a[aria-current="page"] { color: var(--text); background: var(--surface-2); }
+.live { font-size: 0.8rem; color: var(--muted); }
+.live.on { color: var(--ok); }
+
+main { padding: var(--gap); max-inline-size: 1400px; margin-inline: auto; outline: none; }
+
+/* --- buttons and forms --------------------------------------------------- */
+button, .button {
+    font: inherit;
+    padding: 0.45rem 0.9rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    min-block-size: 2.25rem;
+}
+button:hover { background: var(--surface-2); }
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { background: var(--err); border-color: var(--err); color: #fff; }
+button.link { border: none; background: none; color: var(--accent); padding: 0.25rem; min-block-size: auto; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-block: 0.75rem; }
+
+form.stack { display: grid; gap: 0.75rem; }
+.field { display: grid; gap: 0.25rem; }
+.field label { font-weight: 600; font-size: 0.9rem; }
+.field .hint { font-size: 0.8rem; color: var(--muted); }
+.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.75rem; }
+.check { display: flex; gap: 0.5rem; align-items: center; }
+input[type="text"], input[type="password"], input[type="number"], input[type="time"], select, textarea {
+    font: inherit;
+    padding: 0.45rem 0.6rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    inline-size: 100%;
+}
+.error-text { color: var(--err); }
+
+/* --- cards / panels -------------------------------------------------------- */
+.panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--gap);
+    margin-block-end: var(--gap);
+}
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.login-panel { max-inline-size: 24rem; margin: 10vh auto 0; }
+
+/* --- status badges --------------------------------------------------------- */
+.badge {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+    background: var(--surface-2);
+    color: var(--muted);
+}
+.badge.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.err { background: var(--err-bg); color: var(--err); }
+.callout { padding: 0.6rem 0.8rem; border-radius: var(--radius); margin-block: 0.5rem; }
+.callout.warn { background: var(--warn-bg); color: var(--text); border-inline-start: 4px solid var(--warn); }
+.callout.err { background: var(--err-bg); color: var(--text); border-inline-start: 4px solid var(--err); }
+
+/* --- responsive tables (stack into cards in narrow containers) ------------- */
+.table-wrapper {
+    overflow: auto;
+    max-inline-size: 100%;
+    container-type: inline-size;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+table.data { border-collapse: separate; border-spacing: 0; inline-size: 100%; }
+table.data caption { text-align: start; padding: 0.6rem 0.75rem; font-weight: 600; }
+table.data th, table.data td {
+    padding: 0.5rem 0.75rem;
+    text-align: start;
+    vertical-align: top;
+    border-block-end: 1px solid var(--border);
+}
+table.data thead th { font-size: 0.8rem; color: var(--muted); background: var(--surface); position: sticky; inset-block-start: 0; z-index: 1; }
+table.data tbody th { font-weight: 600; background: var(--surface); }
+table.data tbody tr:last-child > * { border-block-end: none; }
+table.data td.num { text-align: end; font-variant-numeric: tabular-nums; }
+
+@container (width < 640px) {
+    table.data, table.data thead, table.data tbody, table.data tr, table.data th, table.data td { display: block; }
+    table.data thead { display: none; }
+    table.data tr { padding: 0.5rem 0; border-block-end: 1px solid var(--border); }
+    table.data tbody tr:last-child { border-block-end: none; }
+    table.data th, table.data td { border: none; padding: 0.2rem 0.75rem; }
+    table.data td.num { text-align: start; }
+    table.data td[data-label]::before {
+        content: attr(data-label) ": ";
+        color: var(--muted);
+        font-size: 0.85rem;
+    }
+}
+
+/* --- dialogs ----------------------------------------------------------------- */
+dialog {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    padding: var(--gap);
+    inline-size: min(36rem, calc(100vw - 2rem));
+    max-block-size: calc(100dvh - 2rem);
+}
+dialog:modal { overscroll-behavior: contain; }
+dialog::backdrop { background: rgb(0 0 0 / 0.45); overflow: hidden; overscroll-behavior: contain; }
+dialog h2 { margin-block-start: 0; }
+
+/* --- toasts ------------------------------------------------------------------ */
+.toasts {
+    position: fixed;
+    inset-block-end: 1rem;
+    inset-inline-end: 1rem;
+    display: grid;
+    gap: 0.5rem;
+    z-index: 100;
+    max-inline-size: min(28rem, calc(100vw - 2rem));
+}
+.toast {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-inline-start: 4px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.8rem;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+}
+.toast.err { border-inline-start-color: var(--err); }
+.toast.ok { border-inline-start-color: var(--ok); }

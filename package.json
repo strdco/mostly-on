@@ -1,0 +1,23 @@
+{
+  "name": "cheap-log",
+  "version": "0.1.0",
+  "description": "Log shipping and backup orchestrator for SQL Server Express in Linux containers",
+  "type": "module",
+  "private": true,
+  "main": "src/main.js",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "dev": "node --env-file-if-exists=.env --watch src/main.js",
+    "hash-password": "node scripts/hash-password.js",
+    "gen-secret": "node -e \"console.log(require('node:crypto').randomBytes(32).toString('base64'))\"",
+    "test": "node --test \"test/unit/**/*.test.js\"",
+    "test:integration": "node --test --test-concurrency=1 --test-timeout=1800000 \"test/integration/**/*.test.js\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.2.0",
+    "mssql": "^12.8.0"
+  }
+}
