@@ -45,7 +45,7 @@ function poolConfig(s, { connectTimeoutMs = 15000, max = 6 } = {}) {
         options: {
             encrypt: !!s.encrypt,
             trustServerCertificate: !!s.trust_server_cert,
-            appName: 'cheap-log',
+            appName: 'mostly-on',
             useUTC: true,
             abortTransactionOnError: true,
         },

@@ -4,7 +4,7 @@ import { safeEqual } from '../crypto.js';
 
 export function cookieName(cfg) {
     // The __Host- prefix pins the cookie to this host, path / and HTTPS.
-    return cfg.cookieSecure ? '__Host-cl_sid' : 'cl_sid';
+    return cfg.cookieSecure ? '__Host-mo_sid' : 'mo_sid';
 }
 
 export function parseCookies(header) {

@@ -86,7 +86,7 @@ export function overviewView() {
         const res = await formDialog({
             title: `Manage ${d.name}?`,
             fields: [
-                h('p', `${d.server_name} becomes the primary for ${d.name}. cheap-log takes a FULL backup right away and then runs the default schedules (FULL weekly, DIFF daily, LOG every 5 minutes).`),
+                h('p', `${d.server_name} becomes the primary for ${d.name}. Mostly On takes a FULL backup right away and then runs the default schedules (FULL weekly, DIFF daily, LOG every 5 minutes).`),
                 h('p.muted', 'From now on, other tools must not take non-copy-only backups of this database, or the log chain breaks.'),
             ],
             submitLabel: 'Manage',

@@ -61,7 +61,7 @@ export function effectiveType(requested, state, db) {
     // DIFF
     const base = state.differentialBaseGuid && backups.byUuid(state.differentialBaseGuid);
     if (!base || base.file_status !== 'present' || base.database_id !== db.id) {
-        return { type: 'FULL', reason: 'the differential base is not a FULL backup cheap-log has on disk' };
+        return { type: 'FULL', reason: 'the differential base is not a FULL backup Mostly On has on disk' };
     }
     return { type: 'DIFF', reason: null };
 }
@@ -158,8 +158,8 @@ function backupSteps({ db, server, type, relPath, sqlPath }) {
                     {
                         db: T.sysname(db.name),
                         path: T.nvarchar(sqlPath),
-                        name: T.nvarchar(`cheap-log ${type}`, 128),
-                        description: T.nvarchar(`cheap-log op:${ctx.op.id}`, 255),
+                        name: T.nvarchar(`Mostly On ${type}`, 128),
+                        description: T.nvarchar(`mostly-on op:${ctx.op.id}`, 255),
                     },
                     { timeoutMs: 0, onInfo: (m) => ctx.progress(m) },
                 );

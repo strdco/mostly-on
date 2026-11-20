@@ -1,4 +1,4 @@
-// cheap-log controller entry point.
+// Mostly On controller entry point.
 //
 // Startup order matters for crash safety:
 //   1. config + catalog migrations
@@ -36,7 +36,7 @@ try {
 }
 setLogLevel(cfg.logLevel);
 
-openDb(path.join(cfg.dataDir, 'cheap-log.db'));
+openDb(path.join(cfg.dataDir, 'mostly-on.db'));
 sessions.purgeExpired();
 initPools(cfg.secretKeyBytes);
 setEngineConfig(cfg);

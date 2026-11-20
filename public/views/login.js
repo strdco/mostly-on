@@ -53,7 +53,7 @@ export function loginView({ onLogin }) {
                     submit.disabled = false;
                 }
             });
-            el.append(h('section.panel.login-panel', h('h1', 'Sign in to cheap-log'), form));
+            el.append(h('section.panel.login-panel', h('h1', 'Sign in to Mostly On'), form));
         },
     };
 }

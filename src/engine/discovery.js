@@ -56,7 +56,7 @@ export async function scanForeign(db) {
     for (const bs of sets) {
         if (backups.byUuid(bs.backup_set_uuid) || foreign.isKnown(bs.backup_set_uuid)) continue;
 
-        if (bs.description?.startsWith('cheap-log') && bs.devices.length === 1 && ['FULL', 'DIFF', 'LOG'].includes(bs.type)) {
+        if (bs.description?.startsWith('mostly-on op:') && bs.devices.length === 1 && ['FULL', 'DIFF', 'LOG'].includes(bs.type)) {
             // Still being recorded by its own operation: leave it alone.
             const opId = Number(/op:(\d+)/.exec(bs.description)?.[1]);
             if (opId && ['running', 'queued'].includes(ops.get(opId)?.status)) continue;
@@ -81,10 +81,10 @@ export async function scanForeign(db) {
         const where = `${bs.devices.join(', ')} at ${bs.backup_finish}`;
         const refs = { databaseId: db.id, serverId: server.id, data: { uuid: bs.backup_set_uuid, devices: bs.devices, firstLsn: bs.first_lsn, lastLsn: bs.last_lsn } };
         if (bs.type === 'LOG') {
-            events.add('error', 'foreign-backup', `Foreign LOG backup of ${db.name} on ${server.name} (${where}). The log chain is broken from cheap-log's point of view: secondaries cannot restore past it.`, refs);
+            events.add('error', 'foreign-backup', `Foreign LOG backup of ${db.name} on ${server.name} (${where}). The log chain is broken from Mostly On's point of view: secondaries cannot restore past it.`, refs);
             publish('foreign.detected', { databaseId: db.id, type: 'LOG' });
         } else if (bs.type === 'FULL') {
-            events.add('warn', 'foreign-backup', `Foreign FULL backup of ${db.name} on ${server.name} (${where}). It changes the differential base, so cheap-log takes a FULL instead of its next DIFF.`, refs);
+            events.add('warn', 'foreign-backup', `Foreign FULL backup of ${db.name} on ${server.name} (${where}). It changes the differential base, so Mostly On takes a FULL instead of its next DIFF.`, refs);
         } else {
             events.add('info', 'foreign-backup', `Foreign ${bs.type} backup of ${db.name} on ${server.name} (${where}).`, refs);
         }
@@ -103,7 +103,7 @@ function tryImportOwn(db, server, bs) {
     const controllerPath = translatePath(relPath, server, pathOpts('rel', 'controller'));
     if (!fs.existsSync(controllerPath)) return false;
     const file = recordBackupFile({ db, server, bs, relPath });
-    events.add('warn', 'backup', `Recovered catalog entry for ${bs.type} backup ${relPath} (taken by cheap-log, found in msdb but missing from the catalog)`, {
+    events.add('warn', 'backup', `Recovered catalog entry for ${bs.type} backup ${relPath} (taken by Mostly On, found in msdb but missing from the catalog)`, {
         databaseId: db.id,
         serverId: server.id,
         data: { fileId: file.id },

@@ -87,7 +87,7 @@ export function databaseView(id) {
             unacked.length
                 ? h(
                       'div.callout.err',
-                      h('strong', 'Backups not taken by cheap-log were found. '),
+                      h('strong', 'Backups not taken by Mostly On were found. '),
                       'A foreign LOG backup breaks the chain for every secondary; a foreign FULL changes the differential base.',
                       h(
                           'ul',

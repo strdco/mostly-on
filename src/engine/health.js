@@ -42,10 +42,10 @@ export async function checkServer(serverId) {
         const warnings = [];
         info.versionName = versionName(info.majorVersion);
         if (!isSupported(info.majorVersion)) {
-            warnings.push(`${info.versionName} (${info.productVersion}) is not supported; cheap-log needs ${versionName(MIN_MAJOR)} or newer.`);
+            warnings.push(`${info.versionName} (${info.productVersion}) is not supported; Mostly On needs ${versionName(MIN_MAJOR)} or newer.`);
         }
         if (info.engineEdition !== 4) {
-            warnings.push(`Edition is ${info.edition}, not Express. cheap-log will still work but is designed for Express.`);
+            warnings.push(`Edition is ${info.edition}, not Express. Mostly On will still work but is designed for Express.`);
         }
         result = { ok: true, checkedAt, error: null, info, databases: dbs, warnings };
         serversRepo.recordHealth(serverId, { ok: true, ...info });

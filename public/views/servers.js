@@ -136,7 +136,7 @@ export function serverDetailView(id) {
                         onclick: async () => {
                             const ok = await formDialog({
                                 title: `Remove server ${s.name}?`,
-                                fields: [h('p', 'The server is removed from cheap-log. Nothing on the SQL Server is changed.')],
+                                fields: [h('p', 'The server is removed from Mostly On. Nothing on the SQL Server is changed.')],
                                 submitLabel: 'Remove',
                                 danger: true,
                                 onSubmit: () => del(`/api/servers/${id}`),
