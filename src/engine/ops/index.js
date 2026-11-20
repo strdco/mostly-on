@@ -5,8 +5,16 @@ import * as events from '../../store/repos/events.js';
 import { publish } from '../../bus.js';
 import { nowIso } from '../../store/db.js';
 import { resumeSeed } from './seed.js';
+import { resumeFailover } from './failover.js';
+import { resumeSwitchoverAll } from './switchover-all.js';
 
-const RESUMERS = { seed: resumeSeed };
+const RESUMERS = {
+    seed: resumeSeed,
+    reseed: resumeSeed,
+    planned_failover: resumeFailover,
+    forced_failover: resumeFailover,
+    switchover_all: resumeSwitchoverAll,
+};
 const CLOSABLE = ['failed', 'interrupted'];
 
 function fail(status, message) {
@@ -26,6 +34,9 @@ export async function resumeOperation(id) {
     const op = opsRepo.get(id);
     if (!op) throw fail(404, 'Operation not found');
     if (!canResume(op)) throw fail(409, `Operation #${id} (${op.type}, ${op.status}) cannot be resumed`);
+    if (op.parent_id && ['running', 'queued'].includes(opsRepo.get(op.parent_id)?.status)) {
+        throw fail(409, `Operation #${id} is part of the running operation #${op.parent_id}`);
+    }
     const { operation } = await RESUMERS[op.type](op);
     return operation;
 }

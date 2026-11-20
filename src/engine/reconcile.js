@@ -5,6 +5,12 @@
 import * as ops from '../store/repos/operations.js';
 import * as backups from '../store/repos/backups.js';
 import * as restores from '../store/repos/restores.js';
+import * as forks from '../store/repos/forks.js';
+import * as health from './health.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { BACKUP_TYPES, backupRelDir } from '../paths.js';
+import { engineConfig } from './context.js';
 import * as databases from '../store/repos/databases.js';
 import * as serversRepo from '../store/repos/servers.js';
 import * as events from '../store/repos/events.js';
@@ -72,7 +78,7 @@ export async function reconcileOnStartup() {
                 // Multi-step operations (seed, failover ...) are never resumed
                 // automatically; a user resumes or resolves them from the UI.
                 finish(op, 'interrupted', `Controller restarted during step "${op.current_step}". Check the servers, then resume or mark resolved.`);
-                if (op.type === 'seed' && op.params.targetServerId) {
+                if ((op.type === 'seed' || op.type === 'reseed') && op.params.targetServerId) {
                     const rep = databases.replica(op.database_id, op.params.targetServerId);
                     if (rep?.chain_state === 'seeding') {
                         databases.updateReplica(op.database_id, op.params.targetServerId, { chain_reason: `Seed operation #${op.id} was interrupted by a controller restart; resume it from Operations` });
@@ -86,6 +92,76 @@ export async function reconcileOnStartup() {
             }
         } catch (err) {
             events.add('error', 'controller', `Could not reconcile operation #${op.id}: ${err.message}`, { operationId: op.id });
+        }
+    }
+
+    for (const db of databases.list()) {
+        try {
+            ensureRootFork(db);
+            reportDrift(db);
+        } catch (err) {
+            events.add('error', 'controller', `Could not check ${db.name} against the servers: ${err.message}`, { databaseId: db.id });
+        }
+    }
+    try {
+        reportOrphans();
+    } catch (err) {
+        events.add('warn', 'controller', `Could not scan the backup volume for orphan files: ${err.message}`);
+    }
+}
+
+/** Databases managed before forks were tracked get their primary's current fork as root. */
+function ensureRootFork(db) {
+    const primary = databases.primaryOf(db.id);
+    const live = primary ? health.dbState(primary.server_id, db.name) : null;
+    if (live?.recoveryForkGuid && forks.ensureRoot(db.id, live.recoveryForkGuid)) {
+        events.add('info', 'controller', `Recorded recovery fork ${live.recoveryForkGuid} of ${db.name} as its root fork`, { databaseId: db.id });
+    }
+}
+
+/**
+ * Intent (catalog) against state (SQL Server): the primary must be ONLINE,
+ * secondaries RESTORING or STANDBY, diverged copies should not be writable.
+ * Nothing is changed; differences are reported.
+ */
+function reportDrift(db) {
+    for (const r of databases.replicas(db.id)) {
+        const h = health.getHealth(r.server_id);
+        if (!h?.ok) {
+            events.add('warn', 'controller', `Cannot check ${db.name} on ${r.server_name} at startup: the server is unreachable`, { databaseId: db.id, serverId: r.server_id });
+            continue;
+        }
+        const live = health.dbState(r.server_id, db.name);
+        const state = live ? (live.isInStandby ? 'STANDBY' : live.state) : 'missing';
+        let problem = null;
+        if (r.role === 'primary' && state !== 'ONLINE') problem = `is the primary in the catalog but ${state} on the server`;
+        if (r.role === 'secondary' && r.chain_state !== 'seeding' && !['RESTORING', 'STANDBY'].includes(state)) problem = `is a secondary in the catalog but ${state} on the server`;
+        if (r.role === 'diverged' && state === 'ONLINE') problem = 'holds a diverged copy that is ONLINE and writable (split-brain risk)';
+        if (problem) events.add('error', 'controller', `At startup: ${db.name} on ${r.server_name} ${problem}`, { databaseId: db.id, serverId: r.server_id, data: { role: r.role, state } });
+    }
+}
+
+/** Backup files under a managed database's folders that the catalog does not know. Never deleted. */
+function reportOrphans() {
+    const root = engineConfig().backupRoot;
+    for (const db of databases.list()) {
+        const known = new Set(backups.all(db.id).map((f) => f.rel_path));
+        const orphans = [];
+        for (const type of Object.keys(BACKUP_TYPES)) {
+            const relDir = backupRelDir(db.name, type);
+            let names = [];
+            try {
+                names = fs.readdirSync(path.join(root, relDir));
+            } catch {
+                continue;
+            }
+            for (const n of names) if (!known.has(`${relDir}/${n}`)) orphans.push(`${relDir}/${n}`);
+        }
+        if (orphans.length) {
+            events.add('warn', 'controller', `${orphans.length} file(s) in the backup folders of ${db.name} are not in the catalog. They are left alone; delete them by hand if they are not needed.`, {
+                databaseId: db.id,
+                data: { files: orphans.slice(0, 50) },
+            });
         }
     }
 }

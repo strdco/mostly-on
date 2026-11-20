@@ -107,6 +107,10 @@ export async function dbRestoreState(serverId, dbName) {
         state: d.state_desc,
         standby,
         restoring,
+        userAccess: d.user_access_desc,
+        recoveryForkGuid: guid(d.recovery_fork_guid),
+        forkPointLsn: d.fork_point_lsn,
+        lastLogBackupLsn: d.last_log_backup_lsn,
         familyGuid: guid(d.family_guid),
         redoStartLsn: d.redo_start_lsn,
         forkGuid: guid(d.redo_start_fork_guid),
@@ -121,6 +125,18 @@ export async function dbRestoreState(serverId, dbName) {
 export async function fileList(serverId, sqlPath) {
     const r = await query(serverId, Q.RESTORE_FILELISTONLY, { path: T.nvarchar(sqlPath) }, { timeoutMs: 300_000 });
     return r.recordset.map((f) => ({ logicalName: f.LogicalName, physicalName: f.PhysicalName, type: f.Type, fileId: Number(f.FileId) }));
+}
+
+/** RESTORE HEADERONLY, GUID columns only (read by name; LSN columns are not trusted). */
+export async function headerOnly(serverId, sqlPath) {
+    const r = await query(serverId, Q.RESTORE_HEADERONLY, { path: T.nvarchar(sqlPath) }, { timeoutMs: 120_000 });
+    return r.recordset.map((h) => ({
+        backupSetGuid: guid(h.BackupSetGUID),
+        familyGuid: guid(h.FamilyGUID),
+        firstRecoveryForkGuid: guid(h.FirstRecoveryForkID),
+        recoveryForkGuid: guid(h.RecoveryForkID),
+        backupType: h.BackupType,
+    }));
 }
 
 /** One entry per backup set (multi-file sets are merged; devices listed). */

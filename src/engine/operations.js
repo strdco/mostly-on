@@ -33,7 +33,7 @@ export function createOperation({ type, databaseId, serverId, parentId, params, 
         params,
         ctx,
         status: 'running',
-        steps: stepDefs.map((s) => ({ name: s.name, label: s.label || s.name, status: 'pending' })),
+        steps: stepDefs.map((s) => ({ name: s.name, label: s.label || s.name, status: 'pending', ...(s.guidance ? { guidance: s.guidance } : {}) })),
     });
     emit(op);
     return op;

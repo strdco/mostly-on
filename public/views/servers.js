@@ -117,17 +117,71 @@ export function serversView() {
     };
 }
 
+/** "Switch over all databases on this server to another one", shown with the per-database plan. */
+async function switchoverDialog(s) {
+    const others = (await get('/api/servers')).filter((x) => x.id !== s.id && x.enabled);
+    if (!others.length) throw new Error('There is no other enabled server to switch over to');
+    const target = h('select', { name: 'to_server_id' }, others.map((o) => h('option', { value: o.id }, o.name)));
+    const planId = `plan-${Math.random().toString(36).slice(2, 9)}`;
+    const plan = h('div', { id: planId, role: 'status', 'aria-live': 'polite' });
+    target.setAttribute('aria-describedby', planId);
+    const load = async () => {
+        plan.replaceChildren(h('p.muted', 'Checking…'));
+        try {
+            const p = await get(`/api/servers/${s.id}/switchover-plan?to=${target.value}`);
+            plan.replaceChildren(
+                h('p', `One planned failover per database, one after the other. The batch stops at the first failure.`),
+                h('ul', p.databases.map((d) => h('li', d.name, d.problem ? [' ', badge(d.problem, 'err')] : [' ', badge('ready', 'ok')]))),
+            );
+        } catch (err) {
+            plan.replaceChildren(h('p.error-text', err.message));
+        }
+    };
+    target.addEventListener('change', load);
+    load();
+    return formDialog({
+        title: `Switch over every database whose primary is ${s.name}`,
+        fields: [
+            field('Move the primaries to', target),
+            plan,
+            field(`Type ${s.name} to confirm`, h('input', { type: 'text', name: 'confirm', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false' })),
+        ],
+        submitLabel: 'Switch over',
+        danger: true,
+        onSubmit: (v) => post(`/api/servers/${s.id}/switchover`, { to_server_id: Number(v.to_server_id), confirm: v.confirm }),
+    });
+}
+
 export function serverDetailView(id) {
     let root;
     let timer;
     async function load() {
-        const s = await get(`/api/servers/${id}`);
+        const [s, roles] = await Promise.all([get(`/api/servers/${id}`), get(`/api/servers/${id}/roles`)]);
         const hh = s.health;
-        clear(root).append(
+        const primaries = roles.filter((r) => r.role === 'primary');
+        // Native append() would render null as the text "null"; filter it out.
+        clear(root).append(...[
             h('h1', `Server ${s.name}`),
             h(
                 'div.actions',
                 h('button', { type: 'button', onclick: async () => { await post(`/api/servers/${id}/check`); load(); } }, 'Check now'),
+                primaries.length
+                    ? h(
+                          'button.primary',
+                          {
+                              type: 'button',
+                              onclick: async () => {
+                                  try {
+                                      const r = await switchoverDialog(s);
+                                      if (r?.operation) toast(`Switch-over started (operation #${r.operation.id})`, 'ok');
+                                  } catch (err) {
+                                      toast(err.message, 'err');
+                                  }
+                              },
+                          },
+                          `Switch over all ${primaries.length} database(s)…`,
+                      )
+                    : null,
                 h('button', { type: 'button', onclick: async () => { if (await editServerDialog(s)) load(); } }, 'Edit'),
                 h(
                     'button.danger',
@@ -164,6 +218,17 @@ export function serverDetailView(id) {
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
                 ),
             ),
+            h('h2', 'Managed databases on this server'),
+            dataTable({
+                caption: 'Roles of this server',
+                rows: roles,
+                empty: 'This server holds no managed replicas.',
+                columns: [
+                    { label: 'Database', header: true, cell: (r) => h('a', { href: `#/databases/${r.database_id}` }, r.database_name) },
+                    { label: 'Role', cell: (r) => badge(r.role, r.role === 'diverged' ? 'err' : '') },
+                    { label: 'Shipping', cell: (r) => (r.role === 'primary' ? '' : r.chain_state) },
+                ],
+            }),
             h('h2', 'Databases on this instance'),
             dataTable({
                 caption: 'User databases (from sys.databases)',
@@ -176,7 +241,7 @@ export function serverDetailView(id) {
                     { label: 'Access', cell: (d) => d.userAccess },
                 ],
             }),
-        );
+        ].filter((x) => x !== null));
     }
     return {
         async render(el) {

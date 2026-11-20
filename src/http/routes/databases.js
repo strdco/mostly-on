@@ -2,6 +2,7 @@ import { HttpError, idParam } from '../router.js';
 import * as databases from '../../store/repos/databases.js';
 import * as serversRepo from '../../store/repos/servers.js';
 import * as backups from '../../store/repos/backups.js';
+import * as forks from '../../store/repos/forks.js';
 import * as schedules from '../../store/repos/schedules.js';
 import * as foreign from '../../store/repos/foreign.js';
 import * as ops from '../../store/repos/operations.js';
@@ -93,6 +94,7 @@ export function databaseRoutes(router) {
         }
 
         const db = databases.manage({ name, familyGuid: state.familyGuid, primaryServerId: serverId });
+        forks.reset(db.id, state.recoveryForkGuid);
         events.add('info', 'database', `Started managing ${name} with primary ${server.name}`, { databaseId: db.id, serverId });
         publish('database.changed', { databaseId: db.id });
 

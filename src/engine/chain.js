@@ -27,6 +27,51 @@ function newer(a, b) {
 
 const covers = (f, lsn) => L.lte(f.first_lsn, lsn) && L.lt(lsn, f.last_lsn);
 
+// --- recovery forks --------------------------------------------------------------
+//
+// Every RESTORE ... WITH RECOVERY starts a new recovery fork at a fork point
+// (the LSN the database was recovered at). The active lineage is the list of
+// forks from the root to the current primary's fork, each with the LSN where
+// it branched off its parent: [{fork_guid, fork_point_lsn}], root first.
+//
+// A backup is on the lineage when its last fork is on it and, if that fork is
+// an ancestor, the backup ends at or before the point where the lineage
+// branched away (anything later on that fork was abandoned, e.g. logs the old
+// primary wrote after the last log that reached the new primary).
+
+/** Is a backup file on the active lineage? (true when no lineage is known) */
+export function onLineage(file, lineage) {
+    if (!lineage?.length || !file.recovery_fork_guid) return true;
+    const idx = lineage.findIndex((f) => f.fork_guid === file.recovery_fork_guid);
+    if (idx < 0) return false;
+    if (file.first_recovery_fork_guid && file.first_recovery_fork_guid !== file.recovery_fork_guid) {
+        // A log that crosses a fork: it must cross exactly at the lineage's fork point.
+        if (idx === 0 || lineage[idx - 1].fork_guid !== file.first_recovery_fork_guid) return false;
+    }
+    if (idx < lineage.length - 1) {
+        const branch = lineage[idx + 1].fork_point_lsn;
+        if (branch && file.last_lsn && L.gt(file.last_lsn, branch)) return false;
+    }
+    return true;
+}
+
+/**
+ * Can a copy at (position, forkGuid) still follow the active lineage?
+ * Returns null if it can, otherwise the reason it needs a reseed.
+ */
+export function lineageProblem({ position, forkGuid, lineage }) {
+    if (!lineage?.length || !forkGuid || !position) return null;
+    const idx = lineage.findIndex((f) => f.fork_guid === forkGuid);
+    if (idx < 0) return `it is on recovery fork ${forkGuid}, which is not on the current primary's recovery path`;
+    if (idx < lineage.length - 1) {
+        const branch = lineage[idx + 1].fork_point_lsn;
+        if (branch && L.gt(position, branch)) {
+            return `it has restored past LSN ${branch}, where the current primary's recovery path branched off (it holds log records the primary does not have)`;
+        }
+    }
+    return null;
+}
+
 /**
  * Picks the next log backup a secondary at `position` must restore.
  *
@@ -36,11 +81,13 @@ const covers = (f, lsn) => L.lte(f.first_lsn, lsn) && L.lt(lsn, f.last_lsn);
  *                                    is not in the catalog, or the file needed
  *                                    is missing/deleted: never guess
  *
- * @param {{files:object[], position:string, forkGuid?:string|null}} p
+ * Only logs on the active lineage are considered.
+ *
+ * @param {{files:object[], position:string, forkGuid?:string|null, lineage?:object[]|null}} p
  *   files: catalog rows of the database (any file_status)
  */
-export function nextLog({ files, position, forkGuid = null }) {
-    const logs = files.filter((f) => f.type === 'LOG' && f.first_lsn && f.last_lsn);
+export function nextLog({ files, position, forkGuid = null, lineage = null }) {
+    const logs = files.filter((f) => f.type === 'LOG' && f.first_lsn && f.last_lsn && onLineage(f, lineage));
     let candidates = logs.filter((f) => covers(f, position));
     if (candidates.length > 1 && forkGuid) {
         const sameFork = candidates.filter((f) => f.first_recovery_fork_guid === forkGuid);
@@ -76,9 +123,9 @@ export function nextLog({ files, position, forkGuid = null }) {
  *                 i.e. the last backup the secondary has applied
  *   seconds:      now minus that file's backup_finish
  */
-export function lag({ files, position, now = new Date() }) {
+export function lag({ files, position, now = new Date(), lineage = null }) {
     if (!position) return { files: null, seconds: null, lastRestored: null };
-    const logs = files.filter((f) => f.type === 'LOG' && f.last_lsn && f.file_status !== 'deleted');
+    const logs = files.filter((f) => f.type === 'LOG' && f.last_lsn && f.file_status !== 'deleted' && onLineage(f, lineage));
     const pending = logs.filter((f) => L.gt(f.last_lsn, position) && L.lt(f.first_lsn, f.last_lsn));
     const rank = { LOG: 3, DIFF: 2, FULL: 1 };
     const atPos = files
@@ -94,19 +141,42 @@ export function lag({ files, position, now = new Date() }) {
 }
 
 /**
+ * Walks the chain from `position` as far as the catalog allows.
+ * Returns { position, lastFile, files, gap } where position is where a copy
+ * would end up after restoring every reachable log, lastFile the last of
+ * them (null if none) and gap the reason it stops early (null if it reaches
+ * the newest log).
+ */
+export function reachable({ files, position, forkGuid = null, lineage = null }) {
+    const logs = files.filter((f) => f.type === 'LOG' && f.first_lsn && f.last_lsn && onLineage(f, lineage));
+    let pos = position;
+    let fork = forkGuid;
+    let lastFile = null;
+    let count = 0;
+    for (let i = 0; i < 100_000; i++) {
+        const next = nextLog({ files: logs, position: pos, forkGuid: fork, lineage });
+        if (next.status === 'caught_up') return { position: pos, lastFile, files: count, gap: null };
+        if (next.status === 'broken') return { position: pos, lastFile, files: count, gap: next.reason };
+        lastFile = next.file;
+        pos = next.file.last_lsn;
+        fork = next.file.recovery_fork_guid || fork;
+        count++;
+    }
+    return { position: pos, lastFile, files: count, gap: 'Log chain is too long to follow' };
+}
+
+/**
  * Logs between a base position and the newest log, checked for gaps.
  * Returns null if the chain from `position` to the newest log is complete,
  * otherwise a description of the gap.
  */
-export function chainGap(files, position) {
-    let pos = position;
-    for (let i = 0; i < 100_000; i++) {
-        const next = nextLog({ files, position: pos });
-        if (next.status === 'caught_up') return null;
-        if (next.status === 'broken') return next.reason;
-        pos = next.file.last_lsn;
-    }
-    return 'Log chain is too long to verify';
+export function chainGap(files, position, lineage = null) {
+    return reachable({ files, position, lineage }).gap;
+}
+
+/** newestBase() restricted to backups on the active lineage. */
+export function newestBaseOnLineage(files, lineage) {
+    return newestBase(files.filter((f) => onLineage(f, lineage)));
 }
 
 /**
@@ -127,7 +197,7 @@ export function chainGap(files, position) {
  *          retentionDays:{FULL:number, DIFF:number, LOG:number}, now:Date, extraProtected?:Set<number>}} p
  * @returns {{deletable:object[], protectedIds:Map<number,string>, blocked:string|null}}
  */
-export function retentionPlan({ files, secondaries, retentionDays, now, extraProtected = new Set() }) {
+export function retentionPlan({ files, secondaries, retentionDays, now, extraProtected = new Set(), lineage = null }) {
     const present = files.filter((f) => f.file_status === 'present');
     const protectedIds = new Map();
     const protect = (f, why) => {
@@ -138,7 +208,7 @@ export function retentionPlan({ files, secondaries, retentionDays, now, extraPro
     const unknown = active.find((s) => !s.position_lsn && s.chain_state !== 'seeding');
     if (unknown) return { deletable: [], protectedIds, blocked: `secondary on server ${unknown.server_id} has no known restore position` };
 
-    const base = newestBase(present);
+    const base = newestBaseOnLineage(present, lineage);
     if (!base) return { deletable: [], protectedIds, blocked: 'no FULL backup on disk' };
     protect(base.full, 'newest FULL');
     if (base.diff) protect(base.diff, 'newest DIFF of the newest FULL');

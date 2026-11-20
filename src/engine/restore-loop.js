@@ -23,10 +23,11 @@ import * as settings from '../store/repos/settings.js';
 import * as inspect from '../sql/inspect.js';
 import * as health from './health.js';
 import * as L from '../lsn.js';
-import { nextLog, lag } from './chain.js';
+import * as forks from '../store/repos/forks.js';
+import { nextLog, lag, lineageProblem } from './chain.js';
 import { restoreFile, fileOnDisk } from './restore.js';
 import { backoffMs } from './restore-plan.js';
-import { tryAcquire } from './locks.js';
+import { tryAcquire, exclusiveWaiting } from './locks.js';
 import { subscribe, publish } from '../bus.js';
 import { sqlErrorText } from '../sql/pool.js';
 import { nowIso } from '../store/db.js';
@@ -131,10 +132,86 @@ export function checkLive(db, server, live) {
     return null;
 }
 
+/**
+ * Restores every log the secondary can take right now, in order. The caller
+ * holds the restore:<server> or the exclusive lock. Used by the restore loop
+ * and by failovers (catch-up, applying the tail).
+ *
+ * @param {{db:object, server:object, mode?:'norecovery'|'standby', operationId?:number|null, onProgress?:(t:string)=>void}} p
+ *   mode overrides the replica's restore mode (failovers always use NORECOVERY).
+ * @returns {Promise<{status:'caught_up'|'broken'|'reseed'|'stopped', reason?:string, restored:number,
+ *           position:string|null, forkGuid:string|null, lastFile:object|null}>}
+ *   Throws on errors that are worth retrying (connection, unexpected SQL errors).
+ */
+export async function applyAvailableLogs({ db, server, mode = null, operationId = null, onProgress, yieldToExclusive = false }) {
+    let lastFileId = null;
+    let lastFile = null;
+    let restored = 0;
+    const result = (status, extra = {}) => ({ status, restored, lastFile, position: null, forkGuid: null, ...extra });
+    for (let i = 0; i < MAX_RESTORES_PER_PASS; i++) {
+        let rep = databases.replica(db.id, server.id);
+        if (!rep || rep.role !== 'secondary') return result('stopped', { reason: `${server.name} is no longer a secondary of ${db.name}` });
+
+        const live = await inspect.dbRestoreState(server.id, db.name);
+        const problem = checkLive(db, server, live);
+        if (problem?.reseed) return result('reseed', { reason: problem.reseed });
+        if (problem?.retry) throw new Error(problem.retry);
+        const at = { position: live.position, forkGuid: live.forkGuid };
+
+        if (!rep.position_lsn || !L.eq(rep.position_lsn, live.position) || rep.position_fork_guid !== live.forkGuid) {
+            if (rep.position_lsn && !L.eq(rep.position_lsn, live.position)) {
+                events.add(
+                    'warn',
+                    'restore',
+                    `${db.name} on ${server.name} is at LSN ${live.position} according to SQL Server, but the catalog expected ${rep.position_lsn}. Using SQL Server's position (was something restored outside Mostly On?).`,
+                    { databaseId: db.id, serverId: server.id },
+                );
+            }
+            rep = databases.updateReplica(db.id, server.id, { position_lsn: live.position, position_fork_guid: live.forkGuid });
+            changed(db, server);
+        }
+
+        const lineage = forks.lineage(db.id);
+        const offPath = lineageProblem({ position: live.position, forkGuid: live.forkGuid, lineage });
+        if (offPath) return result('reseed', { ...at, reason: `${db.name} on ${server.name} cannot follow the primary: ${offPath}.` });
+
+        const next = nextLog({ files: backups.all(db.id), position: live.position, forkGuid: live.forkGuid, lineage });
+        if (next.status === 'caught_up') return result('caught_up', at);
+        if (next.status === 'broken') return result('broken', { ...at, reason: next.reason });
+
+        const file = next.file;
+        if (file.id === lastFileId) {
+            throw new Error(`Restoring ${file.rel_path} did not move ${db.name} on ${server.name} past LSN ${live.position}`);
+        }
+        if (!fileOnDisk(file)) return result('broken', { ...at, reason: `The next log backup ${file.rel_path} is missing from the backup volume.` });
+
+        // A failover is waiting for this database: stop between files; it restores the rest itself.
+        if (yieldToExclusive && exclusiveWaiting(db.id)) return result('yield', at);
+        lastFileId = file.id;
+        onProgress?.(`Restoring ${file.rel_path} on ${server.name}`);
+        try {
+            await restoreFile({ db, server, file, operationId, mode: mode || rep.restore_mode, disconnectUsers: !!rep.disconnect_users });
+        } catch (err) {
+            if (err.restoreKind === 'already_applied') continue; // position is re-read; the guard above stops a loop
+            if (err.restoreKind === 'too_recent') return result('broken', { ...at, reason: `SQL Server refused ${file.rel_path} as too recent: ${sqlErrorText(err)}` });
+            if (err.restoreKind === 'wrong_fork') return result('reseed', { ...at, reason: `SQL Server refused ${file.rel_path} as being on another recovery path: ${sqlErrorText(err)}` });
+            if (err.restoreKind === 'cannot_open' && !fileOnDisk(file)) {
+                return result('broken', { ...at, reason: `The next log backup ${file.rel_path} is missing from the backup volume.` });
+            }
+            throw err;
+        }
+        restored++;
+        lastFile = file;
+        databases.updateReplica(db.id, server.id, { position_lsn: file.last_lsn, last_restored_file_id: file.id, last_restored_at: nowIso() });
+        changed(db, server);
+    }
+    return result('more');
+}
+
 async function pass(dbId, serverId, w) {
     const db = databases.get(dbId);
     if (!db || db.status !== 'managed') return;
-    let rep = databases.replica(dbId, serverId);
+    const rep = databases.replica(dbId, serverId);
     if (!rep || rep.role !== 'secondary' || rep.chain_state !== 'ok') return;
     const server = serversRepo.get(serverId);
     if (!server?.enabled || !health.getHealth(serverId)?.ok) {
@@ -145,56 +222,13 @@ async function pass(dbId, serverId, w) {
     const release = tryAcquire(dbId, `restore:${serverId}`);
     if (!release) return; // a seed or failover owns this secondary; the poll comes back
     w.lastPassAt = nowIso();
-    let lastFileId = null;
-    let restored = 0;
     try {
-        for (let i = 0; i < MAX_RESTORES_PER_PASS; i++) {
-            const live = await inspect.dbRestoreState(serverId, db.name);
-            const problem = checkLive(db, server, live);
-            if (problem?.reseed) return stopShipping(db, server, 'needs_reseed', problem.reseed);
-            if (problem?.retry) throw new Error(problem.retry);
-
-            if (!rep.position_lsn || !L.eq(rep.position_lsn, live.position) || rep.position_fork_guid !== live.forkGuid) {
-                if (rep.position_lsn && !L.eq(rep.position_lsn, live.position)) {
-                    events.add(
-                        'warn',
-                        'restore',
-                        `${db.name} on ${server.name} is at LSN ${live.position} according to SQL Server, but the catalog expected ${rep.position_lsn}. Using SQL Server's position (was something restored outside Mostly On?).`,
-                        { databaseId: db.id, serverId: server.id },
-                    );
-                }
-                rep = databases.updateReplica(db.id, server.id, { position_lsn: live.position, position_fork_guid: live.forkGuid });
-                changed(db, server);
-            }
-
-            const next = nextLog({ files: backups.all(db.id), position: live.position, forkGuid: live.forkGuid });
-            if (next.status === 'caught_up') break;
-            if (next.status === 'broken') return stopShipping(db, server, 'broken', next.reason);
-
-            const file = next.file;
-            if (file.id === lastFileId) {
-                throw new Error(`Restoring ${file.rel_path} did not move ${db.name} on ${server.name} past LSN ${live.position}`);
-            }
-            if (!fileOnDisk(file)) return stopShipping(db, server, 'broken', `The next log backup ${file.rel_path} is missing from the backup volume.`);
-
-            lastFileId = file.id;
-            try {
-                await restoreFile({ db, server, file, mode: rep.restore_mode, disconnectUsers: !!rep.disconnect_users });
-            } catch (err) {
-                if (err.restoreKind === 'already_applied') continue; // position is re-read; the guard above stops a loop
-                if (err.restoreKind === 'too_recent') {
-                    return stopShipping(db, server, 'broken', `SQL Server refused ${file.rel_path} as too recent: ${sqlErrorText(err)}`);
-                }
-                if (err.restoreKind === 'cannot_open' && !fileOnDisk(file)) {
-                    return stopShipping(db, server, 'broken', `The next log backup ${file.rel_path} is missing from the backup volume.`);
-                }
-                throw err;
-            }
-            restored++;
-            rep = databases.updateReplica(db.id, server.id, { position_lsn: file.last_lsn, last_restored_file_id: file.id, last_restored_at: nowIso() });
-            changed(db, server);
-            if (!rep || rep.role !== 'secondary' || rep.chain_state !== 'ok') return; // changed by a user meanwhile
-        }
+        const r = await applyAvailableLogs({ db, server, yieldToExclusive: true });
+        if (r.status === 'broken') return stopShipping(db, server, 'broken', r.reason);
+        if (r.status === 'reseed') return stopShipping(db, server, 'needs_reseed', r.reason);
+        if (r.status === 'stopped' || r.status === 'yield') return;
+        if (r.status === 'more') w.again = true;
+        const restored = r.restored;
 
         if (w.failures) {
             events.add('info', 'restore', `Log shipping of ${db.name} to ${server.name} is working again`, { databaseId: db.id, serverId: server.id });
@@ -231,17 +265,46 @@ export function lagOf(dbId, replicas) {
     const secondaries = replicas.filter((r) => r.role !== 'primary');
     if (!secondaries.length) return out;
     const files = backups.all(dbId);
+    const lineage = forks.lineage(dbId);
     const now = new Date();
     for (const r of secondaries) {
-        out.set(r.server_id, { ...lag({ files, position: r.position_lsn, now }), loop: loopStatus(dbId, r.server_id) });
+        out.set(r.server_id, { ...lag({ files, position: r.position_lsn, now, lineage }), loop: loopStatus(dbId, r.server_id) });
     }
     return out;
+}
+
+// Diverged copies that are ONLINE and writable: applications could be using
+// the old primary while the new one is live (split brain). Reported once per
+// occurrence; Phase 5 alerts take this over.
+const divergedOnline = new Set();
+
+function watchDiverged(db, r) {
+    const key = keyOf(db.id, r.server_id);
+    const live = health.dbState(r.server_id, db.name);
+    if (live && live.state === 'ONLINE' && !live.isInStandby) {
+        if (divergedOnline.has(key)) return;
+        divergedOnline.add(key);
+        events.add(
+            'error',
+            'failover',
+            `The diverged copy of ${db.name} on ${r.server_name} is ONLINE and writable. Applications connecting to it write to a database that is no longer the primary (split-brain risk). Take it offline or reseed it.`,
+            { databaseId: db.id, serverId: r.server_id },
+        );
+        publish('replica.changed', { databaseId: db.id, serverId: r.server_id });
+    } else {
+        divergedOnline.delete(key);
+    }
+}
+
+export function divergedIsOnline(dbId, serverId) {
+    return divergedOnline.has(keyOf(dbId, serverId));
 }
 
 function pollAll() {
     for (const db of databases.list()) {
         for (const r of databases.replicas(db.id)) {
             if (r.role === 'secondary' && r.chain_state === 'ok') nudge(db.id, r.server_id);
+            else if (r.role === 'diverged') watchDiverged(db, r);
         }
     }
 }

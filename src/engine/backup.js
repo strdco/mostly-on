@@ -21,7 +21,7 @@ function fail(status, message) {
 }
 
 /** mkdir -p for the controller-side directory, with group-writable setgid dirs. */
-function ensureDir(server, relDir) {
+export function ensureDir(server, relDir) {
     const absDir = translatePath(relDir, server, pathOpts('rel', 'controller'));
     let cur = absDir.slice(0, absDir.length - relDir.length).replace(/\/+$/, '') || '/';
     if (!fs.existsSync(cur)) throw new Error(`Backup root ${cur} does not exist on the controller (is the shared volume mounted?)`);
@@ -34,7 +34,7 @@ function ensureDir(server, relDir) {
     }
 }
 
-function uniqueRelPath(db, type, server) {
+export function uniqueRelPath(db, type, server) {
     const now = new Date();
     for (let i = 1; i < 100; i++) {
         const rel = backupRelPath(db.name, type, now, server.name, i === 1 ? '' : `_${i}`);
@@ -190,7 +190,7 @@ function backupSteps({ db, server, type, relPath, sqlPath }) {
  * Inserts a backup set into the catalog and checks that the controller can
  * see the file (a wrong path mapping would silently break shipping and retention).
  */
-export function recordBackupFile({ db, server, bs, relPath, operationId = null, isTail = false }) {
+export function recordBackupFile({ db, server, bs, relPath, operationId = null, isTail = false, type = null }) {
     let size = bs.size_bytes;
     const controllerPath = translatePath(relPath, server, pathOpts('rel', 'controller'));
     try {
@@ -206,7 +206,7 @@ export function recordBackupFile({ db, server, bs, relPath, operationId = null, 
     return backups.insert({
         database_id: db.id,
         server_id: server.id,
-        type: bs.type,
+        type: type || bs.type,
         rel_path: relPath,
         first_lsn: bs.first_lsn,
         last_lsn: bs.last_lsn,

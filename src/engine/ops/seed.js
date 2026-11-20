@@ -21,15 +21,16 @@ import * as inspect from '../../sql/inspect.js';
 import * as Q from '../../sql/tsql.js';
 import * as health from '../health.js';
 import { query, T, sqlErrorText } from '../../sql/pool.js';
-import { startBackup } from '../backup.js';
+import { startBackup, recordBackupFile, ensureDir, uniqueRelPath } from '../backup.js';
 import { createOperation, runOperation } from '../operations.js';
 import { tryAcquire, holders, BusyError } from '../locks.js';
-import { newestBase, chainGap } from '../chain.js';
+import * as forks from '../../store/repos/forks.js';
+import { newestBaseOnLineage, chainGap } from '../chain.js';
 import { restoreFile, fileOnDisk } from '../restore.js';
 import { buildMoves, undoFilePath } from '../restore-plan.js';
 import { checkLive, nudge } from '../restore-loop.js';
 import { restoreCompatibility } from '../../sqlversion.js';
-import { translatePath } from '../../paths.js';
+import { translatePath, backupRelDir } from '../../paths.js';
 import { pathOpts } from '../context.js';
 import { publish } from '../../bus.js';
 import { nowIso } from '../../store/db.js';
@@ -49,7 +50,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * the checks the seed itself relies on. Throws (with an HTTP status) when
  * the seed is impossible.
  */
-export async function seedPreflight(databaseId, targetServerId) {
+export async function seedPreflight(databaseId, targetServerId, { reseed = false } = {}) {
     const db = databases.get(databaseId);
     if (!db || db.status !== 'managed') throw fail(404, 'Database is not managed');
     const primary = databases.primaryOf(db.id);
@@ -59,9 +60,10 @@ export async function seedPreflight(databaseId, targetServerId) {
     if (target.id === primary.server_id) throw fail(409, `${target.name} is the primary of ${db.name}`);
     if (!target.enabled) throw fail(409, `Server ${target.name} is disabled`);
     const existing = databases.replica(db.id, target.id);
-    if (existing?.role === 'diverged') {
+    if (existing?.role === 'diverged' && !reseed) {
         throw fail(409, `${target.name} holds a diverged copy of ${db.name}. Use Reseed, which can keep a safety backup of the diverged copy first.`);
     }
+    if (reseed && !existing) throw fail(409, `${target.name} is not a replica of ${db.name}; add it as a secondary instead`);
     const primaryServer = serversRepo.get(primary.server_id);
     const ph = health.getHealth(primaryServer.id);
     const th = health.getHealth(target.id);
@@ -97,11 +99,19 @@ export async function seedPreflight(databaseId, targetServerId) {
  * Validates and starts a seed. Resolves once the operation exists; `done`
  * settles when it has finished.
  */
-export async function startSeed(databaseId, { serverId, source = 'new_full', restoreMode = 'norecovery', disconnectUsers = false, overwrite = false, confirm = null }) {
+export async function startSeed(
+    databaseId,
+    { serverId, source = 'new_full', restoreMode = 'norecovery', disconnectUsers = false, overwrite = false, confirm = null, reseed = false, safetyBackup = false },
+) {
     if (!SOURCES.includes(source)) throw fail(400, `source must be one of ${SOURCES.join(', ')}`);
     if (!RESTORE_MODES.includes(restoreMode)) throw fail(400, `restore_mode must be one of ${RESTORE_MODES.join(', ')}`);
-    const pf = await seedPreflight(databaseId, serverId);
+    const pf = await seedPreflight(databaseId, serverId, { reseed });
     const { db, target } = pf;
+    if (reseed) {
+        // A reseed always replaces whatever is on the target; the typed name is the confirmation.
+        if (confirm !== db.name) throw fail(400, `Type ${db.name} to confirm that the copy on ${target.name} will be replaced`);
+        overwrite = true;
+    }
     if (!pf.compat.ok) throw fail(409, pf.compat.reason);
     if (restoreMode === 'standby') {
         if (!pf.compat.standby) throw fail(409, `STANDBY needs the same SQL Server version on both sides. ${pf.compat.reason}`);
@@ -119,14 +129,23 @@ export async function startSeed(databaseId, { serverId, source = 'new_full', res
     const release = tryAcquire(db.id, `restore:${target.id}`);
     if (!release) throw new BusyError(db.id, `seed on ${target.name}`, holders(db.id));
     try {
-        const params = { targetServerId: target.id, source, restoreMode, disconnectUsers: !!disconnectUsers, overwrite: !!pf.existsOnTarget };
+        const params = {
+            targetServerId: target.id,
+            source,
+            restoreMode,
+            disconnectUsers: !!disconnectUsers,
+            overwrite: !!pf.existsOnTarget,
+            reseed: !!reseed,
+            safetyBackup: !!(reseed && safetyBackup),
+            previousRole: pf.replica?.role ?? null,
+        };
         databases.addSecondary({ databaseId: db.id, serverId: target.id, restoreMode, disconnectUsers });
         const stepDefs = seedSteps({ db, target, params });
-        const operation = createOperation({ type: 'seed', databaseId: db.id, serverId: target.id, params, stepDefs });
+        const operation = createOperation({ type: reseed ? 'reseed' : 'seed', databaseId: db.id, serverId: target.id, params, stepDefs });
         events.add(
-            'info',
+            reseed ? 'warn' : 'info',
             'seed',
-            `Seeding ${db.name} on ${target.name} from ${source === 'new_full' ? 'a fresh FULL backup' : 'the latest FULL (+ DIFF)'}${params.overwrite ? ', overwriting the existing copy' : ''}`,
+            `${reseed ? 'Reseeding' : 'Seeding'} ${db.name} on ${target.name} from ${source === 'new_full' ? 'a fresh FULL backup' : 'the latest FULL (+ DIFF)'}${params.overwrite ? ', replacing the existing copy' : ''}${params.safetyBackup ? ' after a safety backup of it' : ''}`,
             { databaseId: db.id, serverId: target.id, operationId: operation.id },
         );
         publish('replica.changed', { databaseId: db.id, serverId: target.id });
@@ -182,7 +201,7 @@ export function seedSteps({ db, target, params }) {
     };
     const liveState = () => inspect.dbRestoreState(target.id, db.name);
 
-    return [
+    const steps = [
         {
             name: 'base',
             label: params.source === 'new_full' ? 'Take a FULL backup on the primary' : 'Pick the latest FULL (and DIFF)',
@@ -283,6 +302,67 @@ export function seedSteps({ db, target, params }) {
             },
         },
     ];
+    return params.reseed ? [safetyBackupStep({ db, target, params }), ...steps] : steps;
+}
+
+/**
+ * Reseed of a diverged copy (D9): a COPY_ONLY backup of it goes to
+ * <root>/<db>/DIVERGED/ before it is replaced. Retention never deletes these
+ * files and the chain logic ignores them; they may hold the only copy of
+ * transactions that never reached the new primary.
+ */
+function safetyBackupStep({ db, target, params }) {
+    const sqlPathOf = (relPath) => translatePath(relPath, target, pathOpts('rel', 'sql'));
+    return {
+        name: 'safety_backup',
+        label: `COPY_ONLY safety backup of the copy on ${target.name}`,
+        guidance: 'Nothing has been replaced yet. Resume to try again, or start the reseed again without the safety backup.',
+        check: async (ctx) => {
+            if (!params.safetyBackup) return 'Not requested';
+            if (ctx.state.safetyFileId) return `Safety backup #${ctx.state.safetyFileId} already taken`;
+            if (!ctx.state.safetyRelPath) return false;
+            const bs = await inspect.backupsetByPath(target.id, db.name, sqlPathOf(ctx.state.safetyRelPath));
+            if (!bs) return false;
+            const file = backups.byRelPath(ctx.state.safetyRelPath) || recordBackupFile({ db, server: target, bs, relPath: ctx.state.safetyRelPath, operationId: ctx.op.id, type: 'DIVERGED' });
+            ctx.save({ safetyFileId: file.id });
+            return `The safety backup was taken before the interruption; cataloged as #${file.id}`;
+        },
+        run: async (ctx) => {
+            const live = await inspect.dbRestoreState(target.id, db.name);
+            if (!live) return `Nothing to back up: ${db.name} does not exist on ${target.name}`;
+            if (live.restoring) {
+                return `Skipped: ${db.name} is ${live.standby ? 'STANDBY' : 'RESTORING'} on ${target.name}. A database in a restore sequence cannot be backed up, and it holds no transactions of its own.`;
+            }
+            let note = '';
+            if (live.state === 'OFFLINE') {
+                await query(target.id, Q.SET_ONLINE_RESTRICTED, { db: T.sysname(db.name) }, { timeoutMs: 300_000 });
+                note = ' (brought ONLINE in RESTRICTED_USER mode for the backup)';
+            } else if (live.state !== 'ONLINE') {
+                return `Skipped: ${db.name} is ${live.state} on ${target.name} and cannot be backed up`;
+            }
+            ensureDir(target, backupRelDir(db.name, 'DIVERGED'));
+            const relPath = uniqueRelPath(db, 'DIVERGED', target);
+            ctx.save({ safetyRelPath: relPath });
+            const p = {
+                db: T.sysname(db.name),
+                path: T.nvarchar(sqlPathOf(relPath)),
+                name: T.nvarchar('Mostly On diverged copy', 128),
+                description: T.nvarchar(`mostly-on op:${ctx.op.id} diverged`, 255),
+            };
+            try {
+                await query(target.id, Q.safetyBackup(), p, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
+            } catch (err) {
+                if (!err.number) throw err;
+                ctx.progress(`Backup failed (${sqlErrorText(err)}); retrying WITH CONTINUE_AFTER_ERROR`);
+                await query(target.id, Q.safetyBackup({ continueAfterError: true }), p, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
+            }
+            const bs = await inspect.backupsetByPath(target.id, db.name, sqlPathOf(relPath));
+            if (!bs) throw new Error(`The safety backup to ${relPath} is not in msdb on ${target.name}`);
+            const file = recordBackupFile({ db, server: target, bs, relPath, operationId: ctx.op.id, type: 'DIVERGED' });
+            ctx.save({ safetyFileId: file.id });
+            return `#${file.id} ${relPath}${note}`;
+        },
+    };
 }
 
 async function recordPosition(db, target, file) {
@@ -325,9 +405,10 @@ function pickLatest(ctx, db) {
     // Refresh file_status of the candidate bases first, so a FULL deleted by hand is not picked.
     for (const f of backups.all(db.id)) if (inFamily(f) && (f.type === 'FULL' || f.type === 'DIFF') && f.file_status !== 'deleted') fileOnDisk(f);
     const files = backups.all(db.id).filter(inFamily);
-    const base = newestBase(files);
+    const lineage = forks.lineage(db.id);
+    const base = newestBaseOnLineage(files, lineage);
     if (!base) throw new Error(`There is no FULL backup of ${db.name} on disk. Seed from a fresh FULL instead.`);
-    const gap = chainGap(files, base.position);
+    const gap = chainGap(files, base.position, lineage);
     if (gap) throw new Error(`The log chain after ${base.diff ? base.diff.rel_path : base.full.rel_path} is incomplete: ${gap} Seed from a fresh FULL instead.`);
     ctx.save({ fullFileId: base.full.id, diffFileId: base.diff?.id ?? null });
     return `FULL #${base.full.id} ${base.full.rel_path}${base.diff ? `, DIFF #${base.diff.id} ${base.diff.rel_path}` : ''}`;

@@ -102,6 +102,32 @@ export function updateReplica(databaseId, serverId, patch) {
     return replica(databaseId, serverId);
 }
 
+/**
+ * Failover role change in one transaction: `newPrimaryId` becomes primary,
+ * the old primary becomes `oldPrimaryRole` ('secondary' or 'diverged').
+ */
+export function swapPrimary(databaseId, { newPrimaryId, oldPrimaryId, oldPrimaryRole, oldPrimaryPatch = {} }) {
+    return tx(() => {
+        const now = nowIso();
+        // Demote first: the partial unique index allows only one primary.
+        getDb()
+            .prepare(
+                `UPDATE database_replicas SET role=?, chain_state='ok', chain_reason=NULL, restore_mode='norecovery', disconnect_users=0,
+                    position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL, last_restored_at=NULL, updated_at=?
+                 WHERE database_id=? AND server_id=?`,
+            )
+            .run(oldPrimaryRole, now, databaseId, oldPrimaryId);
+        if (Object.keys(oldPrimaryPatch).length) updateReplica(databaseId, oldPrimaryId, oldPrimaryPatch);
+        getDb()
+            .prepare(
+                `UPDATE database_replicas SET role='primary', chain_state='ok', chain_reason=NULL, position_lsn=NULL, position_fork_guid=NULL,
+                    updated_at=? WHERE database_id=? AND server_id=?`,
+            )
+            .run(now, databaseId, newPrimaryId);
+        return replicas(databaseId);
+    });
+}
+
 /** Removes a non-primary replica from the catalog (nothing changes on the server). */
 export function removeReplica(databaseId, serverId) {
     return getDb().prepare("DELETE FROM database_replicas WHERE database_id=? AND server_id=? AND role!='primary'").run(databaseId, serverId).changes > 0;

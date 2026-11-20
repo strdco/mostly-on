@@ -6,6 +6,7 @@ import path from 'node:path';
 import * as databases from '../store/repos/databases.js';
 import * as serversRepo from '../store/repos/servers.js';
 import * as backups from '../store/repos/backups.js';
+import * as forks from '../store/repos/forks.js';
 import * as ops from '../store/repos/operations.js';
 import * as events from '../store/repos/events.js';
 import * as settings from '../store/repos/settings.js';
@@ -26,7 +27,7 @@ let lastHistoryPurge = 0;
 function filesInUse() {
     const ids = new Set();
     for (const op of ops.unfinished()) {
-        for (const k of ['fileId', 'fullFileId', 'diffFileId', 'tailFileId']) if (op.ctx[k]) ids.add(op.ctx[k]);
+        for (const k of ['fileId', 'fullFileId', 'diffFileId', 'tailFileId', 'safetyFileId']) if (op.ctx[k]) ids.add(op.ctx[k]);
     }
     return ids;
 }
@@ -72,6 +73,7 @@ export function applyToDatabase(db, { dryRun = false } = {}) {
             },
             now: new Date(),
             extraProtected: filesInUse(),
+            lineage: forks.lineage(db.id),
         });
         result.blocked = plan.blocked;
         result.kept = files.length - plan.deletable.length;

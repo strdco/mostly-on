@@ -7,7 +7,8 @@ const STEP_KIND = { done: 'ok', skipped: 'ok', running: '', pending: '', failed:
 export function opTitle(op) {
     if (op.type === 'backup') return `${op.params.type} backup${op.params.trigger ? ` (${op.params.trigger})` : ''}`;
     if (op.type === 'seed') return `Seed secondary${op.params.overwrite ? ' (overwrite)' : ''}`;
-    return op.type;
+    const titles = { reseed: 'Reseed', planned_failover: 'Planned failover', forced_failover: 'Forced failover', switchover_all: 'Switch over all databases' };
+    return titles[op.type] || op.type;
 }
 
 async function resume(op) {
@@ -52,6 +53,7 @@ export function stepList(op) {
                 s.label || s.name,
                 s.detail ? h('div.muted.mono', s.detail) : null,
                 s.error ? h('div.error-text', s.error) : null,
+                s.guidance && ['failed', 'interrupted'].includes(s.status) ? h('div.callout.warn', h('strong', 'What to do: '), s.guidance) : null,
             ),
         ),
     );

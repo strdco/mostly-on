@@ -65,6 +65,7 @@ export function errorNumbers(err) {
  *   too_recent       4305: the log starts after the position (gap)
  *   cannot_open      3201: backup file cannot be opened
  *   in_use           3101: readers hold the database (STANDBY)
+ *   wrong_fork       4330: the log is on a recovery path the database is not on
  *   connection       the server could not be reached
  *   other            anything else
  */
@@ -74,6 +75,7 @@ export function classifyRestoreError(err) {
     if (nums.includes(4305)) return 'too_recent';
     if (nums.includes(3201)) return 'cannot_open';
     if (nums.includes(3101)) return 'in_use';
+    if (nums.includes(4330)) return 'wrong_fork';
     if (['ESOCKET', 'ECONNCLOSED', 'ETIMEOUT', 'ELOGIN', 'ENOTOPEN', 'ECONNRESET'].includes(err?.code)) return 'connection';
     return 'other';
 }

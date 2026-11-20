@@ -19,6 +19,7 @@ import * as scheduler from './engine/scheduler.js';
 import * as retention from './engine/retention.js';
 import * as restoreLoop from './engine/restore-loop.js';
 import { replicaRoutes } from './http/routes/replicas.js';
+import { failoverRoutes } from './http/routes/failover.js';
 import { reconcileOnStartup } from './engine/reconcile.js';
 import { setEngineConfig } from './engine/context.js';
 import { createHttpServer } from './http/server.js';
@@ -60,6 +61,7 @@ const server = createHttpServer(cfg, (router) => {
     miscRoutes(router, deps);
     databaseRoutes(router, deps);
     replicaRoutes(router, deps);
+    failoverRoutes(router, deps);
     operationRoutes(router, deps);
 });
 

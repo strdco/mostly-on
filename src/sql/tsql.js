@@ -140,7 +140,11 @@ export const DB_RESTORE_STATE = `
 SELECT d.name,
        d.state_desc,
        d.is_in_standby,
+       d.user_access_desc,
        CONVERT(char(36), drs.family_guid) AS family_guid,
+       CONVERT(char(36), drs.recovery_fork_guid) AS recovery_fork_guid,
+       CAST(drs.fork_point_lsn AS varchar(25)) AS fork_point_lsn,
+       CAST(drs.last_log_backup_lsn AS varchar(25)) AS last_log_backup_lsn,
        CAST(mf.redo_start_lsn AS varchar(25)) AS redo_start_lsn,
        CONVERT(char(36), mf.redo_start_fork_guid) AS redo_start_fork_guid,
        CONVERT(char(36), lr.backup_set_uuid) AS last_restore_uuid,
@@ -190,6 +194,43 @@ export function restoreDatabase({ moveCount = 0, replace = false } = {}) {
     for (let i = 0; i < moveCount; i++) opts.push(`MOVE @move_from${i} TO @move_to${i}`);
     return `RESTORE DATABASE @db FROM DISK=@path WITH ${opts.join(', ')};`;
 }
+
+// --- failover ------------------------------------------------------------------
+
+// Planned failover tail: one batch on a dedicated connection. SINGLE_USER
+// WITH ROLLBACK IMMEDIATE ends every other session, then the tail-log backup
+// WITH NORECOVERY leaves the old primary RESTORING, so nothing can write to it
+// afterwards. The SINGLE_USER setting travels in the tail log.
+export const TAIL_LOG_PLANNED = `
+DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;';
+EXEC sys.sp_executesql @sql;
+
+BACKUP LOG @db TO DISK=@path WITH NORECOVERY, ${BACKUP_OPTS};`;
+
+/** Forced failover tail of a possibly damaged primary (best effort). */
+export function tailLogForced({ continueAfterError = false } = {}) {
+    return `BACKUP LOG @db TO DISK=@path WITH NO_TRUNCATE, NORECOVERY, ${continueAfterError ? 'CONTINUE_AFTER_ERROR, ' : ''}${BACKUP_OPTS};`;
+}
+
+export const RESTORE_WITH_RECOVERY = 'RESTORE DATABASE @db WITH RECOVERY;';
+
+export const SET_MULTI_USER = `
+DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET MULTI_USER;';
+EXEC sys.sp_executesql @sql;`;
+
+// Brings an OFFLINE (diverged) database back for a safety backup, letting
+// only administrators in.
+export const SET_ONLINE_RESTRICTED = `
+DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET ONLINE; ALTER DATABASE '+QUOTENAME(@db)+N' SET RESTRICTED_USER WITH ROLLBACK IMMEDIATE;';
+EXEC sys.sp_executesql @sql;`;
+
+/** COPY_ONLY safety backup of a diverged copy before it is overwritten. */
+export function safetyBackup({ continueAfterError = false } = {}) {
+    return `BACKUP DATABASE @db TO DISK=@path WITH COPY_ONLY, ${continueAfterError ? 'CONTINUE_AFTER_ERROR, ' : ''}${BACKUP_OPTS};`;
+}
+
+// Only used for its GUID columns (its LSN columns lose precision in the driver).
+export const RESTORE_HEADERONLY = 'RESTORE HEADERONLY FROM DISK=@path;';
 
 /** RESTORE LOG WITH NORECOVERY or STANDBY=@undo, optionally disconnecting readers first. */
 export function restoreLog({ standby = false, disconnectUsers = false } = {}) {
