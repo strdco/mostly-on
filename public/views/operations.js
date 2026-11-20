@@ -1,12 +1,44 @@
-import { h, clear, dataTable, badge, formatTime } from '../dom.js';
-import { get } from '../api.js';
+import { h, clear, dataTable, badge, formatTime, formDialog, field, toast } from '../dom.js';
+import { get, post } from '../api.js';
 
 const STATUS_KIND = { succeeded: 'ok', running: '', queued: '', failed: 'err', interrupted: 'err', resolved: 'warn' };
 const STEP_KIND = { done: 'ok', skipped: 'ok', running: '', pending: '', failed: 'err', interrupted: 'err' };
 
 export function opTitle(op) {
     if (op.type === 'backup') return `${op.params.type} backup${op.params.trigger ? ` (${op.params.trigger})` : ''}`;
+    if (op.type === 'seed') return `Seed secondary${op.params.overwrite ? ' (overwrite)' : ''}`;
     return op.type;
+}
+
+async function resume(op) {
+    try {
+        await post(`/api/operations/${op.id}/resume`);
+        toast(`Operation #${op.id} resumed`, 'ok');
+    } catch (err) {
+        toast(err.message, 'err');
+    }
+}
+
+async function resolve(op) {
+    const done = await formDialog({
+        title: `Mark operation #${op.id} as resolved?`,
+        fields: [
+            h('p', 'Use this when you have checked the servers and dealt with the outcome by hand. Mostly On changes nothing on the servers.'),
+            field('Note (optional)', h('input', { type: 'text', name: 'note', maxlength: 500, autocomplete: 'off' })),
+        ],
+        submitLabel: 'Mark resolved',
+        onSubmit: (v) => post(`/api/operations/${op.id}/resolve`, { note: v.note }),
+    });
+    if (done) toast(`Operation #${op.id} marked as resolved`, 'ok');
+}
+
+function opActions(o) {
+    if (!o.resumable && !o.resolvable) return '';
+    return h(
+        'div.actions',
+        o.resumable ? h('button.primary', { type: 'button', onclick: () => resume(o) }, 'Resume') : null,
+        o.resolvable ? h('button', { type: 'button', onclick: () => resolve(o) }, 'Mark resolved') : null,
+    );
 }
 
 export function stepList(op) {
@@ -46,6 +78,7 @@ export function operationsTable(rows, caption = 'Operations') {
             },
             { label: 'Started', cell: (o) => formatTime(o.created_at) },
             { label: 'Finished', cell: (o) => formatTime(o.finished_at) },
+            ...(rows.some((o) => o.resumable || o.resolvable) ? [{ label: 'Actions', cell: opActions }] : []),
         ],
     });
 }

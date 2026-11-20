@@ -91,6 +91,38 @@ export async function backupsetByPath(serverId, dbName, sqlPath) {
     return r.recordset[0] ? normalizeBackupset(r.recordset[0]) : null;
 }
 
+/**
+ * Restore state of a database on a (secondary) server, or null if it does
+ * not exist. `position` is the next LSN the database needs: redo_start_lsn,
+ * or the last_lsn of the newest restore in msdb when that is not available.
+ */
+export async function dbRestoreState(serverId, dbName) {
+    const r = await query(serverId, Q.DB_RESTORE_STATE, { db: T.sysname(dbName) });
+    const d = r.recordset[0];
+    if (!d) return null;
+    const standby = !!d.is_in_standby;
+    const restoring = d.state_desc === 'RESTORING' || standby;
+    return {
+        name: d.name,
+        state: d.state_desc,
+        standby,
+        restoring,
+        familyGuid: guid(d.family_guid),
+        redoStartLsn: d.redo_start_lsn,
+        forkGuid: guid(d.redo_start_fork_guid),
+        lastRestoreUuid: guid(d.last_restore_uuid),
+        lastRestoreLsn: d.last_restore_lsn,
+        lastRestoreAt: d.last_restore_at ? new Date(d.last_restore_at).toISOString() : null,
+        position: restoring ? d.redo_start_lsn || d.last_restore_lsn || null : null,
+    };
+}
+
+/** RESTORE FILELISTONLY: the database files inside a backup. */
+export async function fileList(serverId, sqlPath) {
+    const r = await query(serverId, Q.RESTORE_FILELISTONLY, { path: T.nvarchar(sqlPath) }, { timeoutMs: 300_000 });
+    return r.recordset.map((f) => ({ logicalName: f.LogicalName, physicalName: f.PhysicalName, type: f.Type, fileId: Number(f.FileId) }));
+}
+
 /** One entry per backup set (multi-file sets are merged; devices listed). */
 export async function backupsetsSince(serverId, dbName, familyGuid, sinceUtc) {
     const r = await query(serverId, Q.BACKUPSETS_SINCE, {

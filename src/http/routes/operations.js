@@ -1,12 +1,13 @@
 import { HttpError, idParam } from '../router.js';
 import * as ops from '../../store/repos/operations.js';
 import * as databases from '../../store/repos/databases.js';
+import { canResume, canResolve, resumeOperation, resolveOperation } from '../../engine/ops/index.js';
 
 const STATUSES = ['queued', 'running', 'succeeded', 'failed', 'interrupted', 'resolved'];
 
 function withNames(op) {
     const db = op.database_id ? databases.get(op.database_id) : null;
-    return { ...op, database_name: db?.name ?? null };
+    return { ...op, database_name: db?.name ?? null, resumable: canResume(op), resolvable: canResolve(op) };
 }
 
 export function operationRoutes(router) {
@@ -28,5 +29,16 @@ export function operationRoutes(router) {
         const op = ops.get(idParam(ctx.params.id));
         if (!op) throw new HttpError(404, 'Operation not found');
         return withNames(op);
+    });
+
+    router.post('/api/operations/:id/resume', async (ctx) => {
+        const op = await resumeOperation(idParam(ctx.params.id));
+        ctx.status = 202;
+        return withNames(ops.get(op.id));
+    });
+
+    router.post('/api/operations/:id/resolve', async (ctx) => {
+        const note = typeof ctx.body?.note === 'string' ? ctx.body.note.slice(0, 500) : '';
+        return withNames(resolveOperation(idParam(ctx.params.id), note));
     });
 }

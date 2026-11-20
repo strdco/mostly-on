@@ -12,6 +12,8 @@ import * as retention from '../../engine/retention.js';
 import { startBackup, BACKUP_TYPES } from '../../engine/backup.js';
 import { validateSchedule } from '../../engine/schedule-math.js';
 import { holders } from '../../engine/locks.js';
+import { lagOf } from '../../engine/restore-loop.js';
+import { canResume, canResolve } from '../../engine/ops/index.js';
 import { sqlErrorText } from '../../sql/pool.js';
 import { publish } from '../../bus.js';
 
@@ -23,13 +25,16 @@ function mustGet(id) {
 
 /** Catalog intent joined with the live state from the latest health checks. */
 function summary(db) {
-    const replicas = databases.replicas(db.id).map((r) => {
+    const rows = databases.replicas(db.id);
+    const lags = lagOf(db.id, rows);
+    const replicas = rows.map((r) => {
         const h = health.getHealth(r.server_id);
         const live = health.dbState(r.server_id, db.name);
         return {
             ...r,
             reachable: h ? h.ok : null,
             live: live ? { state: live.state, recoveryModel: live.recoveryModel, userAccess: live.userAccess, isInStandby: live.isInStandby } : null,
+            lag: lags.get(r.server_id) || null,
         };
     });
     return {
@@ -54,7 +59,7 @@ export function databaseRoutes(router) {
         return {
             ...summary(db),
             foreignBackups: foreign.list(db.id),
-            operations: ops.list({ databaseId: db.id, limit: 20 }),
+            operations: ops.list({ databaseId: db.id, limit: 20 }).map((op) => ({ ...op, database_name: db.name, resumable: canResume(op), resolvable: canResolve(op) })),
         };
     });
 

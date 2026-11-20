@@ -54,6 +54,59 @@ export function replicasOnServer(serverId) {
         .all(serverId);
 }
 
+/**
+ * Adds a server as a secondary in state 'seeding', or puts an existing
+ * secondary back into 'seeding' (reseed). Never touches a primary.
+ */
+export function addSecondary({ databaseId, serverId, restoreMode, disconnectUsers }) {
+    return tx(() => {
+        const existing = replica(databaseId, serverId);
+        if (existing && existing.role === 'primary') throw new Error('Server is the primary of this database');
+        const now = nowIso();
+        if (existing) {
+            getDb()
+                .prepare(
+                    `UPDATE database_replicas SET role='secondary', chain_state='seeding', chain_reason=NULL, restore_mode=?,
+                        disconnect_users=?, position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL,
+                        last_restored_at=NULL, updated_at=? WHERE database_id=? AND server_id=?`,
+                )
+                .run(restoreMode, disconnectUsers ? 1 : 0, now, databaseId, serverId);
+        } else {
+            getDb()
+                .prepare(
+                    `INSERT INTO database_replicas (database_id, server_id, role, chain_state, restore_mode, disconnect_users, updated_at)
+                     VALUES (?, ?, 'secondary', 'seeding', ?, ?, ?)`,
+                )
+                .run(databaseId, serverId, restoreMode, disconnectUsers ? 1 : 0, now);
+        }
+        return replica(databaseId, serverId);
+    });
+}
+
+const REPLICA_PATCHABLE = ['chain_state', 'chain_reason', 'restore_mode', 'disconnect_users', 'position_lsn', 'position_fork_guid', 'last_restored_file_id', 'last_restored_at'];
+
+/** Updates any subset of the replica's shipping fields. */
+export function updateReplica(databaseId, serverId, patch) {
+    const cols = [];
+    const args = { database_id: databaseId, server_id: serverId, now: nowIso() };
+    for (const k of REPLICA_PATCHABLE) {
+        if (patch[k] !== undefined) {
+            cols.push(`${k}=@${k}`);
+            args[k] = typeof patch[k] === 'boolean' ? (patch[k] ? 1 : 0) : patch[k];
+        }
+    }
+    if (!cols.length) return replica(databaseId, serverId);
+    getDb()
+        .prepare(`UPDATE database_replicas SET ${cols.join(', ')}, updated_at=@now WHERE database_id=@database_id AND server_id=@server_id`)
+        .run(args);
+    return replica(databaseId, serverId);
+}
+
+/** Removes a non-primary replica from the catalog (nothing changes on the server). */
+export function removeReplica(databaseId, serverId) {
+    return getDb().prepare("DELETE FROM database_replicas WHERE database_id=? AND server_id=? AND role!='primary'").run(databaseId, serverId).changes > 0;
+}
+
 function defaultSchedules(databaseId) {
     const now = new Date();
     const ins = getDb().prepare(

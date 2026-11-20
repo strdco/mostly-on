@@ -17,6 +17,8 @@ import * as health from './engine/health.js';
 import * as discovery from './engine/discovery.js';
 import * as scheduler from './engine/scheduler.js';
 import * as retention from './engine/retention.js';
+import * as restoreLoop from './engine/restore-loop.js';
+import { replicaRoutes } from './http/routes/replicas.js';
 import { reconcileOnStartup } from './engine/reconcile.js';
 import { setEngineConfig } from './engine/context.js';
 import { createHttpServer } from './http/server.js';
@@ -49,6 +51,7 @@ health.start();
 discovery.start();
 scheduler.start();
 retention.start();
+restoreLoop.start();
 
 const deps = { cfg };
 const server = createHttpServer(cfg, (router) => {
@@ -56,6 +59,7 @@ const server = createHttpServer(cfg, (router) => {
     serverRoutes(router, deps);
     miscRoutes(router, deps);
     databaseRoutes(router, deps);
+    replicaRoutes(router, deps);
     operationRoutes(router, deps);
 });
 
@@ -69,6 +73,7 @@ async function shutdown(signal) {
     stopping = true;
     log.info('Shutting down', { signal });
     scheduler.stop();
+    restoreLoop.stop();
     retention.stop();
     discovery.stop();
     health.stop();

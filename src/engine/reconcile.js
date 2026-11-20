@@ -4,6 +4,7 @@
 // SQL Server is the source of truth for state; the catalog for intent.
 import * as ops from '../store/repos/operations.js';
 import * as backups from '../store/repos/backups.js';
+import * as restores from '../store/repos/restores.js';
 import * as databases from '../store/repos/databases.js';
 import * as serversRepo from '../store/repos/servers.js';
 import * as events from '../store/repos/events.js';
@@ -58,6 +59,11 @@ async function reconcileBackup(op) {
 }
 
 export async function reconcileOnStartup() {
+    // A restore cut off by the stop either completed on the server or not; the
+    // restore loop reads the real position from SQL Server before it continues.
+    const cut = restores.markInterrupted();
+    if (cut) events.add('info', 'restore', `${cut} restore(s) were running when the controller stopped; the restore loops re-check the secondaries' positions`);
+
     for (const op of ops.unfinished()) {
         try {
             if (op.type === 'backup') {
@@ -66,6 +72,12 @@ export async function reconcileOnStartup() {
                 // Multi-step operations (seed, failover ...) are never resumed
                 // automatically; a user resumes or resolves them from the UI.
                 finish(op, 'interrupted', `Controller restarted during step "${op.current_step}". Check the servers, then resume or mark resolved.`);
+                if (op.type === 'seed' && op.params.targetServerId) {
+                    const rep = databases.replica(op.database_id, op.params.targetServerId);
+                    if (rep?.chain_state === 'seeding') {
+                        databases.updateReplica(op.database_id, op.params.targetServerId, { chain_reason: `Seed operation #${op.id} was interrupted by a controller restart; resume it from Operations` });
+                    }
+                }
                 events.add('error', op.type, `Operation #${op.id} (${op.type}) was interrupted by a controller restart during step "${op.current_step}"`, {
                     databaseId: op.database_id,
                     serverId: op.server_id,

@@ -129,3 +129,70 @@ ORDER BY bs.backup_set_id;`;
 export const PURGE_BACKUP_HISTORY = `
 DECLARE @oldest datetime2(0)=DATEADD(day, -@keep_days, GETDATE());
 EXEC msdb.dbo.sp_delete_backuphistory @oldest_date=@oldest;`;
+
+// --- shipping and restore ---------------------------------------------------
+
+// Live restore state of one database on a secondary. redo_start_lsn is the
+// next LSN the database needs; it is exact both in RESTORING and in STANDBY.
+// The newest msdb restorehistory entry is returned as a cross-check and as a
+// fallback position.
+export const DB_RESTORE_STATE = `
+SELECT d.name,
+       d.state_desc,
+       d.is_in_standby,
+       CONVERT(char(36), drs.family_guid) AS family_guid,
+       CAST(mf.redo_start_lsn AS varchar(25)) AS redo_start_lsn,
+       CONVERT(char(36), mf.redo_start_fork_guid) AS redo_start_fork_guid,
+       CONVERT(char(36), lr.backup_set_uuid) AS last_restore_uuid,
+       CAST(lr.last_lsn AS varchar(25)) AS last_restore_lsn,
+       ${utc('lr.restore_date')} AS last_restore_at
+FROM sys.databases AS d
+LEFT JOIN sys.database_recovery_status AS drs ON drs.database_id=d.database_id
+LEFT JOIN sys.master_files AS mf ON mf.database_id=d.database_id AND mf.file_id=1
+OUTER APPLY (
+    SELECT TOP (1) bs.backup_set_uuid, bs.last_lsn, rh.restore_date
+    FROM msdb.dbo.restorehistory AS rh
+    INNER JOIN msdb.dbo.backupset AS bs ON bs.backup_set_id=rh.backup_set_id
+    WHERE rh.destination_database_name=d.name
+    ORDER BY rh.restore_history_id DESC
+    ) AS lr
+WHERE d.name=@db;`;
+
+export const RESTORE_FILELISTONLY = 'RESTORE FILELISTONLY FROM DISK=@path;';
+
+// Disconnects every other session using the database (STANDBY readers, or
+// users of a database that is about to be overwritten).
+const KILL_SESSIONS = `
+DECLARE @kill nvarchar(max);
+
+SELECT @kill=STRING_AGG(CAST(N'KILL '+CONVERT(nvarchar(11), s.session_id)+N';' AS nvarchar(max)), N'')
+FROM sys.dm_exec_sessions AS s
+WHERE s.database_id=DB_ID(@db)
+  AND s.session_id!=@@SPID;
+
+IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+`;
+
+// Takes an existing database offline before a confirmed overwrite. RESTORE
+// ... WITH REPLACE then replaces it.
+export const SET_OFFLINE = `
+DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET OFFLINE WITH ROLLBACK IMMEDIATE;';
+EXEC sys.sp_executesql @sql;`;
+
+/**
+ * RESTORE DATABASE of a FULL or DIFF backup, always WITH NORECOVERY. The
+ * statement has one MOVE clause per file, bound to @move_from<i>/@move_to<i>;
+ * only the number of clauses comes from JS, never a name or path.
+ */
+export function restoreDatabase({ moveCount = 0, replace = false } = {}) {
+    const opts = ['NORECOVERY', 'CHECKSUM', 'STATS=10'];
+    if (replace) opts.push('REPLACE');
+    for (let i = 0; i < moveCount; i++) opts.push(`MOVE @move_from${i} TO @move_to${i}`);
+    return `RESTORE DATABASE @db FROM DISK=@path WITH ${opts.join(', ')};`;
+}
+
+/** RESTORE LOG WITH NORECOVERY or STANDBY=@undo, optionally disconnecting readers first. */
+export function restoreLog({ standby = false, disconnectUsers = false } = {}) {
+    const restore = `RESTORE LOG @db FROM DISK=@path WITH ${standby ? 'STANDBY=@undo' : 'NORECOVERY'}, CHECKSUM;`;
+    return disconnectUsers ? `${KILL_SESSIONS}\n${restore}` : restore;
+}

@@ -15,6 +15,37 @@ export function ageBadge(iso, expectMinutes) {
     return badge(ago(iso), kind);
 }
 
+export function formatDuration(seconds) {
+    if (seconds === null || seconds === undefined) return '–';
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+    if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h`;
+    return `${(seconds / 86400).toFixed(1)}d`;
+}
+
+const CHAIN = {
+    ok: ['shipping', 'ok'],
+    seeding: ['seeding', ''],
+    broken: ['chain broken', 'err'],
+    needs_reseed: ['needs reseed', 'err'],
+};
+
+/** Shipping state of a secondary (catalog chain_state plus the restore loop's retry state). */
+export function chainBadge(r) {
+    if (r.role === 'diverged') return badge('diverged', 'err');
+    if (r.chain_state === 'ok' && r.lag?.loop?.failures) return badge(`retrying (${r.lag.loop.failures} failed)`, 'warn');
+    const [text, kind] = CHAIN[r.chain_state] || [r.chain_state, ''];
+    return badge(text, kind);
+}
+
+/** Time lag and unrestored file count, colored against the lag alert threshold. */
+export function lagBadge(lag, thresholdMinutes = 30) {
+    if (!lag || lag.seconds === null) return badge('lag unknown');
+    const t = thresholdMinutes * 60;
+    const kind = lag.seconds > t ? 'err' : lag.seconds > t / 2 ? 'warn' : 'ok';
+    return badge(`${formatDuration(lag.seconds)} · ${lag.files} log${lag.files === 1 ? '' : 's'} behind`, kind);
+}
+
 export function expectedMinutes(schedule) {
     if (!schedule?.enabled) return null;
     if (schedule.kind === 'interval') return schedule.interval_minutes;
@@ -28,7 +59,8 @@ export function overviewView() {
     let timer;
 
     async function load() {
-        const [dbs, discovered] = await Promise.all([get('/api/databases'), get('/api/discovered')]);
+        const [dbs, discovered, settings] = await Promise.all([get('/api/databases'), get('/api/discovered'), get('/api/settings')]);
+        const threshold = settings['alerts.lag_threshold_minutes'];
         clear(managedBox).append(
             dataTable({
                 caption: 'Managed databases',
@@ -41,7 +73,18 @@ export function overviewView() {
                         label: 'Secondaries',
                         cell: (d) => {
                             const sec = d.replicas.filter((r) => r.role !== 'primary');
-                            return sec.length ? sec.map((r) => h('div', r.server_name, ' ', stateBadge(r.live, r.role))) : h('span.muted', 'none');
+                            return sec.length
+                                ? sec.map((r) =>
+                                      h(
+                                          'div',
+                                          r.server_name,
+                                          ' ',
+                                          stateBadge(r.live, r.role),
+                                          ' ',
+                                          r.chain_state === 'ok' && r.role === 'secondary' && !r.lag?.loop?.failures ? lagBadge(r.lag, threshold) : chainBadge(r),
+                                      ),
+                                  )
+                                : h('span.muted', 'none');
                         },
                     },
                     ...['FULL', 'DIFF', 'LOG'].map((t) => ({
@@ -50,7 +93,13 @@ export function overviewView() {
                     })),
                     {
                         label: 'Chain',
-                        cell: (d) => (d.foreignLogBackups ? badge(`${d.foreignLogBackups} foreign log backup(s)`, 'err') : badge('ok', 'ok')),
+                        cell: (d) => {
+                            const stopped = d.replicas.filter((r) => ['broken', 'needs_reseed'].includes(r.chain_state));
+                            const out = [];
+                            if (d.foreignLogBackups) out.push(badge(`${d.foreignLogBackups} foreign log backup(s)`, 'err'));
+                            if (stopped.length) out.push(badge(`shipping stopped to ${stopped.map((r) => r.server_name).join(', ')}`, 'err'));
+                            return out.length ? out : badge('ok', 'ok');
+                        },
                     },
                     { label: 'Activity', cell: (d) => (d.busy.length ? badge(d.busy.join(', ')) : '') },
                 ],
@@ -115,7 +164,7 @@ export function overviewView() {
             await load();
         },
         onEvent(evt) {
-            if (!['database.changed', 'backup.finished', 'backup.failed', 'discovery.changed', 'server.health', 'foreign.detected'].includes(evt.type)) return;
+            if (!['database.changed', 'replica.changed', 'backup.finished', 'backup.failed', 'discovery.changed', 'server.health', 'foreign.detected'].includes(evt.type)) return;
             clearTimeout(timer);
             timer = setTimeout(() => load().catch(() => {}), 400);
         },

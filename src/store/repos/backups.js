@@ -60,6 +60,11 @@ export function present(databaseId) {
     return getDb().prepare(`SELECT ${COLS} FROM backup_files WHERE database_id=? AND file_status='present' ORDER BY backup_finish, id`).all(databaseId);
 }
 
+/** Every catalog row of a database, including missing and deleted files (for chain decisions). */
+export function all(databaseId) {
+    return getDb().prepare(`SELECT ${COLS} FROM backup_files WHERE database_id=? ORDER BY backup_finish, id`).all(databaseId);
+}
+
 export function latestByType(databaseId) {
     const rows = getDb()
         .prepare(
