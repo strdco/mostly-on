@@ -54,6 +54,25 @@ services:
       - sql2-data:/var/opt/mssql
       - backup:/var/opt/mssql/backup
 
+  # One-shot: creates the restricted login "mostly_on" on both SQL Servers and
+  # installs Mostly On's signed helper procedures (sql/mostly-on-helpers.sql),
+  # so Mostly On never needs sa. Register the servers with login mostly_on.
+  sql-setup:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    platform: linux/amd64
+    entrypoint: ["/bin/bash", "/setup/run-setup.sh"]
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+      MOSTLY_ON_SQL_PASSWORD: ${MOSTLY_ON_SQL_PASSWORD:?Set MOSTLY_ON_SQL_PASSWORD in .env}
+    volumes:
+      - ./sql:/setup:ro
+    depends_on:
+      sql1:
+        condition: service_healthy
+      sql2:
+        condition: service_healthy
+    restart: "no"
+
   controller:
     build: .
     image: mostly-on:dev

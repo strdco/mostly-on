@@ -5,16 +5,39 @@ import { nextRun } from '../../engine/schedule-math.js';
 
 export function list({ includeUnmanaged = false } = {}) {
     return getDb()
-        .prepare(`SELECT id, name, family_guid, status, created_at, updated_at FROM databases ${includeUnmanaged ? '' : "WHERE status='managed'"} ORDER BY name`)
+        .prepare(`SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, created_at, updated_at FROM databases ${includeUnmanaged ? '' : "WHERE status='managed'"} ORDER BY name`)
         .all();
 }
 
 export function get(id) {
-    return getDb().prepare('SELECT id, name, family_guid, status, created_at, updated_at FROM databases WHERE id=?').get(id);
+    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, created_at, updated_at FROM databases WHERE id=?').get(id);
 }
 
 export function getByName(name) {
-    return getDb().prepare('SELECT id, name, family_guid, status, created_at, updated_at FROM databases WHERE name=?').get(name);
+    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, created_at, updated_at FROM databases WHERE name=?').get(name);
+}
+
+/**
+ * Remembers the database's owner, read from its primary before a backup.
+ * Ignored while a restored copy still belongs to Mostly On's own login, and
+ * while the owner is the stand-in a failover fell back to (owner_fallback):
+ * the real owner stays remembered, so failing back restores it.
+ */
+export function noteOwner(id, state) {
+    if (!state?.ownerSid || state.ownedByService) return;
+    const db = get(id);
+    if (!db || db.owner_sid === state.ownerSid) return;
+    if (db.owner_fallback && state.ownerName === db.owner_fallback && db.owner_sid) return;
+    getDb()
+        .prepare('UPDATE databases SET owner_sid=?, owner_name=?, owner_fallback=NULL, updated_at=? WHERE id=?')
+        .run(state.ownerSid, state.ownerName ?? null, nowIso(), id);
+}
+
+/** After a failover: which login now owns the new primary, and whether it is only a stand-in. */
+export function noteRecoveredOwner(id, { ownerName, matchedBy }) {
+    getDb()
+        .prepare('UPDATE databases SET owner_fallback=?, updated_at=? WHERE id=?')
+        .run(matchedBy === 'fallback' ? ownerName : null, nowIso(), id);
 }
 
 export function setFamilyGuid(id, familyGuid) {

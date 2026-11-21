@@ -26,10 +26,10 @@ import * as forks from '../../store/repos/forks.js';
 import * as events from '../../store/repos/events.js';
 import * as opsRepo from '../../store/repos/operations.js';
 import * as inspect from '../../sql/inspect.js';
-import * as Q from '../../sql/tsql.js';
+import * as P from '../../sql/privileged.js';
 import * as health from '../health.js';
 import * as L from '../../lsn.js';
-import { query, withDedicated, T, sqlErrorText } from '../../sql/pool.js';
+import { withDedicated, sqlErrorText } from '../../sql/pool.js';
 import { createOperation, runOperation } from '../operations.js';
 import { acquire, BusyError } from '../locks.js';
 import { applyAvailableLogs, checkLive, nudgeDatabase } from '../restore-loop.js';
@@ -238,24 +238,39 @@ function recoverStep(db, target) {
         guidance: `${db.name} on ${target.name} could not be recovered. Read the error; once it is fixed, resume. Until then no server accepts writes for ${db.name}.`,
         check: async () => {
             const live = await inspect.dbRestoreState(target.id, db.name);
-            return live?.state === 'ONLINE' && !live.standby && live.userAccess === 'MULTI_USER' ? `${db.name} is already ONLINE and MULTI_USER on ${target.name}` : false;
+            if (!(live?.state === 'ONLINE' && !live.standby && live.userAccess === 'MULTI_USER')) return false;
+            // Recovered, but interrupted before the owner was set: run again (it skips what is done).
+            if ((await inspect.dbBackupState(target.id, db.name))?.ownedByService) return false;
+            return `${db.name} is already online on ${target.name}`;
         },
         run: async (ctx) => {
-            let live = await inspect.dbRestoreState(target.id, db.name);
-            const notes = [];
-            if (live?.restoring) {
-                await query(target.id, Q.RESTORE_WITH_RECOVERY, { db: T.sysname(db.name) }, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
-                notes.push('recovered');
-                live = await inspect.dbRestoreState(target.id, db.name);
-            }
+            const owner = databases.get(db.id);
+            const r = await P.run(target.id, P.recover({ db: db.name, ownerSid: owner?.owner_sid, ownerName: owner?.owner_name }), {
+                timeoutMs: 0,
+                onInfo: (m) => ctx.progress(m),
+            });
+            const live = await inspect.dbRestoreState(target.id, db.name);
             if (live?.state !== 'ONLINE') throw new Error(`${db.name} is ${live?.state ?? 'missing'} on ${target.name} after recovery`);
-            if (live.userAccess !== 'MULTI_USER') {
-                await query(target.id, Q.SET_MULTI_USER, { db: T.sysname(db.name) }, { timeoutMs: 120_000 });
-                notes.push(`${live.userAccess} → MULTI_USER`);
-            }
-            return `${db.name} on ${target.name}: ${notes.join(', ') || 'already ONLINE'}`;
+            return `${db.name} is online on ${target.name}; ${ownerNote(db, target, owner, r.recordset[0])}`;
         },
     };
+}
+
+/** Records who owns the new primary, and says so in words. */
+function ownerNote(db, target, owner, row) {
+    if (!row) return 'owner unchanged';
+    databases.noteRecoveredOwner(db.id, { ownerName: row.owner_name, matchedBy: row.matched_by });
+    const wanted = owner?.owner_name;
+    if (row.matched_by === 'sid' || row.matched_by === 'name') return `owner: ${row.owner_name}`;
+    if (row.matched_by === 'fallback') {
+        const why = wanted ? `${wanted}, the owner on the old primary, has no login on ${target.name}` : 'the original owner is not known';
+        events.add('info', 'failover', `${db.name} on ${target.name} is now owned by ${row.owner_name}: ${why}. To restore the owner, create that login on ${target.name} and run ALTER AUTHORIZATION ON DATABASE::[${db.name}] TO [${wanted ?? 'login'}];`, {
+            databaseId: db.id,
+            serverId: target.id,
+        });
+        return `owner: ${row.owner_name} (${why})`;
+    }
+    return `owner unchanged (${row.note || 'could not be set'})`;
 }
 
 function firstLogStep(db, target, holder) {
@@ -372,13 +387,14 @@ function plannedSteps({ db, oldServer, target, holder }) {
                 ensureDir(oldServer, backupRelDir(db.name, 'LOG'));
                 const relPath = uniqueRelPath(db, 'LOG', oldServer);
                 ctx.save({ tailRelPath: relPath });
-                const params = {
-                    db: T.sysname(db.name),
-                    path: T.nvarchar(translatePath(relPath, oldServer, pathOpts('rel', 'sql'))),
-                    name: T.nvarchar('Mostly On tail-log', 128),
-                    description: T.nvarchar(`mostly-on op:${ctx.op.id}`, 255),
-                };
-                await withDedicated(oldServer.id, (q) => q(Q.TAIL_LOG_PLANNED, params, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) }));
+                const tail = P.tailLog({
+                    db: db.name,
+                    path: translatePath(relPath, oldServer, pathOpts('rel', 'sql')),
+                    name: 'Mostly On tail-log',
+                    description: `mostly-on op:${ctx.op.id}`,
+                    mode: 'planned',
+                });
+                await withDedicated(oldServer.id, (q) => P.runOn(q, oldServer.id, tail, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) }));
                 const file = await catalogTail(db, oldServer, relPath, ctx.op.id);
                 if (!file) throw new Error(`SQL Server on ${oldServer.name} has no record of the tail-log backup to ${relPath}`);
                 ctx.save({ tailFileId: file.id });
@@ -461,7 +477,7 @@ function offlineOldStep(db, oldServer) {
         run: async (ctx) => {
             let result;
             try {
-                await withDedicated(oldServer.id, (q) => q(Q.SET_OFFLINE, { db: T.sysname(db.name) }, { timeoutMs: 120_000 }), { connectTimeoutMs: 5000 });
+                await withDedicated(oldServer.id, (q) => P.runOn(q, oldServer.id, P.setState({ db: db.name, state: 'OFFLINE' }), { timeoutMs: 120_000 }), { connectTimeoutMs: 5000 });
                 result = `${db.name} on ${oldServer.name} is OFFLINE; nothing can write to it`;
             } catch (err) {
                 result = `Could not set it OFFLINE (${errText(err)}); continuing. If ${oldServer.name} comes back with ${db.name} ONLINE, use Take offline in the Replicas table`;
@@ -503,14 +519,17 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
                     ensureDir(oldServer, backupRelDir(db.name, 'LOG'));
                     const relPath = ctx.state.tailRelPath || uniqueRelPath(db, 'LOG', oldServer);
                     ctx.save({ tailRelPath: relPath });
-                    const params = {
-                        db: T.sysname(db.name),
-                        path: T.nvarchar(translatePath(relPath, oldServer, pathOpts('rel', 'sql'))),
-                        name: T.nvarchar('Mostly On forced tail-log', 128),
-                        description: T.nvarchar(`mostly-on op:${ctx.op.id}`, 255),
-                    };
+                    const tail = (continueAfterError) =>
+                        P.tailLog({
+                            db: db.name,
+                            path: translatePath(relPath, oldServer, pathOpts('rel', 'sql')),
+                            name: 'Mostly On forced tail-log',
+                            description: `mostly-on op:${ctx.op.id}`,
+                            mode: 'forced',
+                            continueAfterError,
+                        });
                     const attempt = (continueAfterError) =>
-                        withDedicated(oldServer.id, (q) => q(Q.tailLogForced({ continueAfterError }), params, { timeoutMs: 300_000, onInfo: (m) => ctx.progress(m) }), {
+                        withDedicated(oldServer.id, (q) => P.runOn(q, oldServer.id, tail(continueAfterError), { timeoutMs: 300_000, onInfo: (m) => ctx.progress(m) }), {
                             connectTimeoutMs: 5000,
                         });
                     try {

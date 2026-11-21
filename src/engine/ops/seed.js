@@ -18,9 +18,9 @@ import * as backups from '../../store/repos/backups.js';
 import * as opsRepo from '../../store/repos/operations.js';
 import * as events from '../../store/repos/events.js';
 import * as inspect from '../../sql/inspect.js';
-import * as Q from '../../sql/tsql.js';
+import * as P from '../../sql/privileged.js';
 import * as health from '../health.js';
-import { query, T, sqlErrorText } from '../../sql/pool.js';
+import { sqlErrorText } from '../../sql/pool.js';
 import { startBackup, recordBackupFile, ensureDir, uniqueRelPath } from '../backup.js';
 import { createOperation, runOperation } from '../operations.js';
 import { tryAcquire, holders, BusyError } from '../locks.js';
@@ -229,7 +229,7 @@ export function seedSteps({ db, target, params }) {
                         throw new Error(`Database ${db.name} now exists on ${target.name} (${live.state}); it did not when this started. Use Add secondary again and confirm the overwrite.`);
                     }
                     if (live.state === 'ONLINE') {
-                        await query(target.id, Q.SET_OFFLINE, { db: T.sysname(db.name) }, { timeoutMs: 120_000 });
+                        await P.run(target.id, P.setState({ db: db.name, state: 'OFFLINE' }), { timeoutMs: 120_000 });
                         note = `Took the existing ${db.name} on ${target.name} offline. `;
                     }
                 }
@@ -334,7 +334,7 @@ function safetyBackupStep({ db, target, params }) {
             }
             let note = '';
             if (live.state === 'OFFLINE') {
-                await query(target.id, Q.SET_ONLINE_RESTRICTED, { db: T.sysname(db.name) }, { timeoutMs: 300_000 });
+                await P.run(target.id, P.setState({ db: db.name, state: 'ONLINE_RESTRICTED' }), { timeoutMs: 300_000 });
                 note = ' (brought ONLINE in RESTRICTED_USER mode for the backup)';
             } else if (live.state !== 'ONLINE') {
                 return `Skipped: ${db.name} is ${live.state} on ${target.name} and cannot be backed up`;
@@ -342,18 +342,22 @@ function safetyBackupStep({ db, target, params }) {
             ensureDir(target, backupRelDir(db.name, 'DIVERGED'));
             const relPath = uniqueRelPath(db, 'DIVERGED', target);
             ctx.save({ safetyRelPath: relPath });
-            const p = {
-                db: T.sysname(db.name),
-                path: T.nvarchar(sqlPathOf(relPath)),
-                name: T.nvarchar('Mostly On diverged copy', 128),
-                description: T.nvarchar(`mostly-on op:${ctx.op.id} diverged`, 255),
-            };
+            const safety = (continueAfterError) =>
+                P.takeBackup({
+                    db: db.name,
+                    type: 'FULL',
+                    path: sqlPathOf(relPath),
+                    name: 'Mostly On diverged copy',
+                    description: `mostly-on op:${ctx.op.id} diverged`,
+                    copyOnly: true,
+                    continueAfterError,
+                });
             try {
-                await query(target.id, Q.safetyBackup(), p, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
+                await P.run(target.id, safety(false), { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
             } catch (err) {
-                if (!err.number) throw err;
+                if (!err.number || err.setupProblem) throw err;
                 ctx.progress(`Backup failed (${sqlErrorText(err)}); retrying and skipping damaged pages (CONTINUE_AFTER_ERROR)`);
-                await query(target.id, Q.safetyBackup({ continueAfterError: true }), p, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
+                await P.run(target.id, safety(true), { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
             }
             const bs = await inspect.backupsetByPath(target.id, db.name, sqlPathOf(relPath));
             if (!bs) throw new Error(`SQL Server on ${target.name} has no record of the safety backup to ${relPath}`);

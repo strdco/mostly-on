@@ -23,6 +23,7 @@ COPY package.json ./
 COPY src ./src
 COPY public ./public
 COPY scripts ./scripts
+COPY sql ./sql
 
 # Run as uid 10001, gid 0: the same uid the mssql containers use, so the
 # controller can create backup directories that SQL Server writes into and

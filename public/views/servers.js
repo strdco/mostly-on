@@ -2,6 +2,11 @@ import { h, clear, dataTable, badge, formDialog, field, toast, ago } from '../do
 import { get, post, put, del } from '../api.js';
 import { stateText, chainBadge } from './overview.js';
 
+export function setupBadge(setup) {
+    if (!setup) return badge('setup: unknown');
+    return setup.ready ? badge(`ready (helper procedures v${setup.version})`, 'ok') : badge(setup.version == null ? 'setup needed' : 'setup out of date', 'err');
+}
+
 export function healthBadge(s) {
     if (!s.enabled) return badge('disabled');
     if (!s.health) return badge('unknown');
@@ -92,7 +97,7 @@ export function serversView() {
                 columns: [
                     { label: 'Server', header: true, cell: (s) => h('a', { href: `#/servers/${s.id}` }, s.name) },
                     { label: 'Address', cell: (s) => h('span.mono', `${s.host}:${s.port}`) },
-                    { label: 'Status', cell: (s) => healthBadge(s) },
+                    { label: 'Status', cell: (s) => [healthBadge(s), s.health?.setup && !s.health.setup.ready ? [' ', setupBadge(s.health.setup)] : null] },
                     { label: 'Version', cell: (s) => (s.product_version ? `${s.health?.info?.versionName || ''} ${s.product_version}`.trim() : '–') },
                     { label: 'Edition', cell: (s) => s.edition || '–' },
                     { label: 'Databases', num: true, cell: (s) => (s.health?.ok ? String(s.health.databases.length) : '–') },
@@ -236,6 +241,19 @@ export function serverDetailView(id) {
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
                 ),
             ),
+            h('h2', 'Setup'),
+            h(
+                'p.muted',
+                `Mostly On does not need a sysadmin login. Its backups, restores and failovers run through signed helper procedures in master, which a sysadmin installs once with this server's setup script. `
+                    + 'Run the script again whenever this page says it is out of date; running it again is always safe.',
+            ),
+            h(
+                'p',
+                setupBadge(hh?.setup),
+                ' ',
+                hh?.setup?.login ? h('span.muted', `Mostly On connects as ${hh.setup.login}.`) : null,
+            ),
+            h('p', h('a.button', { href: `/api/servers/${id}/setup-script`, download: '' }, 'Download setup script')),
             h('h2', 'Managed databases on this server'),
             dataTable({
                 caption: 'Roles of this server',

@@ -1,5 +1,8 @@
-// The whole brief, end to end, against real SQL Server containers:
+// The whole brief, end to end, against real SQL Server containers. Mostly On
+// connects as the restricted login "mostly_on" (no sysadmin); the compose
+// sql-setup service installed the signed helper procedures it works through.
 //   1. register both servers, manage a new database on sql1, add sql2 as its secondary
+//   1b. the restricted login can only act through the helper procedures, within their guard rails
 //   2. ship a row, fail over to sql2 (tail-log backup), the row is there
 //   3. fail back to sql1; a row written on sql2 comes along
 //   4. stop sql1, fail over without it: shipped rows survive, the unshipped one is lost
@@ -9,7 +12,7 @@
 // Run: npm run test:integration   (Docker required; takes several minutes)
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { Api, startStack, stopStack, compose, waitFor, sqlQuery, controllerUp, mockMessages, opSummary, sleep } from './harness.js';
+import { Api, startStack, stopStack, compose, waitFor, sqlQuery, sqlAs, controllerUp, mockMessages, opSummary, sleep } from './harness.js';
 
 const DB = 'ItShop';
 const api = new Api();
@@ -23,6 +26,8 @@ const rowCount = async (server, note) =>
 const dbState = async (server) => (await q(server, 'SELECT state_desc FROM sys.databases WHERE name=@name;', { name: DB }))[0]?.state_desc ?? null;
 const replica = async (serverName) => (await api.get(`/api/databases/${dbId}`)).replicas.find((r) => r.server_name === serverName);
 const primaryName = async () => (await replica('sql1'))?.role === 'primary' ? 'sql1' : 'sql2';
+const dbOwner = async (server) => (await q(server, 'SELECT SUSER_SNAME(owner_sid) AS owner FROM sys.databases WHERE name=@name;', { name: DB }))[0]?.owner ?? null;
+const asMostlyOn = (server, text) => sqlAs('mostly_on', secrets.moPassword, server, text);
 
 async function insertRow(server, note) {
     await q(server, `INSERT INTO ${DB}.dbo.orders (note) VALUES (@note);`, { note });
@@ -75,8 +80,8 @@ test('1. register servers, manage a database, add a secondary', async () => {
             name,
             host: name,
             port: 1433,
-            username: 'sa',
-            password: secrets.saPassword,
+            username: 'mostly_on',
+            password: secrets.moPassword,
             sql_backup_root: '/var/opt/mssql/backup',
             encrypt: true,
             trust_server_cert: true,
@@ -84,10 +89,18 @@ test('1. register servers, manage a database, add a secondary', async () => {
         });
         ids[name] = s.id;
     }
-    await waitFor('both servers reachable', async () => (await api.get('/api/servers')).every((s) => s.health?.ok));
+    await waitFor('both servers reachable and set up (sql-setup service)', async () => (await api.get('/api/servers')).every((s) => s.health?.ok && s.health.setup?.ready), {
+        timeout: 300_000,
+        interval: 3000,
+    });
+    const [s1] = await api.get('/api/servers');
+    assert.equal(s1.health.setup.login, 'mostly_on');
 
+    // The database belongs to app_owner, a login that exists only on sql1 for now.
+    await q('sql1', "CREATE LOGIN app_owner WITH PASSWORD=N'App-Owner-1!x', CHECK_POLICY=OFF;");
     await q('sql1', `CREATE DATABASE ${DB};`);
     await q('sql1', `ALTER DATABASE ${DB} SET RECOVERY FULL;`);
+    await q('sql1', `ALTER AUTHORIZATION ON DATABASE::${DB} TO app_owner;`);
     await q('sql1', `CREATE TABLE ${DB}.dbo.orders (id int IDENTITY(1, 1) NOT NULL, note nvarchar(100) NOT NULL, CONSTRAINT PK_orders PRIMARY KEY CLUSTERED (id));`);
     await insertRow('sql1', 'before shipping');
 
@@ -99,6 +112,24 @@ test('1. register servers, manage a database, add a secondary', async () => {
     await succeeded(api.waitOp(seed.operation.id));
     await waitFor('sql2 shipping', async () => (await replica('sql2'))?.chain_state === 'ok');
     assert.equal(await dbState('sql2'), 'RESTORING');
+});
+
+test('1b. the restricted login can only act through the helper procedures', async () => {
+    await assert.rejects(asMostlyOn('sql1', `BACKUP DATABASE ${DB} TO DISK=N'/var/opt/mssql/backup/x.bak';`), /not able to access|permission|terminating abnormally/i, 'no direct BACKUP');
+    await assert.rejects(asMostlyOn('sql1', `SELECT COUNT(*) AS n FROM ${DB}.dbo.orders;`), /not able to access/i, 'no access to the data');
+    await assert.rejects(
+        asMostlyOn('sql1', "EXEC master.mostly_on.take_backup @db=N'master', @type='FULL', @path=N'/var/opt/mssql/backup/m.bak', @name=N'x', @description=N'x';"),
+        /system databases/,
+    );
+    await assert.rejects(
+        asMostlyOn('sql1', `EXEC master.mostly_on.take_backup @db=N'${DB}', @type='FULL', @path=N'/tmp/x.bak', @name=N'x', @description=N'x';`),
+        /refused the path/,
+    );
+    await assert.rejects(
+        asMostlyOn('sql1', `EXEC master.mostly_on.take_backup @db=N'${DB}', @type='FULL', @path=N'/var/opt/mssql/backup/../x.bak', @name=N'x', @description=N'x';`),
+        /refused a file path/,
+    );
+    await assert.rejects(asMostlyOn('sql1', 'CREATE LOGIN sneaky WITH PASSWORD=N\'Sneaky-1!x\';'), /permission/i, 'no server-level rights of its own');
 });
 
 test('2. a shipped row is on sql2 after a failover with a tail-log backup', async () => {
@@ -114,18 +145,28 @@ test('2. a shipped row is on sql2 after a failover with a tail-log backup', asyn
     assert.equal(await rowCount('sql2', 'only in the tail log'), 1, 'the tail-log backup carried the last row');
     assert.equal(await dbState('sql1'), 'RESTORING', 'the old primary waits as the new secondary');
     assert.equal((await replica('sql1')).role, 'secondary');
+
+    // app_owner has no login on sql2: the owner falls back to sa, never to mostly_on, and an event says why.
+    assert.equal(await dbOwner('sql2'), 'sa');
+    assert.match(op.steps.find((s) => s.name === 'recover').detail, /owner: sa \(app_owner, the owner on the old primary, has no login on sql2\)/);
+    const events = await api.get(`/api/events?database_id=${dbId}&limit=50`);
+    assert.ok(events.some((e) => /is now owned by sa: app_owner/.test(e.message)), 'the fallback is reported');
 });
 
 test('3. fail back to sql1', async () => {
     await insertRow('sql2', 'written on sql2');
+    await shipTo('sql1'); // backups on sql2 (owned by the stand-in sa) must not replace the remembered owner
     await failover('sql1', { tail_log: true });
     assert.equal(await primaryName(), 'sql1');
+    assert.equal(await dbOwner('sql1'), 'app_owner', 'failing back restores the real owner (same SID on sql1)');
     assert.equal(await rowCount('sql1', 'written on sql2'), 1);
     await insertRow('sql1', 'after failback');
     await shipTo('sql2');
 });
 
 test('4. with sql1 down, a failover keeps shipped rows and loses the unshipped one', async () => {
+    // app_owner now also exists on sql2, with a different SID: matched by name.
+    await q('sql2', "CREATE LOGIN app_owner WITH PASSWORD=N'App-Owner-1!x', CHECK_POLICY=OFF;");
     await insertRow('sql1', 'shipped before the crash');
     await shipTo('sql2');
     await insertRow('sql1', 'never shipped');
@@ -143,6 +184,7 @@ test('4. with sql1 down, a failover keeps shipped rows and loses the unshipped o
     assert.equal(await rowCount('sql2', 'shipped before the crash'), 1);
     assert.equal(await rowCount('sql2', 'never shipped'), 0, 'the unshipped row is lost, as the dialog warned');
     assert.equal((await replica('sql1')).role, 'diverged');
+    assert.equal(await dbOwner('sql2'), 'app_owner', 'owner matched by login name on sql2');
 });
 
 test('5. the old primary comes back out of sync and is reinitialized', async () => {

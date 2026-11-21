@@ -3,8 +3,8 @@ import { HttpError, idParam } from '../router.js';
 import * as databases from '../../store/repos/databases.js';
 import * as serversRepo from '../../store/repos/servers.js';
 import * as events from '../../store/repos/events.js';
-import * as Q from '../../sql/tsql.js';
-import { query, T, sqlErrorText } from '../../sql/pool.js';
+import * as P from '../../sql/privileged.js';
+import { sqlErrorText } from '../../sql/pool.js';
 import { failoverPreview, startFailover } from '../../engine/ops/failover.js';
 import { switchoverPlan, startSwitchoverAll } from '../../engine/ops/switchover-all.js';
 import { startSeed } from '../../engine/ops/seed.js';
@@ -56,7 +56,7 @@ export function failoverRoutes(router) {
         if (ctx.body?.confirm !== db.name) throw new HttpError(400, 'Type the database name to confirm');
         if (holders(db.id).some((k) => k === 'exclusive' || k === `restore:${rep.server_id}`)) throw new HttpError(409, `${rep.server_name} is busy`);
         try {
-            await query(rep.server_id, Q.SET_OFFLINE, { db: T.sysname(db.name) }, { timeoutMs: 120_000 });
+            await P.run(rep.server_id, P.setState({ db: db.name, state: 'OFFLINE' }), { timeoutMs: 120_000 });
         } catch (err) {
             throw new HttpError(502, `Could not take ${db.name} offline on ${rep.server_name}: ${sqlErrorText(err)}`);
         }

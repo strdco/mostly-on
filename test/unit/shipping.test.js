@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { nextLog, lag, chainGap, retentionPlan } from '../../src/engine/chain.js';
 import { buildMoves, undoFilePath, classifyRestoreError, backoffMs } from '../../src/engine/restore-plan.js';
-import { restoreDatabase, restoreLog } from '../../src/sql/tsql.js';
 import { checkLive } from '../../src/engine/restore-loop.js';
 
 let nextId = 1;
@@ -158,15 +157,6 @@ test('backoff grows and is capped', () => {
     assert.equal(backoffMs(99), 900_000);
 });
 
-test('generated RESTORE statements only contain parameter placeholders', () => {
-    const sql = restoreDatabase({ moveCount: 2, replace: true });
-    assert.equal(sql, 'RESTORE DATABASE @db FROM DISK=@path WITH NORECOVERY, CHECKSUM, STATS=10, REPLACE, MOVE @move_from0 TO @move_to0, MOVE @move_from1 TO @move_to1;');
-    assert.match(restoreLog(), /KILL[\s\S]*RESTORE LOG @db FROM DISK=@path WITH NORECOVERY, CHECKSUM;$/);
-    const standby = restoreLog({ standby: true });
-    assert.match(standby, /STANDBY=@undo/);
-    assert.match(standby, /KILL/);
-    assert.match(standby, /DB_ID\(@db\)/);
-});
 
 test('live-state check: recovered, missing or replaced copies need a reseed; OFFLINE is retried', () => {
     const db = { name: 'Sales', family_guid: 'fam' };

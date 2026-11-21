@@ -29,6 +29,7 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function newSecrets() {
     const adminPassword = crypto.randomBytes(18).toString('base64url');
     const saPassword = `It-${crypto.randomBytes(12).toString('base64url')}-9a`;
+    const moPassword = `Mo-${crypto.randomBytes(12).toString('base64url')}-7b`;
     const env = {
         COMPOSE_PROJECT_NAME: PROJECT,
         ADMIN_USER: 'admin',
@@ -36,6 +37,7 @@ async function newSecrets() {
         SECRET_KEY: crypto.randomBytes(32).toString('base64'),
         PUBLIC_URL: BASE,
         MSSQL_SA_PASSWORD: saPassword,
+        MOSTLY_ON_SQL_PASSWORD: moPassword,
         CONTROLLER_PORT: PORTS.controller,
         SQL1_PORT: PORTS.sql1,
         SQL2_PORT: PORTS.sql2,
@@ -44,7 +46,7 @@ async function newSecrets() {
         TZ: 'UTC',
     };
     fs.writeFileSync(ENV_FILE, Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });
-    const secrets = { adminPassword, saPassword };
+    const secrets = { adminPassword, saPassword, moPassword };
     fs.writeFileSync(STATE_FILE, JSON.stringify(secrets), { mode: 0o600 });
     return secrets;
 }
@@ -104,12 +106,17 @@ export function stopStack() {
 // --- SQL --------------------------------------------------------------------------
 
 /** One query against sql1 or sql2 as sa; returns the first recordset. */
-export async function sqlQuery(saPassword, server, text, params = {}) {
+export function sqlQuery(saPassword, server, text, params = {}) {
+    return sqlAs('sa', saPassword, server, text, params);
+}
+
+/** One query as any login. */
+export async function sqlAs(user, password, server, text, params = {}) {
     const pool = new sql.ConnectionPool({
         server: 'localhost',
         port: PORTS[server],
-        user: 'sa',
-        password: saPassword,
+        user,
+        password,
         database: 'master',
         options: { encrypt: true, trustServerCertificate: true },
         connectionTimeout: 5000,

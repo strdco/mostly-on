@@ -15,6 +15,7 @@ const KIND_LABEL = {
     diverged: 'Out-of-sync copy',
     split_brain: 'Split-brain risk',
     operation: 'Operation',
+    setup: 'Server setup',
 };
 
 const since = (iso) => formatDuration(Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000)));

@@ -1,11 +1,11 @@
-// Every T-SQL statement the controller sends lives in this file.
+// Every read-only T-SQL statement the controller sends lives in this file.
+// Privileged actions (BACKUP, RESTORE, ALTER DATABASE, KILL) are calls to the
+// signed helper procedures: see privileged.js and sql/mostly-on-helpers.sql.
 //
 // Rules:
 //  * Values (database names, paths, LSNs) are always @parameters.
-//  * BACKUP/RESTORE accept @variables for database names and devices, so they
-//    are fully parameterized.
-//  * Statements that cannot take a variable for an object name (ALTER DATABASE,
-//    DROP DATABASE) build their dynamic SQL server-side with QUOTENAME(@db).
+//  * These run as Mostly On's own login, which only has read access
+//    (VIEW SERVER STATE, VIEW ANY DEFINITION, msdb db_datareader).
 //  * LSN columns are CAST to varchar(25) because the driver would otherwise
 //    turn numeric(25,0) into a lossy JS number.
 //  * msdb datetimes are server-local; they are converted to UTC datetime2 here.
@@ -63,22 +63,14 @@ SELECT d.name,
        CONVERT(char(36), drs.recovery_fork_guid) AS recovery_fork_guid,
        CAST(drs.last_log_backup_lsn AS varchar(25)) AS last_log_backup_lsn,
        CAST(mf.differential_base_lsn AS varchar(25)) AS differential_base_lsn,
-       CONVERT(char(36), mf.differential_base_guid) AS differential_base_guid
+       CONVERT(char(36), mf.differential_base_guid) AS differential_base_guid,
+       CONVERT(varchar(172), d.owner_sid, 1) AS owner_sid,
+       SUSER_SNAME(d.owner_sid) AS owner_name,
+       CONVERT(varchar(172), SUSER_SID(), 1) AS service_login_sid
 FROM sys.databases AS d
 LEFT JOIN sys.database_recovery_status AS drs ON drs.database_id=d.database_id
 LEFT JOIN sys.master_files AS mf ON mf.database_id=d.database_id AND mf.file_id=1
 WHERE d.name=@db;`;
-
-// All backups: CHECKSUM + INIT, never COMPRESSION. NO_COMPRESSION is explicit so
-// a non-Express instance with "backup compression default" on behaves the same.
-// DESCRIPTION tags the backup as ours in msdb (used for foreign-backup detection
-// and for recovering catalog entries after a crash).
-const BACKUP_OPTS = 'CHECKSUM, INIT, NO_COMPRESSION, NAME=@name, DESCRIPTION=@description, STATS=10';
-export const BACKUP = {
-    FULL: `BACKUP DATABASE @db TO DISK=@path WITH ${BACKUP_OPTS};`,
-    DIFF: `BACKUP DATABASE @db TO DISK=@path WITH DIFFERENTIAL, ${BACKUP_OPTS};`,
-    LOG: `BACKUP LOG @db TO DISK=@path WITH ${BACKUP_OPTS};`,
-};
 
 const BACKUPSET_COLUMNS = `
        bs.backup_set_id,
@@ -125,11 +117,6 @@ WHERE bs.database_name=@db
   AND bs.backup_finish_date>=DATEADD(minute, DATEDIFF(minute, SYSUTCDATETIME(), SYSDATETIME()), @since_utc)
 ORDER BY bs.backup_set_id;`;
 
-// Optional msdb history cleanup (Agent would normally do this).
-export const PURGE_BACKUP_HISTORY = `
-DECLARE @oldest datetime2(0)=DATEADD(day, -@keep_days, GETDATE());
-EXEC msdb.dbo.sp_delete_backuphistory @oldest_date=@oldest;`;
-
 // --- shipping and restore ---------------------------------------------------
 
 // Live restore state of one database on a secondary. redo_start_lsn is the
@@ -162,82 +149,23 @@ OUTER APPLY (
     ) AS lr
 WHERE d.name=@db;`;
 
-export const RESTORE_FILELISTONLY = 'RESTORE FILELISTONLY FROM DISK=@path;';
+// Is the server ready for Mostly On? Helper procedure version (NULL if they
+// are missing), whether they are all still signed, and the permissions the
+// login needs. Runs as the login Mostly On uses.
+export const HELPER_STATUS = `
+DECLARE @version int=NULL;
+IF (OBJECT_ID(N'master.mostly_on.helper_version', N'FN') IS NOT NULL)
+    EXEC sys.sp_executesql N'SELECT @v=master.mostly_on.helper_version();', N'@v int OUTPUT', @v=@version OUTPUT;
 
-// Disconnects every other session using the database (STANDBY readers, or
-// users of a database that is about to be overwritten).
-const KILL_SESSIONS = `
-DECLARE @kill nvarchar(max);
-
-SELECT @kill=STRING_AGG(CAST(N'KILL '+CONVERT(nvarchar(11), s.session_id)+N';' AS nvarchar(max)), N'')
-FROM sys.dm_exec_sessions AS s
-WHERE s.database_id=DB_ID(@db)
-  AND s.session_id!=@@SPID;
-
-IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
-`;
-
-// Takes an existing database offline before a confirmed overwrite. RESTORE
-// ... WITH REPLACE then replaces it.
-export const SET_OFFLINE = `
-DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET OFFLINE WITH ROLLBACK IMMEDIATE;';
-EXEC sys.sp_executesql @sql;`;
-
-/**
- * RESTORE DATABASE of a FULL or DIFF backup, always WITH NORECOVERY. The
- * statement has one MOVE clause per file, bound to @move_from<i>/@move_to<i>;
- * only the number of clauses comes from JS, never a name or path.
- */
-export function restoreDatabase({ moveCount = 0, replace = false } = {}) {
-    const opts = ['NORECOVERY', 'CHECKSUM', 'STATS=10'];
-    if (replace) opts.push('REPLACE');
-    for (let i = 0; i < moveCount; i++) opts.push(`MOVE @move_from${i} TO @move_to${i}`);
-    return `RESTORE DATABASE @db FROM DISK=@path WITH ${opts.join(', ')};`;
-}
-
-// --- failover ------------------------------------------------------------------
-
-// Planned failover tail: one batch on a dedicated connection. SINGLE_USER
-// WITH ROLLBACK IMMEDIATE ends every other session, then the tail-log backup
-// WITH NORECOVERY leaves the old primary RESTORING, so nothing can write to it
-// afterwards. The SINGLE_USER setting travels in the tail log.
-export const TAIL_LOG_PLANNED = `
-DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;';
-EXEC sys.sp_executesql @sql;
-
-BACKUP LOG @db TO DISK=@path WITH NORECOVERY, ${BACKUP_OPTS};`;
-
-/** Forced failover tail of a possibly damaged primary (best effort). */
-export function tailLogForced({ continueAfterError = false } = {}) {
-    return `BACKUP LOG @db TO DISK=@path WITH NO_TRUNCATE, NORECOVERY, ${continueAfterError ? 'CONTINUE_AFTER_ERROR, ' : ''}${BACKUP_OPTS};`;
-}
-
-export const RESTORE_WITH_RECOVERY = 'RESTORE DATABASE @db WITH RECOVERY;';
-
-export const SET_MULTI_USER = `
-DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET MULTI_USER;';
-EXEC sys.sp_executesql @sql;`;
-
-// Brings an OFFLINE (diverged) database back for a safety backup, letting
-// only administrators in.
-export const SET_ONLINE_RESTRICTED = `
-DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET ONLINE; ALTER DATABASE '+QUOTENAME(@db)+N' SET RESTRICTED_USER WITH ROLLBACK IMMEDIATE;';
-EXEC sys.sp_executesql @sql;`;
-
-/** COPY_ONLY safety backup of a diverged copy before it is overwritten. */
-export function safetyBackup({ continueAfterError = false } = {}) {
-    return `BACKUP DATABASE @db TO DISK=@path WITH COPY_ONLY, ${continueAfterError ? 'CONTINUE_AFTER_ERROR, ' : ''}${BACKUP_OPTS};`;
-}
-
-// Only used for its GUID columns (its LSN columns lose precision in the driver).
-export const RESTORE_HEADERONLY = 'RESTORE HEADERONLY FROM DISK=@path;';
-
-/** RESTORE LOG WITH NORECOVERY or STANDBY=@undo, optionally disconnecting readers first. */
-/**
- * RESTORE LOG, after disconnecting anyone using the database. Only a STANDBY
- * copy can have readers; they are always disconnected so restores stay on
- * time (user decision). For a NORECOVERY copy the KILL list is empty.
- */
-export function restoreLog({ standby = false } = {}) {
-    return `${KILL_SESSIONS}\nRESTORE LOG @db FROM DISK=@path WITH ${standby ? 'STANDBY=@undo' : 'NORECOVERY'}, CHECKSUM;`;
-}
+SELECT @version AS helper_version,
+       (SELECT COUNT(*) FROM master.sys.procedures AS p WHERE p.schema_id=SCHEMA_ID(N'mostly_on')) AS procedures,
+       (SELECT COUNT(*)
+        FROM master.sys.procedures AS p
+        INNER JOIN master.sys.crypt_properties AS cp ON cp.major_id=p.object_id
+        WHERE p.schema_id=SCHEMA_ID(N'mostly_on')) AS signed_procedures,
+       HAS_PERMS_BY_NAME(N'master.mostly_on.take_backup', N'OBJECT', N'EXECUTE') AS can_execute,
+       HAS_PERMS_BY_NAME(NULL, NULL, N'VIEW SERVER STATE') AS view_server_state,
+       HAS_PERMS_BY_NAME(NULL, NULL, N'VIEW ANY DEFINITION') AS view_any_definition,
+       HAS_PERMS_BY_NAME(N'msdb.dbo.backupset', N'OBJECT', N'SELECT') AS read_msdb,
+       IS_SRVROLEMEMBER(N'sysadmin') AS is_sysadmin,
+       SUSER_SNAME() AS login_name;`;

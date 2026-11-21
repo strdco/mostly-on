@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import * as serversRepo from '../store/repos/servers.js';
 import * as backups from '../store/repos/backups.js';
 import * as restores from '../store/repos/restores.js';
-import * as Q from '../sql/tsql.js';
-import { query, T, sqlErrorText } from '../sql/pool.js';
+import * as P from '../sql/privileged.js';
+import { sqlErrorText } from '../sql/pool.js';
 import { translatePath } from '../paths.js';
 import { pathOpts } from './context.js';
 import { undoFilePath, classifyRestoreError } from './restore-plan.js';
@@ -36,25 +36,18 @@ export function fileOnDisk(file) {
  */
 export async function restoreFile({ db, server, file, operationId = null, mode = 'norecovery', moves = [], replace = false, onInfo }) {
     const sqlPath = translatePath(file.rel_path, server, pathOpts('rel', 'sql'));
-    const params = { db: T.sysname(db.name), path: T.nvarchar(sqlPath) };
-    let text;
+    let c;
     if (file.type === 'LOG') {
-        const standby = mode === 'standby';
-        text = Q.restoreLog({ standby });
-        if (standby) params.undo = T.nvarchar(undoFilePath(server, db.name));
+        c = P.restoreLog({ db: db.name, path: sqlPath, undo: mode === 'standby' ? undoFilePath(server, db.name) : null });
     } else if (file.type === 'FULL' || file.type === 'DIFF') {
-        text = Q.restoreDatabase({ moveCount: moves.length, replace });
-        moves.forEach((m, i) => {
-            params[`move_from${i}`] = T.sysname(m.from);
-            params[`move_to${i}`] = T.nvarchar(m.to);
-        });
+        c = P.restoreDatabase({ db: db.name, path: sqlPath, moves, replace });
     } else {
         throw new Error(`Cannot ship a ${file.type} backup`);
     }
 
     const restoreId = restores.start({ backupFileId: file.id, databaseId: db.id, serverId: server.id, operationId });
     try {
-        await query(server.id, text, params, { timeoutMs: 0, onInfo });
+        await P.run(server.id, c, { timeoutMs: 0, onInfo });
     } catch (err) {
         const kind = classifyRestoreError(err);
         // "In use": someone reconnected between the disconnect and the restore. Nothing was restored.

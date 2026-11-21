@@ -38,7 +38,7 @@ export async function checkServer(serverId) {
     const checkedAt = new Date().toISOString();
     let result;
     try {
-        const [info, dbs] = await Promise.all([inspect.serverInfo(serverId), inspect.databases(serverId)]);
+        const [info, dbs, setup] = await Promise.all([inspect.serverInfo(serverId), inspect.databases(serverId), inspect.helperStatus(serverId)]);
         const warnings = [];
         info.versionName = versionName(info.majorVersion);
         if (!isSupported(info.majorVersion)) {
@@ -47,10 +47,13 @@ export async function checkServer(serverId) {
         if (info.engineEdition !== 4) {
             warnings.push(`Edition is ${info.edition}, not Express. Mostly On will still work but is designed for Express.`);
         }
-        result = { ok: true, checkedAt, error: null, info, databases: dbs, warnings };
+        if (!setup.ready) {
+            warnings.push(`Mostly On cannot back up or restore here yet: ${setup.problems.join(' ')} Download the setup script below and run it on this server as a sysadmin.`);
+        }
+        result = { ok: true, checkedAt, error: null, info, databases: dbs, warnings, setup };
         serversRepo.recordHealth(serverId, { ok: true, ...info });
     } catch (err) {
-        result = { ok: false, checkedAt, error: sqlErrorText(err), info: prev?.info || null, databases: [], warnings: [] };
+        result = { ok: false, checkedAt, error: sqlErrorText(err), info: prev?.info || null, databases: [], warnings: [], setup: prev?.setup ?? null };
         serversRepo.recordHealth(serverId, { ok: false, error: result.error });
     }
     state.set(serverId, result);
@@ -60,6 +63,10 @@ export async function checkServer(serverId) {
         else events.add('error', 'server', `Server ${server.name} is unreachable: ${result.error}`, { serverId });
     } else if (!prev && !result.ok) {
         events.add('warn', 'server', `Server ${server.name} is unreachable: ${result.error}`, { serverId });
+    }
+    if (result.ok && result.setup && prev?.setup && prev.setup.ready !== result.setup.ready) {
+        if (result.setup.ready) events.add('info', 'server', `The helper procedures on ${server.name} are ready (version ${result.setup.version})`, { serverId });
+        else events.add('error', 'server', `Mostly On cannot back up or restore on ${server.name}: ${result.setup.problems.join(' ')}`, { serverId });
     }
     publish('server.health', { serverId, ok: result.ok, checkedAt });
     return result;

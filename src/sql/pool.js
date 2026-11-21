@@ -27,6 +27,7 @@ export const T = {
     int: (v) => ({ type: sql.Int, value: v }),
     bigint: (v) => ({ type: sql.BigInt, value: v }),
     bit: (v) => ({ type: sql.Bit, value: v ? 1 : 0 }),
+    varbinary: (v, n = 8000) => ({ type: sql.VarBinary(n), value: v }),
     uniqueidentifier: (v) => ({ type: sql.UniqueIdentifier, value: v }),
     datetime2: (v) => ({ type: sql.DateTime2(3), value: v }),
     // LSNs are passed as varchar and converted server-side to numeric(25,0).

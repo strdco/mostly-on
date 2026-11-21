@@ -1,0 +1,126 @@
+// Every privileged action (BACKUP, RESTORE, ALTER DATABASE, KILL) goes through
+// the signed helper procedures in master.mostly_on (sql/mostly-on-helpers.sql),
+// so the SQL login Mostly On uses never needs sysadmin. Read-only queries stay
+// in tsql.js / inspect.js.
+//
+// Each builder returns { text, params } for query() or a dedicated connection;
+// run()/runOn() add the readiness check and turn "procedure missing" errors
+// into a plain explanation.
+import { query, T } from './pool.js';
+import * as health from '../engine/health.js';
+import * as serversRepo from '../store/repos/servers.js';
+
+/** The helper procedure version this controller needs (helper_version() in the script). */
+export const HELPER_VERSION = 1;
+
+function call(proc, params) {
+    const names = Object.keys(params);
+    return { text: `EXEC master.mostly_on.${proc}${names.length ? ' ' : ''}${names.map((n) => `@${n}=@${n}`).join(', ')};`, params };
+}
+
+/** FULL, DIFF or LOG; copyOnly for safety backups of out-of-sync copies. */
+export function takeBackup({ db, type, path, name, description, copyOnly = false, continueAfterError = false }) {
+    return call('take_backup', {
+        db: T.sysname(db),
+        type: T.nvarchar(type, 4),
+        path: T.nvarchar(path, 400),
+        name: T.nvarchar(name, 128),
+        description: T.nvarchar(description, 255),
+        copy_only: T.bit(copyOnly),
+        continue_after_error: T.bit(continueAfterError),
+    });
+}
+
+/** Tail-log backup at failover: 'planned' (SINGLE_USER, then NORECOVERY) or 'forced' (NO_TRUNCATE). */
+export function tailLog({ db, path, name, description, mode, continueAfterError = false }) {
+    return call('tail_log', {
+        db: T.sysname(db),
+        path: T.nvarchar(path, 400),
+        name: T.nvarchar(name, 128),
+        description: T.nvarchar(description, 255),
+        mode: T.nvarchar(mode, 8),
+        continue_after_error: T.bit(continueAfterError),
+    });
+}
+
+/** RESTORE DATABASE ... WITH NORECOVERY; moves: [{ from: logical name, to: path }]. */
+export function restoreDatabase({ db, path, moves = [], replace = false }) {
+    return call('restore_database', {
+        db: T.sysname(db),
+        path: T.nvarchar(path, 400),
+        moves: T.nvarcharMax(JSON.stringify(moves.map((m) => ({ from: m.from, to: m.to })))),
+        replace: T.bit(replace),
+    });
+}
+
+/** RESTORE LOG, NORECOVERY or (with undo) STANDBY; disconnects readers first. */
+export function restoreLog({ db, path, undo = null }) {
+    return call('restore_log', { db: T.sysname(db), path: T.nvarchar(path, 400), undo: T.nvarchar(undo, 400) });
+}
+
+/**
+ * Brings a copy online (RECOVERY, MULTI_USER) and gives it its owner back: the
+ * login with ownerSid, else the one named ownerName, else the fallback owner.
+ * The result row is { owner_name, matched_by: 'sid'|'name'|'fallback'|'failed', note }.
+ */
+export function recover({ db, ownerSid = null, ownerName = null }) {
+    return call('recover', {
+        db: T.sysname(db),
+        owner_sid: T.varbinary(ownerSid ? Buffer.from(ownerSid.replace(/^0x/i, ''), 'hex') : null, 85),
+        owner_name: T.sysname(ownerName),
+    });
+}
+
+/** 'OFFLINE' | 'ONLINE_RESTRICTED' | 'MULTI_USER' */
+export function setState({ db, state }) {
+    return call('set_state', { db: T.sysname(db), state: T.nvarchar(state, 20) });
+}
+
+export const headerOnly = ({ path }) => call('header_only', { path: T.nvarchar(path, 400) });
+export const fileListOnly = ({ path }) => call('filelist_only', { path: T.nvarchar(path, 400) });
+export const purgeBackupHistory = ({ keepDays }) => call('purge_backup_history', { keep_days: T.int(keepDays) });
+
+/** Throws a plain explanation if the last health check found the helpers missing or out of date. */
+export function assertReady(serverId) {
+    const setup = health.getHealth(serverId)?.setup;
+    if (setup && !setup.ready) {
+        const name = serversRepo.get(serverId)?.name ?? `server ${serverId}`;
+        throw Object.assign(new Error(`Mostly On cannot back up or restore on ${name}: ${setup.problems[0]} Run the setup script for ${name} (Servers page)`), {
+            status: 409,
+            expose: true,
+            setupProblem: true,
+        });
+    }
+}
+
+// 2812: could not find stored procedure; 229: EXECUTE permission denied.
+function explain(err, serverId) {
+    const n = err?.number ?? err?.originalError?.info?.number;
+    if (n !== 2812 && !(n === 229 && /mostly_on/.test(err.message))) return err;
+    const name = serversRepo.get(serverId)?.name ?? `server ${serverId}`;
+    return Object.assign(new Error(`Mostly On's helper procedures are missing on ${name}, or its login may not run them. Run the setup script for ${name} (Servers page): ${err.message}`), {
+        number: n,
+        cause: err,
+        setupProblem: true,
+    });
+}
+
+/** Runs a built call on the server's pool. */
+export async function run(serverId, c, opts) {
+    assertReady(serverId);
+    try {
+        return await query(serverId, c.text, c.params, opts);
+    } catch (err) {
+        throw explain(err, serverId);
+    }
+}
+
+/** Runs a built call with a query function from withDedicated(). */
+export async function runOn(q, serverId, c, opts) {
+    assertReady(serverId);
+    try {
+        return await q(c.text, c.params, opts);
+    } catch (err) {
+        throw explain(err, serverId);
+    }
+}

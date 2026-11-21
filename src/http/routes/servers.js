@@ -3,13 +3,14 @@ import * as serversRepo from '../../store/repos/servers.js';
 import * as events from '../../store/repos/events.js';
 import * as health from '../../engine/health.js';
 import { resetPool, testConnection, sqlErrorText } from '../../sql/pool.js';
+import { setupScriptFor } from '../../sql/setup-script.js';
 
 function withHealth(s) {
     const h = health.getHealth(s.id);
     return {
         ...s,
         health: h
-            ? { ok: h.ok, checkedAt: h.checkedAt, error: h.error, warnings: h.warnings, info: h.info, databases: h.databases }
+            ? { ok: h.ok, checkedAt: h.checkedAt, error: h.error, warnings: h.warnings, info: h.info, databases: h.databases, setup: h.setup }
             : null,
     };
 }
@@ -24,6 +25,20 @@ export function serverRoutes(router, { cfg }) {
     router.get('/api/servers', async () => serversRepo.list().map(withHealth));
 
     router.get('/api/servers/:id', async (ctx) => withHealth(mustGet(idParam(ctx.params.id))));
+
+    // The setup script for this server, values filled in (run it as sysadmin).
+    router.get('/api/servers/:id/setup-script', async (ctx) => {
+        const s = mustGet(idParam(ctx.params.id));
+        const body = setupScriptFor(s);
+        ctx.handled = true;
+        ctx.res.writeHead(200, {
+            'Content-Type': 'application/sql; charset=utf-8',
+            'Content-Disposition': `attachment; filename="mostly-on-setup-${s.name.replace(/[^A-Za-z0-9_.-]/g, '_')}.sql"`,
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+        });
+        ctx.res.end(body);
+    });
 
     router.post('/api/servers', async (ctx) => {
         const v = serversRepo.validate(ctx.body || {});

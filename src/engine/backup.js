@@ -6,8 +6,8 @@ import * as serversRepo from '../store/repos/servers.js';
 import * as backups from '../store/repos/backups.js';
 import * as events from '../store/repos/events.js';
 import * as inspect from '../sql/inspect.js';
-import * as Q from '../sql/tsql.js';
-import { query, T, sqlErrorText } from '../sql/pool.js';
+import * as P from '../sql/privileged.js';
+import { sqlErrorText } from '../sql/pool.js';
 import { backupRelPath, backupRelDir, translatePath } from '../paths.js';
 import { pathOpts } from './context.js';
 import { tryAcquire, BusyError } from './locks.js';
@@ -79,6 +79,7 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
     if (!primary) throw fail(409, `Database ${db.name} has no primary`);
     const server = serversRepo.get(primary.server_id);
     if (!server.enabled) throw fail(409, `Primary server ${server.name} is disabled`);
+    P.assertReady(server.id);
 
     let state;
     try {
@@ -92,6 +93,7 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
         throw fail(409, `Database ${db.name} on ${server.name} is not the managed database (family_guid ${state.familyGuid}, expected ${db.family_guid}). Was it dropped and recreated?`);
     }
     if (!db.family_guid && state.familyGuid) databases.setFamilyGuid(db.id, state.familyGuid);
+    databases.noteOwner(db.id, state);
     if (state.recoveryModel !== 'FULL' && requestedType !== 'FULL') {
         throw fail(409, `Database ${db.name} is in ${state.recoveryModel} recovery on ${server.name}; log shipping needs FULL`);
     }
@@ -152,15 +154,9 @@ function backupSteps({ db, server, type, relPath, sqlPath }) {
             // After a crash: the backup may have completed even though the step did not finish.
             check: async () => ((await inspect.backupsetByPath(server.id, db.name, sqlPath)) ? 'SQL Server already has this backup on record' : false),
             run: async (ctx) => {
-                await query(
+                await P.run(
                     server.id,
-                    Q.BACKUP[type],
-                    {
-                        db: T.sysname(db.name),
-                        path: T.nvarchar(sqlPath),
-                        name: T.nvarchar(`Mostly On ${type}`, 128),
-                        description: T.nvarchar(`mostly-on op:${ctx.op.id}`, 255),
-                    },
+                    P.takeBackup({ db: db.name, type, path: sqlPath, name: `Mostly On ${type}`, description: `mostly-on op:${ctx.op.id}` }),
                     { timeoutMs: 0, onInfo: (m) => ctx.progress(m) },
                 );
                 return sqlPath;

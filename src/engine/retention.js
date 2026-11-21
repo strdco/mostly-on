@@ -11,8 +11,8 @@ import * as ops from '../store/repos/operations.js';
 import * as events from '../store/repos/events.js';
 import * as settings from '../store/repos/settings.js';
 import * as health from './health.js';
-import * as Q from '../sql/tsql.js';
-import { query, T, sqlErrorText } from '../sql/pool.js';
+import * as P from '../sql/privileged.js';
+import { sqlErrorText } from '../sql/pool.js';
 import { translatePath } from '../paths.js';
 import { pathOpts } from './context.js';
 import { retentionPlan } from './chain.js';
@@ -104,7 +104,7 @@ async function purgeMsdbHistory() {
     const keep = settings.get('msdb_history.keep_days');
     for (const s of serversRepo.list().filter((x) => x.enabled && health.getHealth(x.id)?.ok)) {
         try {
-            await query(s.id, Q.PURGE_BACKUP_HISTORY, { keep_days: T.int(keep) }, { timeoutMs: 600_000 });
+            await P.run(s.id, P.purgeBackupHistory({ keepDays: keep }), { timeoutMs: 600_000 });
             events.add('info', 'retention', `Removed backup history older than ${keep} days from msdb on ${s.name}`, { serverId: s.id });
         } catch (err) {
             events.add('warn', 'retention', `Could not remove old backup history from msdb on ${s.name}: ${sqlErrorText(err)}`, { serverId: s.id });

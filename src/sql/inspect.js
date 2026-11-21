@@ -1,6 +1,7 @@
 // Read-only inspection of a SQL Server: instance info, database state, msdb history.
 import { query, T } from './pool.js';
 import * as Q from './tsql.js';
+import * as P from './privileged.js';
 
 export const guid = (g) => (g ? String(g).trim().toLowerCase() : null);
 
@@ -51,7 +52,36 @@ export async function dbBackupState(serverId, dbName) {
         lastLogBackupLsn: d.last_log_backup_lsn,
         differentialBaseLsn: d.differential_base_lsn,
         differentialBaseGuid: guid(d.differential_base_guid),
+        // Owner, as '0x...' hex and login name; ownedByService is true while a
+        // restored copy still belongs to Mostly On's own login (fixed at recovery).
+        ownerSid: d.owner_sid,
+        ownerName: d.owner_name,
+        ownedByService: !!d.owner_sid && d.owner_sid === d.service_login_sid,
     };
+}
+
+/**
+ * Whether the server is ready for Mostly On: the signed helper procedures at
+ * the version this controller needs, and the read permissions.
+ * @returns {{ready: boolean, version: number|null, expected: number, problems: string[], login: string}}
+ */
+export async function helperStatus(serverId) {
+    const r = (await query(serverId, Q.HELPER_STATUS)).recordset[0];
+    return classifyHelperStatus(r);
+}
+
+/** Pure part of helperStatus(), for tests. */
+export function classifyHelperStatus(r) {
+    const problems = [];
+    const expected = P.HELPER_VERSION;
+    if (r.helper_version == null) problems.push('the helper procedures are not installed.');
+    else if (r.helper_version !== expected) problems.push(`the helper procedures are version ${r.helper_version}, and this version of Mostly On needs version ${expected}.`);
+    else if (r.signed_procedures < r.procedures) problems.push('some helper procedures were changed after setup and are no longer signed.');
+    else if (!r.is_sysadmin && !r.can_execute) problems.push(`the login ${r.login_name} may not run the helper procedures.`);
+    if (!r.is_sysadmin && !(r.view_server_state && r.view_any_definition && r.read_msdb)) {
+        problems.push(`the login ${r.login_name} is missing read permissions (VIEW SERVER STATE, VIEW ANY DEFINITION, or reading msdb).`);
+    }
+    return { ready: problems.length === 0, version: r.helper_version ?? null, expected, problems, login: r.login_name };
 }
 
 const TYPE_MAP = { D: 'FULL', I: 'DIFF', L: 'LOG' };
@@ -123,13 +153,13 @@ export async function dbRestoreState(serverId, dbName) {
 
 /** RESTORE FILELISTONLY: the database files inside a backup. */
 export async function fileList(serverId, sqlPath) {
-    const r = await query(serverId, Q.RESTORE_FILELISTONLY, { path: T.nvarchar(sqlPath) }, { timeoutMs: 300_000 });
+    const r = await P.run(serverId, P.fileListOnly({ path: sqlPath }), { timeoutMs: 300_000 });
     return r.recordset.map((f) => ({ logicalName: f.LogicalName, physicalName: f.PhysicalName, type: f.Type, fileId: Number(f.FileId) }));
 }
 
 /** RESTORE HEADERONLY, GUID columns only (read by name; LSN columns are not trusted). */
 export async function headerOnly(serverId, sqlPath) {
-    const r = await query(serverId, Q.RESTORE_HEADERONLY, { path: T.nvarchar(sqlPath) }, { timeoutMs: 120_000 });
+    const r = await P.run(serverId, P.headerOnly({ path: sqlPath }), { timeoutMs: 120_000 });
     return r.recordset.map((h) => ({
         backupSetGuid: guid(h.BackupSetGUID),
         familyGuid: guid(h.FamilyGUID),

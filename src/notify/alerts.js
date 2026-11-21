@@ -68,6 +68,16 @@ export function collectConditions() {
         const h = health.getHealth(s.id);
         if (h?.ok) reachable.add(s.id);
         else if (h) add({ key: `server:${s.id}`, kind: 'server_unreachable', severity: 'error', message: `Server ${s.name} is unreachable: ${h.error}`, serverId: s.id, link: link.server(s.id) });
+        if (h?.ok && h.setup && !h.setup.ready) {
+            add({
+                key: `setup:${s.id}`,
+                kind: 'setup',
+                severity: 'error',
+                message: `Mostly On cannot back up or restore on ${s.name}: ${h.setup.problems.join(' ')} Run the setup script for ${s.name} (Servers page).`,
+                serverId: s.id,
+                link: link.server(s.id),
+            });
+        }
     }
 
     const thresholdSeconds = settings.get('alerts.lag_threshold_minutes') * 60;

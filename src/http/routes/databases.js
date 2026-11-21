@@ -96,6 +96,7 @@ export function databaseRoutes(router) {
 
         const db = databases.manage({ name, familyGuid: state.familyGuid, primaryServerId: serverId });
         forks.reset(db.id, state.recoveryForkGuid);
+        databases.noteOwner(db.id, state);
         events.add('info', 'database', `Started managing ${name} with primary ${server.name}`, { databaseId: db.id, serverId });
         publish('database.changed', { databaseId: db.id });
 

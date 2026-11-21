@@ -30,7 +30,7 @@ The included `docker-compose.yml` starts two SQL Server Express containers (`sql
    cp .env.example .env
    ```
 
-2. Fill in the three required values in `.env`:
+2. Fill in the four required values in `.env`:
 
    - `ADMIN_PASSWORD_HASH`: the dashboard password, hashed. Generate it with Node (`npm run hash-password`) or without Node installed:
 
@@ -43,6 +43,7 @@ The included `docker-compose.yml` starts two SQL Server Express containers (`sql
 
    - `SECRET_KEY`: 32 random bytes, base64. `openssl rand -base64 32` or `npm run gen-secret`.
    - `MSSQL_SA_PASSWORD`: the `sa` password for the two demo SQL Servers (at least 8 characters, with three of: upper case, lower case, digits, symbols).
+   - `MOSTLY_ON_SQL_PASSWORD`: the password of `mostly_on`, the restricted login Mostly On uses on both demo servers (same rules). The demo's one-shot `sql-setup` service creates that login and runs the setup script on both servers; see [SQL Server requirements](#sql-server-requirements).
 
 3. Start everything:
 
@@ -59,7 +60,7 @@ The included `docker-compose.yml` starts two SQL Server Express containers (`sql
    | Field | sql1 | sql2 |
    |---|---|---|
    | Name / Host | `sql1` | `sql2` |
-   | SQL login / Password | `sa` / your `MSSQL_SA_PASSWORD` | same |
+   | SQL login / Password | `mostly_on` / your `MOSTLY_ON_SQL_PASSWORD` | same |
    | Shared backup folder, as this SQL Server sees it | `/var/opt/mssql/backup` | same |
 
 6. Create a database on `sql1` (any tool; it must use the FULL recovery model). It appears on the **Overview** under *Available to manage*. Press **Manage**, then on the database's page **Add secondary** and pick `sql2`.
@@ -139,6 +140,7 @@ Everything is set through environment variables (see `.env.example`). Everything
 | `PUSHOVER_API_URL` | | Pushover's API | Only for testing against a mock. |
 | `PORT`, `DATA_DIR`, `BACKUP_ROOT` | | `8080`, `/data`, `/backup` | Container paths and port; rarely changed. |
 | `MSSQL_SA_PASSWORD` | demo only | | `sa` password for the demo SQL Server containers. |
+| `MOSTLY_ON_SQL_PASSWORD` | demo only | | Password of the restricted `mostly_on` login the demo creates on both SQL Servers. |
 
 ---
 
@@ -146,9 +148,34 @@ Everything is set through environment variables (see `.env.example`). Everything
 
 - **SQL Server 2019 or newer.** Express is what Mostly On is made for; other editions work too.
 - Databases you ship must use the **FULL recovery model**. To switch one: `ALTER DATABASE [name] SET RECOVERY FULL;`
-- **The login Mostly On uses needs `sysadmin`** on every server. It backs up and restores databases, changes database states during failovers, disconnects sessions, and reads and trims the backup history in `msdb`. There is no narrower role that covers all of that.
+- **Each server needs Mostly On's setup script, run once by a sysadmin.** Mostly On's own login does *not* need sysadmin (see below).
 - Secondaries that should be **readable between restores** (STANDBY) need the same major SQL Server version as the primary.
 - **Nothing else may take log backups** of a managed database. A log backup taken by another tool (a maintenance plan, a backup agent) holds changes the secondaries never receive, so shipping stops. Mostly On detects such backups and alerts you. Backups taken with `COPY_ONLY` are fine.
+
+### The setup script, and why Mostly On does not need sysadmin
+
+Backing up, restoring, failing over and disconnecting users all need high privileges. One of them can't even be granted server-wide: SQL Server only allows BACKUP per database. Instead of handing Mostly On a sysadmin login, a sysadmin runs a **setup script** once on each server:
+
+- It installs a few **stored procedures in `master`** (schema `mostly_on`) that do exactly what Mostly On needs and nothing else.
+- It **signs** them with a certificate. The rights come from that signature (`CONTROL SERVER` and `dbcreator`), and only while one of those procedures runs. The certificate's private key is deleted after signing, so nothing else can ever be signed with it.
+- It gives Mostly On's login only:
+  - permission to **run** those procedures;
+  - **read** access to server state and backup history (VIEW SERVER STATE, VIEW ANY DEFINITION, reading `msdb`).
+
+What that means in practice:
+
+- **Mostly On's login on its own can do almost nothing.** It cannot read your data, create logins, change server settings, or back up and restore anything directly.
+- **The procedures have guard rails.** They never touch system databases, and only read or write backup files inside the shared backup folder. Restored database files only go to the server's default data and log folders.
+- **They can still do what failover needs.** That includes overwriting a secondary and taking a database offline, which is the job itself. Whoever controls Mostly On can therefore disrupt the managed databases; protect its dashboard login accordingly.
+- **Database owners are kept.** A restored database would otherwise belong to Mostly On's login. When a copy is brought online at failover, it gets its original owner back if that login exists on the server: matched by SID first, then by name. If neither exists, it gets `sa`, and an event tells you how to fix it.
+
+To set a server up:
+
+1. Create the login Mostly On will use (for example `CREATE LOGIN mostly_on WITH PASSWORD=N'…';`), and register the server with it in Mostly On.
+2. On that server's page, under **Setup**, press **Download setup script**. The script has that server's backup folder and login filled in.
+3. Run it on the server as a sysadmin (SSMS, Azure Data Studio or `sqlcmd`). Running it again is always safe.
+
+The **Servers** page shows whether each server is ready. A new version of Mostly On sometimes needs a newer script; the page (and an alert) will tell you, and backups and failovers on that server wait until you run it again. The template is [`sql/mostly-on-helpers.sql`](sql/mostly-on-helpers.sql); review it before you run it.
 
 ---
 
@@ -238,9 +265,9 @@ npm run test:integration  # the whole scenario against real SQL Server container
 
 The integration suite starts its own isolated compose project (`mostly-on-it`) with fresh secrets, separate volumes and its own ports (controller on 18080), so it does not touch a running demo stack. It walks through the brief end to end:
 
-1. Register both servers, manage a database, add a secondary.
-2. Fail over with a tail-log backup and check that the last row arrived.
-3. Fail back.
+1. Register both servers with the restricted `mostly_on` login, manage a database, add a secondary. Then check that the login can't do anything outside the helper procedures and their guard rails.
+2. Fail over with a tail-log backup and check that the last row arrived, and that the owner fell back to `sa` because the owner's login is missing on the target.
+3. Fail back, and get the original owner back.
 4. Stop the primary, fail over without it, and check that shipped rows survived and the unshipped row is lost.
 5. Bring the old primary back, see it flagged out of sync, and reinitialize it.
 6. Check that notifications are sent once and not repeated after a controller restart, using the mock Pushover in `docker-compose.test.yml`.
