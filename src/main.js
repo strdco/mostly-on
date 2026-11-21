@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from './config.js';
 import { log, setLogLevel } from './log.js';
-import { openDb, closeDb } from './store/db.js';
+import { openDb, closeDb, CatalogVersionError } from './store/db.js';
 import * as sessions from './store/repos/sessions.js';
 import * as events from './store/repos/events.js';
 import { initPools, closeAll as closePools } from './sql/pool.js';
@@ -43,7 +43,13 @@ try {
 }
 setLogLevel(cfg.logLevel);
 
-openDb(path.join(cfg.dataDir, 'mostly-on.db'));
+try {
+    openDb(path.join(cfg.dataDir, 'mostly-on.db'));
+} catch (err) {
+    // Nothing has run yet: no schedules, no SQL. Say why and stop; the restart policy will retry.
+    log.error(`Cannot open the catalog: ${err.message}`, { err });
+    process.exit(err instanceof CatalogVersionError ? 3 : 2);
+}
 sessions.purgeExpired();
 initPools(cfg.secretKeyBytes);
 setEngineConfig(cfg);
