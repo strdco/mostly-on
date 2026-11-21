@@ -16,6 +16,7 @@ import { holders } from '../../engine/locks.js';
 import { lagOf } from '../../engine/restore-loop.js';
 import { canResume, canResolve } from '../../engine/ops/index.js';
 import { sqlErrorText } from '../../sql/pool.js';
+import { evaluateSoon } from '../../notify/alerts.js';
 import { publish } from '../../bus.js';
 
 function mustGet(id) {
@@ -153,6 +154,7 @@ export function databaseRoutes(router) {
 
     router.post('/api/foreign-backups/:uuid/acknowledge', async (ctx) => {
         if (!foreign.acknowledge(String(ctx.params.uuid).toLowerCase())) throw new HttpError(404, 'Unknown or already acknowledged');
+        evaluateSoon();
         events.add('info', 'foreign-backup', `Backup taken outside Mostly On acknowledged (backup set ${ctx.params.uuid})`);
         return { ok: true };
     });

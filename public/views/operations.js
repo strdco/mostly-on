@@ -16,7 +16,7 @@ export function opTitle(op) {
     return titles[op.type] || op.type;
 }
 
-async function resume(op) {
+export async function resumeOperation(op) {
     try {
         await post(`/api/operations/${op.id}/resume`);
         toast(`Operation #${op.id} resumed`, 'ok');
@@ -25,7 +25,7 @@ async function resume(op) {
     }
 }
 
-async function resolve(op) {
+export async function resolveOperation(op) {
     const done = await formDialog({
         title: `Mark operation #${op.id} as resolved?`,
         fields: [
@@ -36,14 +36,15 @@ async function resolve(op) {
         onSubmit: (v) => post(`/api/operations/${op.id}/resolve`, { note: v.note }),
     });
     if (done) toast(`Operation #${op.id} marked as resolved`, 'ok');
+    return !!done;
 }
 
 function opActions(o) {
     if (!o.resumable && !o.resolvable) return '';
     return h(
         'div.actions',
-        o.resumable ? h('button.primary', { type: 'button', onclick: () => resume(o) }, 'Resume') : null,
-        o.resolvable ? h('button', { type: 'button', onclick: () => resolve(o) }, 'Mark resolved') : null,
+        o.resumable ? h('button.primary', { type: 'button', onclick: () => resumeOperation(o) }, 'Resume') : null,
+        o.resolvable ? h('button', { type: 'button', onclick: () => resolveOperation(o) }, 'Mark resolved') : null,
     );
 }
 

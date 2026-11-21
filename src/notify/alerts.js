@@ -36,6 +36,8 @@ import { createMemo, decide, formatBatch, formatDuration } from './alert-state.j
 
 const OP_TITLES = { seed: 'Adding a secondary', reseed: 'Reinitialize', planned_failover: 'Failover', forced_failover: 'Forced failover', switchover_all: 'Fail over all databases' };
 const RESOLVED_KEEP_DAYS = 90;
+// Conditions a person clears (Mark resolved, Acknowledge): no flapping, so no resolve debounce.
+const INSTANT_KINDS = new Set(['operation', 'foreign_backup']);
 
 let memo = createMemo();
 let timer = null;
@@ -183,6 +185,7 @@ export async function tick(now = Date.now()) {
         reminderMs: s['alerts.reminder_hours'] * 3_600_000,
         confirmMs: debounceMs,
         resolveMs: debounceMs,
+        instantKinds: INSTANT_KINDS,
     });
 
     if (writes.length) {
@@ -216,6 +219,18 @@ export async function tick(now = Date.now()) {
     }
 }
 
+/** Re-evaluates shortly, after a user action that clears a condition. */
+export function evaluateSoon() {
+    if (!loopFn) return; // not started (tests)
+    if (running) {
+        soon = true; // the running evaluation schedules the next one quickly
+        return;
+    }
+    clearTimeout(timer); // there is exactly one pending timer; replace it
+    timer = setTimeout(loopFn, 300);
+    timer.unref?.();
+}
+
 export function deliveryStatus() {
     return {
         channels: notifier.status(),
@@ -239,22 +254,27 @@ export async function sendTest() {
     return r;
 }
 
+let loopFn = null;
+let soon = false;
+
 export function start() {
     if (timer) return;
+    // One chain of timers: only this function schedules the next run (evaluateSoon
+    // replaces the pending timer, or asks this run to come back quickly).
     const loop = async () => {
-        if (!running) {
-            running = true;
-            try {
-                await tick();
-            } catch (err) {
-                log.error('Alert evaluation failed', { err });
-            } finally {
-                running = false;
-            }
+        running = true;
+        try {
+            await tick();
+        } catch (err) {
+            log.error('Alert evaluation failed', { err });
+        } finally {
+            running = false;
         }
-        timer = setTimeout(loop, settings.get('alerts.interval_seconds') * 1000);
+        timer = setTimeout(loop, soon ? 300 : settings.get('alerts.interval_seconds') * 1000);
+        soon = false;
         timer.unref?.();
     };
+    loopFn = loop;
     // Let the restore loops and the first health checks settle first.
     timer = setTimeout(loop, 5000);
     timer.unref?.();
@@ -263,6 +283,7 @@ export function start() {
 export function stop() {
     clearTimeout(timer);
     timer = null;
+    loopFn = null;
 }
 
 /** Test helper. */

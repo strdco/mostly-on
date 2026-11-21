@@ -2,6 +2,7 @@
 import { h, clear, dataTable, badge, formatTime } from '../dom.js';
 import { get } from '../api.js';
 import { formatDuration } from './overview.js';
+import { resolveOperation } from './operations.js';
 
 const KIND_LABEL = {
     server_unreachable: 'Server unreachable',
@@ -17,6 +18,20 @@ const KIND_LABEL = {
 };
 
 const since = (iso) => formatDuration(Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000)));
+
+/**
+ * What the person can do about an alert. Alerts are never dismissed by hand: each
+ * clears once its cause is gone. A failed operation's cause goes away when it is
+ * marked resolved (or resumed), so that alert carries the button.
+ */
+function alertAction(a, { compact = false } = {}) {
+    if (a.kind === 'operation') {
+        const id = Number(a.key.split(':')[1]);
+        return h('button', { type: 'button', class: compact ? 'link' : null, onclick: () => resolveOperation({ id }) }, compact ? `Mark operation #${id} resolved…` : 'Mark resolved…');
+    }
+    if (compact) return null;
+    return h('span.small.muted', a.kind === 'foreign_backup' ? 'Clears when you acknowledge it on the database page.' : 'Clears by itself once the problem is fixed.');
+}
 
 function target(a) {
     if (a.kind === 'operation') return h('a', { href: '#/operations' }, 'Operations');
@@ -36,7 +51,17 @@ export function activeAlertsCallout(alerts) {
         h('a', { href: '#/alerts' }, 'See all alerts'),
         h(
             'ul',
-            active.map((a) => h('li', badge(a.severity === 'error' ? 'error' : 'warning', a.severity === 'error' ? 'err' : 'warn'), ' ', a.message, ' ', h('span.muted', `(for ${since(a.first_seen_at)})`))),
+            active.map((a) =>
+                h(
+                    'li',
+                    badge(a.severity === 'error' ? 'error' : 'warning', a.severity === 'error' ? 'err' : 'warn'),
+                    ' ',
+                    a.message,
+                    ' ',
+                    h('span.muted', `(for ${since(a.first_seen_at)})`),
+                    a.kind === 'operation' ? [' ', alertAction(a, { compact: true })] : null,
+                ),
+            ),
         ),
     );
 }
@@ -67,6 +92,7 @@ export function alertsView() {
                         { label: 'Since', cell: (a) => [formatTime(a.first_seen_at), h('div.small.muted', since(a.first_seen_at))] },
                         { label: 'Last notified', cell: (a) => (a.last_notified_at ? formatTime(a.last_notified_at) : h('span.muted', 'not sent')) },
                         { label: 'Go to', cell: target },
+                        { label: 'What to do', cell: (a) => alertAction(a) },
                     ],
                 }),
                 h('h2', 'Resolved'),

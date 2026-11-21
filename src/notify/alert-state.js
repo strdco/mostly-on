@@ -6,7 +6,9 @@
 //   active, notice not delivered -> "new" notice again (retry)
 //   active, reminder interval up -> "reminder" notice
 //   absent for resolveMs         -> resolved, "resolved" notice (only if the
-//                                   "new" notice had been delivered)
+//                                   "new" notice had been delivered); kinds in
+//                                   instantKinds resolve at once (a person
+//                                   cleared them, so they cannot flap)
 //   resolved, notice not yet delivered -> "resolved" notice again (retry)
 // A notice counts as delivered when the caller records last_notified_at;
 // a pending resolved notice is last_notified_at < resolved_at.
@@ -24,9 +26,10 @@ const ms = (iso) => (iso ? new Date(iso).getTime() : null);
  * @param {Map<string, object>} a.rows       key -> notification_state row
  * @param {{presentSince: Map, absentSince: Map}} a.memo  mutated
  * @param {number} a.now  epoch ms
+ * @param {Set<string>} [a.instantKinds]  kinds that resolve without the resolve debounce
  * @returns {{ writes: object[], notices: object[] }}
  */
-export function decide({ conditions, rows, memo, now, reminderMs, confirmMs, resolveMs }) {
+export function decide({ conditions, rows, memo, now, reminderMs, confirmMs, resolveMs, instantKinds = new Set() }) {
     const writes = [];
     const notices = [];
     const iso = (t) => new Date(t).toISOString();
@@ -72,7 +75,7 @@ export function decide({ conditions, rows, memo, now, reminderMs, confirmMs, res
         if (row.status === 'active') {
             const since = memo.absentSince.get(row.key) ?? now;
             memo.absentSince.set(row.key, since);
-            if (now - since < resolveMs) continue;
+            if (now - since < (instantKinds.has(row.kind) ? 0 : resolveMs)) continue;
             memo.absentSince.delete(row.key);
             const resolved = { ...row, status: 'resolved', resolved_at: iso(now) };
             writes.push(resolved);

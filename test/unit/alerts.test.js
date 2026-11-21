@@ -157,3 +157,17 @@ test('a long batch is cut with a count of what was left out', () => {
     assert.match(b.message, /… and \d+ more$/);
     assert.equal(b.title, 'Mostly On: 40 new');
 });
+
+test('alerts a person clears (resolved operation, acknowledged backup) resolve without the debounce', () => {
+    const rows = new Map();
+    const memo = createMemo();
+    const op = { ...cond('op:18'), kind: 'operation' };
+    const run = (now, conditions) => {
+        const out = decide({ conditions: new Map(conditions.map((c) => [c.key, c])), rows: new Map(rows), memo, now, ...opts, instantKinds: new Set(['operation']) });
+        for (const w of out.writes) rows.set(w.key, { ...w, last_notified_at: new Date(now).toISOString() });
+        return out.notices.map((n) => `${n.type}:${n.key}`);
+    };
+    run(T0, [op]);
+    assert.deepEqual(run(T0 + MIN, [op]), ['new:op:18']);
+    assert.deepEqual(run(T0 + MIN + 1000, []), ['resolved:op:18'], 'gone at the next evaluation');
+});

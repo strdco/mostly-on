@@ -1,6 +1,7 @@
 import { HttpError, idParam } from '../router.js';
 import * as ops from '../../store/repos/operations.js';
 import * as databases from '../../store/repos/databases.js';
+import { evaluateSoon } from '../../notify/alerts.js';
 import { canResume, canResolve, resumeOperation, resolveOperation } from '../../engine/ops/index.js';
 
 const STATUSES = ['queued', 'running', 'succeeded', 'failed', 'interrupted', 'resolved'];
@@ -39,6 +40,8 @@ export function operationRoutes(router) {
 
     router.post('/api/operations/:id/resolve', async (ctx) => {
         const note = typeof ctx.body?.note === 'string' ? ctx.body.note.slice(0, 500) : '';
-        return withNames(resolveOperation(idParam(ctx.params.id), note));
+        const op = withNames(resolveOperation(idParam(ctx.params.id), note));
+        evaluateSoon(); // its alert clears right away
+        return op;
     });
 }
