@@ -116,9 +116,12 @@ test('1. register servers, manage a database, add a secondary', async () => {
     assert.equal(await dbState('sql2'), 'RESTORING');
 });
 
-test('1a. a database with a secondary cannot stop being managed', async () => {
+test('1a. a database with a secondary cannot stop being managed, nor its servers be removed', async () => {
     await assert.rejects(api.post(`/api/databases/${dbId}/unmanage`, { confirm: DB }), (err) => err.status === 409 && /Remove its secondaries first \(sql2/.test(err.message));
     assert.ok((await api.get('/api/databases')).some((d) => d.id === dbId), 'still managed');
+    // Nor can a server holding a copy be removed.
+    assert.match((await api.get(`/api/servers/${ids.sql2}`)).remove_blocker, /still holds 1 secondary copy of managed databases/);
+    await assert.rejects(api.call('DELETE', `/api/servers/${ids.sql2}`), (err) => err.status === 409);
 });
 
 test('1b. the restricted login can only act through the helper procedures', async () => {

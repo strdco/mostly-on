@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formDialog, field, toast, ago } from '../dom.js';
+import { h, clear, dataTable, badge, formDialog, field, toast, ago, tooltip, formatTime } from '../dom.js';
 import { get, post, put, del } from '../api.js';
 import { stateText, chainBadge } from './overview.js';
 
@@ -202,10 +202,47 @@ async function afterRegister(s) {
 }
 
 /** "Switch over all databases on this server to another one", shown with the per-database plan. */
-async function switchoverDialog(s) {
-    const others = (await get('/api/servers')).filter((x) => x.id !== s.id && x.enabled);
-    if (!others.length) throw new Error('There is no other enabled server to fail over to');
-    const target = h('select', { name: 'to_server_id' }, others.map((o) => h('option', { value: o.id }, o.name)));
+/**
+ * "Fail over databases…": greyed out (reason in a tooltip) when none of the
+ * primaries on this server has a working secondary anywhere.
+ */
+function failoverButton(s, targets) {
+    const blocker = !targets
+        ? null
+        : !targets.from.reachable
+          ? `${s.name} is unreachable. A failover without data loss needs it: fail each database over from its own page instead.`
+          : !targets.targets.length
+            ? `None of the databases whose primary is ${s.name} has a working secondary on another server.`
+            : null;
+    const button = h('button.primary', { type: 'button', 'aria-disabled': blocker ? 'true' : null }, 'Fail over databases…');
+    const tip = blocker ? tooltip(button, blocker) : null;
+    button.addEventListener('click', async () => {
+        if (tip) return tip.show();
+        try {
+            const r = await switchoverDialog(s, targets);
+            if (r?.operation) toast(`Failover of the databases started (operation #${r.operation.id})`, 'ok');
+        } catch (err) {
+            toast(err.message, 'err');
+        }
+    });
+    return [button, tip?.tip];
+}
+
+/** Pick a target server; every database with a working secondary there moves, the rest stay. */
+async function switchoverDialog(s, targets) {
+    const opts = targets?.targets ?? [];
+    const preferred = opts.find((t) => t.reachable) ?? opts[0];
+    const target = h(
+        'select',
+        { name: 'to_server_id' },
+        opts.map((t) =>
+            h(
+                'option',
+                { value: t.id, selected: t === preferred, disabled: !t.reachable },
+                `${t.name}: ${t.covers} of ${targets.total} database${targets.total === 1 ? '' : 's'}${t.reachable ? '' : ' (unreachable)'}`,
+            ),
+        ),
+    );
     const planId = `plan-${Math.random().toString(36).slice(2, 9)}`;
     const plan = h('div', { id: planId, role: 'status', 'aria-live': 'polite' });
     target.setAttribute('aria-describedby', planId);
@@ -213,10 +250,21 @@ async function switchoverDialog(s) {
         plan.replaceChildren(h('p.muted', 'Checking…'));
         try {
             const p = await get(`/api/servers/${s.id}/switchover-plan?to=${target.value}`);
-            plan.replaceChildren(
-                h('p', `Each database moves in turn, with a tail-log backup so nothing is lost; ${s.name} becomes its secondary. If one fails, the rest are not started.`),
-                h('ul', p.databases.map((d) => h('li', d.name, d.problem ? [' ', badge(d.problem, 'err')] : [' ', badge('ready', 'ok')]))),
-            );
+            const moving = p.databases.filter((d) => d.moves);
+            const staying = p.databases.filter((d) => !d.moves);
+            // Native replaceChildren() would render null as the text "null"; filter it out.
+            plan.replaceChildren(...[
+                h('p', `${moving.length} database${moving.length === 1 ? '' : 's'} move${moving.length === 1 ? 's' : ''} to ${p.to.name}, one at a time, each with a tail-log backup so nothing is lost; ${s.name} becomes its secondary. If one fails, the rest wait until you resume.`),
+                h('ul', moving.map((d) => h('li', d.name, ' ', badge(`moves to ${p.to.name}`, 'ok'), d.note ? h('div.small.warn-text', d.note) : null))),
+                staying.length
+                    ? h(
+                          'div.callout.warn',
+                          h('strong', `${staying.length} database${staying.length === 1 ? ' stays' : 's stay'} on ${s.name}`),
+                          ` and ${staying.length === 1 ? 'is' : 'are'} unavailable while ${s.name} is down. To move ${staying.length === 1 ? 'it' : 'them'} too, run this again with another server, or fail over from the database's own page.`,
+                          h('ul', staying.map((d) => h('li', `${d.name}: ${d.problem}`))),
+                      )
+                    : null,
+            ].filter((x) => x !== null));
         } catch (err) {
             plan.replaceChildren(h('p.error-text', err.message));
         }
@@ -224,16 +272,37 @@ async function switchoverDialog(s) {
     target.addEventListener('change', load);
     load();
     return formDialog({
-        title: `Fail over every database whose primary is ${s.name}`,
+        title: `Fail over databases from ${s.name}`,
         fields: [
-            field('Move the primaries to', target),
+            field('Move them to', target, 'Only servers that hold a working secondary of at least one of these databases are listed.'),
             plan,
             field(`Type ${s.name} to confirm`, h('input', { type: 'text', name: 'confirm', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false' })),
         ],
-        submitLabel: 'Fail over all',
+        submitLabel: 'Fail over',
         danger: true,
         onSubmit: (v) => post(`/api/servers/${s.id}/switchover`, { to_server_id: Number(v.to_server_id), confirm: v.confirm }),
     });
+}
+
+/** "Remove": greyed out (focusable, reason in a tooltip) while the server is still in use. */
+function removeButton(s) {
+    const button = h('button.danger', { type: 'button', 'aria-disabled': s.remove_blocker ? 'true' : null }, 'Remove');
+    const tip = s.remove_blocker ? tooltip(button, `${s.name} cannot be removed yet. ${s.remove_blocker}`) : null;
+    button.addEventListener('click', async () => {
+        if (tip) return tip.show();
+        const ok = await formDialog({
+            title: `Remove server ${s.name}?`,
+            fields: [
+                h('p', `Mostly On stops connecting to ${s.name} and no longer lists it. Nothing on the SQL Server is changed.`),
+                h('p.muted', `Backups ${s.name} took stay usable until retention removes them. To use it again later, register a server under the same name.`),
+            ],
+            submitLabel: 'Remove',
+            danger: true,
+            onSubmit: () => del(`/api/servers/${s.id}`),
+        });
+        if (ok) location.hash = '#/servers';
+    });
+    return [button, tip?.tip];
 }
 
 export function serverDetailView(id) {
@@ -241,49 +310,29 @@ export function serverDetailView(id) {
     let timer;
     async function load() {
         const [s, roles, info] = await Promise.all([get(`/api/servers/${id}`), get(`/api/servers/${id}/roles`), get('/api/info').catch(() => ({}))]);
+        if (s.removed_at) {
+            clear(root).append(
+                h('h1', `Server ${s.name}`),
+                h(
+                    'div.callout.warn',
+                    `${s.name} was removed on ${formatTime(s.removed_at)}. Mostly On no longer connects to it; the backup files it wrote stay usable until retention removes them. ` +
+                        'To use it again, register a server under the same name (Servers page).',
+                ),
+            );
+            return;
+        }
         const hh = s.health;
         const primaries = roles.filter((r) => r.role === 'primary');
+        const targets = primaries.length ? await get(`/api/servers/${id}/switchover-targets`).catch(() => null) : null;
         // Native append() would render null as the text "null"; filter it out.
         clear(root).append(...[
             h('h1', `Server ${s.name}`),
             h(
                 'div.actions',
                 h('button', { type: 'button', onclick: async () => { await post(`/api/servers/${id}/check`); load(); } }, 'Check now'),
-                primaries.length
-                    ? h(
-                          'button.primary',
-                          {
-                              type: 'button',
-                              onclick: async () => {
-                                  try {
-                                      const r = await switchoverDialog(s);
-                                      if (r?.operation) toast(`Switch-over started (operation #${r.operation.id})`, 'ok');
-                                  } catch (err) {
-                                      toast(err.message, 'err');
-                                  }
-                              },
-                          },
-                          `Fail over all ${primaries.length} database${primaries.length === 1 ? '' : 's'}…`,
-                      )
-                    : null,
+                primaries.length ? failoverButton(s, targets) : null,
                 h('button', { type: 'button', onclick: async () => { if (await editServerDialog(s)) load(); } }, 'Edit'),
-                h(
-                    'button.danger',
-                    {
-                        type: 'button',
-                        onclick: async () => {
-                            const ok = await formDialog({
-                                title: `Remove server ${s.name}?`,
-                                fields: [h('p', 'The server is removed from Mostly On. Nothing on the SQL Server is changed.')],
-                                submitLabel: 'Remove',
-                                danger: true,
-                                onSubmit: () => del(`/api/servers/${id}`),
-                            });
-                            if (ok) location.hash = '#/servers';
-                        },
-                    },
-                    'Remove',
-                ),
+                removeButton(s),
             ),
             hh && !hh.ok ? h('div.callout.err', `Unreachable: ${hh.error}`) : null,
             ...(hh?.warnings || []).map((w) => h('div.callout.warn', w)),

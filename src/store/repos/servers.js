@@ -6,7 +6,7 @@ import { isWindowsPath } from '../../paths.js';
 
 const PUBLIC_COLS = `id, name, host, port, instance_name, username, encrypt, trust_server_cert, sql_backup_root,
     controller_backup_root, standby_root, enabled, last_seen_at, last_error, product_version, edition,
-    engine_edition, default_data_path, default_log_path, created_at, updated_at`;
+    engine_edition, default_data_path, default_log_path, created_at, updated_at, removed_at`;
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
@@ -15,8 +15,9 @@ function toBool(r) {
     return { ...r, encrypt: !!r.encrypt, trust_server_cert: !!r.trust_server_cert, enabled: !!r.enabled };
 }
 
+/** Registered servers (not removed ones). */
 export function list() {
-    return getDb().prepare(`SELECT ${PUBLIC_COLS} FROM servers ORDER BY name`).all().map(toBool);
+    return getDb().prepare(`SELECT ${PUBLIC_COLS} FROM servers WHERE removed_at IS NULL ORDER BY name`).all().map(toBool);
 }
 
 export function get(id) {
@@ -151,10 +152,6 @@ export function update(id, v, key) {
     return get(id);
 }
 
-export function remove(id) {
-    return getDb().prepare('DELETE FROM servers WHERE id=?').run(id).changes > 0;
-}
-
 export function recordHealth(id, h) {
     const now = nowIso();
     if (h.ok) {
@@ -167,6 +164,30 @@ export function recordHealth(id, h) {
     } else {
         getDb().prepare('UPDATE servers SET last_error=? WHERE id=?').run(String(h.error).slice(0, 1000), id);
     }
+}
+
+/**
+ * "Remove": deletes a server that has no history at all; otherwise keeps its
+ * row, marked removed (its backup files are still found through it).
+ * Returns 'deleted' or 'removed'.
+ */
+export function removeOrRetire(id) {
+    try {
+        getDb().prepare('DELETE FROM servers WHERE id=?').run(id);
+        return 'deleted';
+    } catch (err) {
+        if (!/FOREIGN KEY/.test(err.message)) throw err;
+    }
+    const now = nowIso();
+    getDb().prepare('UPDATE servers SET removed_at=?, enabled=0, updated_at=? WHERE id=?').run(now, now, id);
+    getDb().prepare('DELETE FROM discovered_databases WHERE server_id=?').run(id);
+    return 'removed';
+}
+
+/** Registers a removed server again with new details (same id, so its history stays attached). */
+export function revive(id, v, key) {
+    getDb().prepare('UPDATE servers SET removed_at=NULL, last_error=NULL WHERE id=?').run(id);
+    return update(id, { ...v, enabled: v.enabled ?? 1 }, key);
 }
 
 export function replicaCount(id) {

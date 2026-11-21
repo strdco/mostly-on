@@ -13,7 +13,7 @@ export function opTitle(op) {
         reseed: 'Reinitialize',
         planned_failover: 'Failover',
         forced_failover: 'Failover (forced: data may be lost)',
-        switchover_all: 'Fail over all databases',
+        switchover_all: 'Fail over databases',
     };
     return titles[op.type] || op.type;
 }

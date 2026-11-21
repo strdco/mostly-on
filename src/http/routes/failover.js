@@ -7,7 +7,7 @@ import * as events from '../../store/repos/events.js';
 import * as P from '../../sql/privileged.js';
 import { sqlErrorText } from '../../sql/pool.js';
 import { failoverPreview, startFailover } from '../../engine/ops/failover.js';
-import { switchoverPlan, startSwitchoverAll } from '../../engine/ops/switchover-all.js';
+import { switchoverPlan, switchoverTargets, startSwitchoverAll } from '../../engine/ops/switchover-all.js';
 import { startSeed } from '../../engine/ops/seed.js';
 import { restoreRange, startPointInTime } from '../../engine/ops/pitr.js';
 import { holders } from '../../engine/locks.js';
@@ -83,6 +83,9 @@ export function failoverRoutes(router) {
         publish('replica.changed', { databaseId: db.id, serverId: rep.server_id });
         return { ok: true };
     });
+
+    // Servers the primaries on this server can fail over to (each with how many it covers).
+    router.get('/api/servers/:id/switchover-targets', async (ctx) => switchoverTargets(idParam(ctx.params.id)));
 
     router.get('/api/servers/:id/switchover-plan', async (ctx) => {
         const { from, to, items } = switchoverPlan(idParam(ctx.params.id), idParam(ctx.query.to, 'to'));

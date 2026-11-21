@@ -44,9 +44,6 @@ export async function checkServer(serverId) {
         if (!isSupported(info.majorVersion)) {
             warnings.push(`${info.versionName} (${info.productVersion}) is not supported; Mostly On needs ${versionName(MIN_MAJOR)} or newer.`);
         }
-        if (info.engineEdition !== 4) {
-            warnings.push(`Edition is ${info.edition}, not Express. Mostly On will still work but is designed for Express.`);
-        }
         if (!setup.ready) {
             warnings.push(`Mostly On cannot back up or restore here yet: ${setup.problems.join(' ')} Download the setup script below and run it on this server as a sysadmin.`);
         }

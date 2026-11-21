@@ -286,9 +286,15 @@ Use this when the primary is down or damaged. Transactions committed on the old 
 
 When the old primary comes back, use **Take offline** if applications might still write to it, then **Reinitialize** it. A safety backup of the out-of-sync copy is kept first in `DIVERGED/`, so no data is thrown away without a copy.
 
-### Fail over all databases
+### Fail over databases from a server
 
-For server maintenance, **Fail over all databases** on a server's page moves every database whose primary is on that server to another server, one at a time, each with a tail-log backup. If one fails, the rest are not started; resume the batch once it is fixed.
+For server maintenance, press **Fail over databases…** on a server's page and pick the server to move them to. The list only offers servers that hold a working secondary of at least one of the databases, with how many each covers ("sql2: 3 of 5 databases").
+
+- Every database with a working secondary on the chosen server moves, one at a time, each with a tail-log backup so nothing is lost. The old server becomes its secondary.
+- The dialog lists the databases that stay behind and why (no copy there, shipping stopped, still being set up). They stay unavailable while the old server is down: run it again with another server, or fail them over from their own pages.
+- If the chosen server runs a newer SQL Server version, the old server cannot receive its log backups afterwards; the dialog warns about this per database.
+- If one failover fails, the rest wait; resume the batch once it is fixed.
+- The button is greyed out, with the reason in a tooltip, while the server is unreachable or none of its databases has a working secondary elsewhere.
 
 ## Restoring to a point in time
 
@@ -318,6 +324,10 @@ Puts the managed database itself back to that moment, on the primary and on ever
 
 The tail-log backup and the other backups from after the moment stay on the share until retention deletes them. However, the dashboard only offers moments on the database's current branch of history, so it cannot undo a rollback. **If you might need any of the changes made after the moment, restore a copy as it is now first, then roll back.**
 
+
+### Removing a server
+
+**Remove** on a server's page is greyed out while the server still holds a copy of a managed database, or while an unfinished operation involves it; its tooltip says what to do first (fail over, or remove the copy). A removed server is no longer contacted or listed, and nothing on the SQL Server itself is changed. The backups it took stay usable until retention deletes them. Registering a server under the same name later brings its record back, with the new connection details.
 ---
 
 ## Upgrading

@@ -1,14 +1,48 @@
 import { HttpError, idParam } from '../router.js';
 import * as serversRepo from '../../store/repos/servers.js';
 import * as events from '../../store/repos/events.js';
+import * as databases from '../../store/repos/databases.js';
+import * as ops from '../../store/repos/operations.js';
+import { evaluateSoon } from '../../notify/alerts.js';
 import * as health from '../../engine/health.js';
 import { resetPool, testConnection, sqlErrorText } from '../../sql/pool.js';
 import { setupScriptFor } from '../../sql/setup-script.js';
+
+const ROLE_WORDS = { primary: ['primary copy', 'primary copies'], secondary: ['secondary copy', 'secondary copies'], diverged: ['out-of-sync copy', 'out-of-sync copies'] };
+
+/** "1 primary copy and 3 secondary copies": counts per role, never a list of names. */
+function copyCounts(reps) {
+    const parts = Object.entries(ROLE_WORDS)
+        .map(([role, [one, many]]) => [reps.filter((r) => r.role === role).length, one, many])
+        .filter(([n]) => n > 0)
+        .map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
+    return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
+}
+
+/**
+ * Why a server cannot be removed right now (null if it can): it still holds a
+ * copy of a managed database, or an unfinished operation involves it.
+ */
+export function removeBlocker(id) {
+    const reps = databases.replicasOnServer(id);
+    if (reps.length) {
+        return `It still holds ${copyCounts(reps)} of managed databases (listed on its page). Fail over or remove them first.`;
+    }
+    const involves = (op) => op.server_id === id || Object.entries(op.params || {}).some(([k, v]) => /ServerId$/.test(k) && v === id);
+    const op = [...ops.unfinished(), ...ops.needingAttention()].find(involves);
+    if (op) {
+        return op.status === 'running' || op.status === 'queued'
+            ? `Operation #${op.id} involving it is still running; wait until it has finished.`
+            : `Operation #${op.id} involving it stopped before it finished. Resume it or mark it resolved first (Operations page).`;
+    }
+    return null;
+}
 
 function withHealth(s) {
     const h = health.getHealth(s.id);
     return {
         ...s,
+        remove_blocker: s.removed_at ? null : removeBlocker(s.id),
         health: h
             ? { ok: h.ok, checkedAt: h.checkedAt, error: h.error, warnings: h.warnings, info: h.info, databases: h.databases, setup: h.setup }
             : null,
@@ -42,9 +76,11 @@ export function serverRoutes(router, { cfg }) {
 
     router.post('/api/servers', async (ctx) => {
         const v = serversRepo.validate(ctx.body || {});
-        if (serversRepo.getByName(v.name)) throw new HttpError(409, `A server named ${v.name} already exists`);
-        const s = serversRepo.create(v, cfg.secretKeyBytes);
-        events.add('info', 'server', `Server ${s.name} registered (${s.host}:${s.port})`, { serverId: s.id });
+        const existing = serversRepo.getByName(v.name);
+        if (existing && !existing.removed_at) throw new HttpError(409, `A server named ${v.name} already exists`);
+        // A removed server registered again gets its old record back (and its history), with the new details.
+        const s = existing ? serversRepo.revive(existing.id, v, cfg.secretKeyBytes) : serversRepo.create(v, cfg.secretKeyBytes);
+        events.add('info', 'server', `Server ${s.name} ${existing ? 'registered again' : 'registered'} (${s.host}:${s.port})`, { serverId: s.id });
         await health.checkServer(s.id);
         ctx.status = 201;
         return withHealth(serversRepo.get(s.id));
@@ -53,10 +89,13 @@ export function serverRoutes(router, { cfg }) {
     router.put('/api/servers/:id', async (ctx) => {
         const id = idParam(ctx.params.id);
         const before = mustGet(id);
+        if (before.removed_at) throw new HttpError(409, `${before.name} was removed. To use it again, register it again under the same name.`);
         const v = serversRepo.validate(ctx.body || {}, { partial: true });
         if (v.name && v.name !== before.name) {
             if (serversRepo.replicaCount(id) > 0) throw new HttpError(409, 'Cannot rename a server that holds managed replicas (the name is part of backup file names)');
-            if (serversRepo.getByName(v.name)) throw new HttpError(409, `A server named ${v.name} already exists`);
+            const taken = serversRepo.getByName(v.name);
+            if (taken?.removed_at) throw new HttpError(409, `${v.name} is the name of a removed server, whose backup files still carry it. Choose another name, or register that server again under it.`);
+            if (taken) throw new HttpError(409, `A server named ${v.name} already exists`);
         }
         serversRepo.update(id, v, cfg.secretKeyBytes);
         await resetPool(id);
@@ -68,22 +107,20 @@ export function serverRoutes(router, { cfg }) {
     router.delete('/api/servers/:id', async (ctx) => {
         const id = idParam(ctx.params.id);
         const s = mustGet(id);
-        if (serversRepo.replicaCount(id) > 0) throw new HttpError(409, 'Server still holds managed replicas. Remove it from every database first.');
-        try {
-            serversRepo.remove(id);
-        } catch (err) {
-            if (/FOREIGN KEY/.test(err.message)) throw new HttpError(409, 'Server is still referenced by backup or restore history');
-            throw err;
-        }
+        if (s.removed_at) return { ok: true };
+        const blocker = removeBlocker(id);
+        if (blocker) throw new HttpError(409, `${s.name} cannot be removed yet. ${blocker}`);
+        const how = serversRepo.removeOrRetire(id);
         await resetPool(id);
         health.forget(id);
-        events.add('info', 'server', `Server ${s.name} removed`, {});
+        evaluateSoon(); // its alerts (unreachable, setup) no longer apply
+        events.add('info', 'server', `Server ${s.name} removed${how === 'removed' ? '; its backup files and history are kept' : ''}`, { serverId: how === 'removed' ? id : null });
         return { ok: true };
     });
 
     router.post('/api/servers/:id/check', async (ctx) => {
         const id = idParam(ctx.params.id);
-        mustGet(id);
+        if (mustGet(id).removed_at) throw new HttpError(409, 'This server was removed');
         await health.checkServer(id);
         return withHealth(serversRepo.get(id));
     });

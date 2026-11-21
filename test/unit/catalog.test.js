@@ -6,6 +6,8 @@ import { openDb, closeDb, getDb, migrate } from '../../src/store/db.js';
 import * as servers from '../../src/store/repos/servers.js';
 import * as settings from '../../src/store/repos/settings.js';
 import * as databases from '../../src/store/repos/databases.js';
+import * as ops from '../../src/store/repos/operations.js';
+import { removeBlocker } from '../../src/http/routes/servers.js';
 import { setLogLevel } from '../../src/log.js';
 
 setLogLevel('error');
@@ -72,6 +74,50 @@ test('a database with other copies cannot stop being managed until they are remo
     assert.equal(databases.unmanageBlocker(db.id), null);
     databases.unmanage(db.id);
     assert.equal(databases.get(db.id).status, 'unmanaged');
+    closeDb();
+});
+
+test('Remove: a server without history is deleted; one with history is hidden but kept, and comes back when registered again', () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const mk = (name) => servers.create(servers.validate({ name, host: name, username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const typo = mk('sq1');
+    assert.equal(servers.removeOrRetire(typo.id), 'deleted');
+    assert.equal(servers.get(typo.id), undefined);
+
+    const old = mk('old');
+    ops.create({ type: 'backup', serverId: old.id, status: 'succeeded' }); // history refers to it
+    assert.equal(servers.removeOrRetire(old.id), 'removed');
+    assert.ok(servers.get(old.id).removed_at, 'the row stays, so its backup files are still found');
+    assert.equal(servers.get(old.id).enabled, false);
+    assert.deepEqual(servers.list().map((s) => s.name), [], 'hidden from every list');
+
+    const back = servers.revive(old.id, servers.validate({ name: 'old', host: 'newhost', username: 'u2', password: 'p2', sql_backup_root: '/b2' }), key);
+    assert.equal(back.id, old.id, 'same record, history attached');
+    assert.equal(back.removed_at, null);
+    assert.equal(back.enabled, true);
+    assert.equal(back.host, 'newhost');
+    assert.equal(servers.getWithSecret(old.id, key).password, 'p2');
+    closeDb();
+});
+
+test('Remove is blocked while the server holds a copy or an unfinished operation involves it', () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const a = servers.create(servers.validate({ name: 'a', host: 'a', username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const b = servers.create(servers.validate({ name: 'b', host: 'b', username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const db = databases.manage({ name: 'Sales', familyGuid: null, primaryServerId: a.id });
+    assert.match(removeBlocker(a.id), /still holds 1 primary copy of managed databases/);
+    for (const name of ['Big', 'Crm']) databases.manage({ name, familyGuid: null, primaryServerId: a.id });
+    databases.addSecondary({ databaseId: db.id, serverId: b.id, restoreMode: 'norecovery' });
+    assert.match(removeBlocker(a.id), /still holds 3 primary copies of/, 'counts, never a list of names');
+    assert.match(removeBlocker(b.id), /still holds 1 secondary copy of/);
+    databases.removeReplica(db.id, b.id);
+    assert.equal(removeBlocker(b.id), null);
+    const op = ops.create({ type: 'planned_failover', databaseId: db.id, serverId: a.id, params: { targetServerId: a.id, oldPrimaryServerId: b.id }, status: 'failed' });
+    assert.match(removeBlocker(b.id), new RegExp(`Operation #${op.id} involving it stopped`));
+    ops.save(op.id, { status: 'resolved' });
+    assert.equal(removeBlocker(b.id), null);
     closeDb();
 });
 
