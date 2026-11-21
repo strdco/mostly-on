@@ -169,10 +169,15 @@ button.link { border: none; background: none; color: var(--accent); padding: 0.2
 .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-block: 0.75rem; }
 
 form.stack { display: grid; gap: 0.75rem; }
-.field { display: grid; gap: 0.25rem; }
+.field { display: grid; gap: 0.25rem; align-content: start; } /* never stretch inputs to the row height */
 .field label { font-weight: 600; font-size: 0.9rem; }
 .field .hint { font-size: 0.8rem; color: var(--muted); }
 .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.75rem; }
+/* Display name, host and a narrow port on one row; stacked on narrow screens. */
+.field-row.name-host-port { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 6rem; }
+@media (width < 36rem) { .field-row.name-host-port { grid-template-columns: 1fr; } }
+details.more > summary { font-weight: 600; font-size: 0.9rem; padding-block: 0.25rem; }
+details.more > .stack { display: grid; gap: 0.75rem; margin-block-start: 0.5rem; }
 .check { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; align-items: center; }
 .check .hint { flex-basis: 100%; padding-inline-start: 1.5rem; font-size: 0.8rem; color: var(--muted); }
 fieldset.choices { display: grid; gap: 0.35rem; margin: 0; padding: 0.5rem 0.75rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius); }
@@ -326,3 +331,5 @@ details summary { cursor: pointer; }
 .skip-link { position: fixed; inset-block-start: 0.5rem; inset-inline-start: 0.5rem; z-index: 200; }
 .settings-form input[type="number"] { max-inline-size: 10rem; }
 a.button { display: inline-block; text-decoration: none; }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+ol.steps-list { margin: 0; padding-inline-start: 1.25rem; display: grid; gap: 0.4rem; }

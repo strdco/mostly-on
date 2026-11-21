@@ -6,7 +6,10 @@ import * as events from '../../store/repos/events.js';
 import * as sessions from '../../store/repos/sessions.js';
 import { validateSchedule } from '../../engine/schedule-math.js';
 
-export function miscRoutes(router) {
+export function miscRoutes(router, { cfg }) {
+    // Facts about this controller the dashboard shows (for example as placeholders).
+    router.get('/api/info', async () => ({ backupRoot: cfg.backupRoot }));
+
     router.get('/api/settings', async () => settings.all());
 
     router.put('/api/settings', async (ctx) => {

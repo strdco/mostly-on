@@ -3,7 +3,7 @@ import { get, post, put, del } from '../api.js';
 import { stateText, chainBadge } from './overview.js';
 
 export function setupBadge(setup) {
-    if (!setup) return badge('setup: unknown');
+    if (!setup) return badge('setup not checked yet');
     return setup.ready ? badge(`ready (helper procedures v${setup.version})`, 'ok') : badge(setup.version == null ? 'setup needed' : 'setup out of date', 'err');
 }
 
@@ -13,74 +13,84 @@ export function healthBadge(s) {
     return s.health.ok ? badge('reachable', 'ok') : badge('unreachable', 'err');
 }
 
-function serverFields(s = {}) {
+const NAME_CHARS = /[^A-Za-z0-9_.-]/g;
+
+function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
     const isEdit = !!s.id;
+    // The name ends up in backup file names, so only the characters that are safe there are accepted;
+    // spaces become dashes as you type.
+    const name = h('input', { type: 'text', name: 'name', required: true, maxlength: 64, pattern: '[A-Za-z0-9_.\\-]{1,64}', value: s.name || '', spellcheck: 'false', autocapitalize: 'none' });
+    name.addEventListener('input', () => {
+        const clean = name.value.replace(/\s/g, '-').replace(NAME_CHARS, '');
+        if (clean !== name.value) name.value = clean;
+    });
     return [
         h(
-            'div.field-row',
-            field('Name', h('input', { type: 'text', name: 'name', required: true, pattern: '[A-Za-z0-9_.\\-]{1,64}', value: s.name || '', spellcheck: 'false' }), 'Letters, digits, _ . -. Used in backup file names.'),
+            'div.field-row.name-host-port',
+            field('Display name', name),
             field('Host', h('input', { type: 'text', name: 'host', required: true, value: s.host || '', spellcheck: 'false', autocapitalize: 'none' })),
-            field('Port', h('input', { type: 'number', name: 'port', min: 1, max: 65535, value: s.port || 1433 })),
+            field('Port', h('input', { type: 'number', name: 'port', min: 1, max: 65535, value: s.port || 1433, inputmode: 'numeric' })),
         ),
         h(
             'div.field-row',
             field(
                 'SQL login',
                 h('input', { type: 'text', name: 'username', required: true, value: s.username || '', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none' }),
-                'Needs sysadmin: Mostly On backs up, restores and fails over databases.',
+                'Should be a low-privileged login.',
             ),
             field(
                 'Password',
                 h('input', { type: 'password', name: 'password', required: !isEdit, autocomplete: 'new-password' }),
-                isEdit ? 'Leave empty to keep the stored password.' : null,
+                isEdit ? 'Leave empty to keep current password.' : null,
             ),
-        ),
-        h(
-            'p.muted',
-            'All servers write their backups to one shared folder, and Mostly On reads them from there. The folder can have a different path on each machine, so tell Mostly On where it is in both places.',
         ),
         field(
             'Shared backup folder, as this SQL Server sees it',
-            h('input', { type: 'text', name: 'sql_backup_root', required: true, value: s.sql_backup_root || '/var/opt/mssql/backup', spellcheck: 'false' }),
-            'The path you would use in BACKUP DATABASE ... TO DISK on this server.',
-        ),
-        field(
-            'Shared backup folder, as Mostly On sees it',
-            h('input', { type: 'text', name: 'controller_backup_root', value: s.controller_backup_root || '', placeholder: '(leave empty to use BACKUP_ROOT)', spellcheck: 'false' }),
-            'Only needed if this server’s share is mounted somewhere other than BACKUP_ROOT in the Mostly On container.',
-        ),
-        field(
-            'Folder for undo files of read-only copies (optional)',
-            h('input', { type: 'text', name: 'standby_root', value: s.standby_root || '', placeholder: '(leave empty to use the server’s data folder)', spellcheck: 'false' }),
-            'Only used when a secondary on this server is readable (STANDBY). A path on this SQL Server.',
+            h('input', { type: 'text', name: 'sql_backup_root', required: true, value: s.sql_backup_root || '/var/opt/mssql/backup', spellcheck: 'false', autocapitalize: 'none' }),
+            'The folder all servers back up to, as a path on this server.',
         ),
         h(
-            'div.field-row',
-            field('Encrypt connection', h('input', { type: 'checkbox', name: 'encrypt', checked: s.id ? s.encrypt : true })),
-            field(
-                'Trust server certificate',
-                h('input', { type: 'checkbox', name: 'trust_server_cert', checked: s.id ? s.trust_server_cert : true }),
-                'Needed for SQL Server’s default self-signed certificate. Untick if the server has a certificate your systems trust.',
-            ),
-            field(
-                'Enabled',
-                h('input', { type: 'checkbox', name: 'enabled', checked: s.id ? s.enabled : true }),
-                'Untick to pause all work on this server (for maintenance) without removing it.',
+            'details.more',
+            h('summary', 'More options'),
+            h(
+                'div.stack',
+                field(
+                    'Shared backup folder, as Mostly On sees it (optional)',
+                    h('input', { type: 'text', name: 'controller_backup_root', value: s.controller_backup_root || '', placeholder: backupRoot, spellcheck: 'false', autocapitalize: 'none' }),
+                    `Leave empty to use ${backupRoot}. Only needed if this server’s share is mounted somewhere else in the Mostly On container.`,
+                ),
+                field(
+                    'Folder for undo files of read-only copies (optional)',
+                    h('input', { type: 'text', name: 'standby_root', value: s.standby_root || '', placeholder: s.default_data_path || '(the server’s data folder)', spellcheck: 'false', autocapitalize: 'none' }),
+                    'A path on this SQL Server. Only used by readable (STANDBY) secondaries.',
+                ),
+                field('Encrypt connection', h('input', { type: 'checkbox', name: 'encrypt', checked: isEdit ? s.encrypt : true })),
+                field(
+                    'Trust server certificate',
+                    h('input', { type: 'checkbox', name: 'trust_server_cert', checked: isEdit ? s.trust_server_cert : true }),
+                    'Needed for SQL Server’s default self-signed certificate.',
+                ),
             ),
         ),
+        isEdit
+            ? field('Enabled', h('input', { type: 'checkbox', name: 'enabled', checked: !!s.enabled }), 'Untick to pause all work on this server, for maintenance, without removing it.')
+            : null,
     ];
 }
 
-function toPayload(v) {
-    return { ...v, port: Number(v.port) };
+function toPayload(v, isEdit) {
+    const out = { ...v, port: Number(v.port) };
+    if (!isEdit) out.enabled = true;
+    return out;
 }
 
 export async function editServerDialog(s) {
+    const info = await get('/api/info').catch(() => ({}));
     return formDialog({
         title: s ? `Edit server ${s.name}` : 'Register server',
-        fields: serverFields(s || {}),
+        fields: serverFields(s || {}, info),
         submitLabel: s ? 'Save' : 'Register',
-        onSubmit: (v) => (s ? put(`/api/servers/${s.id}`, toPayload(v)) : post('/api/servers', toPayload(v))),
+        onSubmit: (v) => (s ? put(`/api/servers/${s.id}`, toPayload(v, true)) : post('/api/servers', toPayload(v, false))),
     });
 }
 
@@ -120,8 +130,8 @@ export function serversView() {
                             onclick: async () => {
                                 const s = await editServerDialog(null);
                                 if (s) {
-                                    toast(`Server ${s.name} registered`, 'ok');
-                                    load();
+                                    location.hash = `#/servers/${s.id}`;
+                                    await afterRegister(s);
                                 }
                             },
                         },
@@ -138,6 +148,47 @@ export function serversView() {
             timer = setTimeout(load, 300);
         },
     };
+}
+
+function downloadSetupScript(id) {
+    const a = h('a', { href: `/api/servers/${id}/setup-script`, download: '' });
+    document.body.append(a);
+    a.click();
+    a.remove();
+}
+
+/**
+ * Right after "Register": the server is not usable until its setup script has
+ * run, so say so and offer the script. Skipped when it is already set up.
+ */
+async function afterRegister(s) {
+    const hh = s.health;
+    if (hh?.ok && hh.setup?.ready) {
+        toast(`Server ${s.name} is registered and ready`, 'ok');
+        return;
+    }
+    const steps = [];
+    if (hh && !hh.ok) {
+        steps.push(
+            h('li', 'Make sure Mostly On can connect. It could not: ', h('span.mono', String(hh.error).replace(/\.$/, '')), '. If the login does not exist yet, create it on ', h('strong', s.name), ' first.'),
+        );
+    }
+    steps.push(
+        h('li', 'Download the setup script. It already has this server’s backup folder and the login ', h('strong', s.username), ' filled in.'),
+        h('li', 'Run it on ', h('strong', s.name), ' as a sysadmin, in SSMS, Azure Data Studio or sqlcmd. Running it again later is always safe.'),
+        h('li', 'Come back to this page. Within a minute it shows ', h('strong', 'ready'), ' (or press Check now).'),
+    );
+    await formDialog({
+        title: `One more step for ${s.name}`,
+        fields: [
+            h('p', `${s.name} is registered, but Mostly On cannot back up or restore there until its setup script has been run. `
+                + 'The script installs a few signed procedures in master, so Mostly On can do its job without a sysadmin login.'),
+            h('ol.steps-list', steps),
+        ],
+        submitLabel: 'Download setup script',
+        cancelLabel: 'Later',
+        onSubmit: () => downloadSetupScript(s.id),
+    });
 }
 
 /** "Switch over all databases on this server to another one", shown with the per-database plan. */
@@ -179,7 +230,7 @@ export function serverDetailView(id) {
     let root;
     let timer;
     async function load() {
-        const [s, roles] = await Promise.all([get(`/api/servers/${id}`), get(`/api/servers/${id}/roles`)]);
+        const [s, roles, info] = await Promise.all([get(`/api/servers/${id}`), get(`/api/servers/${id}/roles`), get('/api/info').catch(() => ({}))]);
         const hh = s.health;
         const primaries = roles.filter((r) => r.role === 'primary');
         // Native append() would render null as the text "null"; filter it out.
@@ -234,8 +285,8 @@ export function serverDetailView(id) {
                     h('dt', 'Address'), h('dd.mono', `${s.host}:${s.port}`),
                     h('dt', 'Version'), h('dd', s.product_version ? `${hh?.info?.versionName || ''} (${s.product_version})` : '–'),
                     h('dt', 'Edition'), h('dd', s.edition || '–'),
-                    h('dt', 'Backup path (SQL)'), h('dd.mono', s.sql_backup_root),
-                    h('dt', 'Backup path (controller)'), h('dd.mono', s.controller_backup_root || '(BACKUP_ROOT)'),
+                    h('dt', 'Backup path (SQL Server)'), h('dd.mono', s.sql_backup_root),
+                    h('dt', 'Backup path (Mostly On)'), h('dd.mono', s.controller_backup_root || `${info.backupRoot ?? 'BACKUP_ROOT'} (default)`),
                     h('dt', 'Default data path'), h('dd.mono', s.default_data_path || '–'),
                     h('dt', 'Default log path'), h('dd.mono', s.default_log_path || '–'),
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
@@ -253,7 +304,7 @@ export function serverDetailView(id) {
                 ' ',
                 hh?.setup?.login ? h('span.muted', `Mostly On connects as ${hh.setup.login}.`) : null,
             ),
-            h('p', h('a.button', { href: `/api/servers/${id}/setup-script`, download: '' }, 'Download setup script')),
+            h('p', h(hh?.setup?.ready ? 'a.button' : 'a.button.primary', { href: `/api/servers/${id}/setup-script`, download: '' }, 'Download setup script')),
             h('h2', 'Managed databases on this server'),
             dataTable({
                 caption: 'Roles of this server',

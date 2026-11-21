@@ -131,7 +131,7 @@ export function ago(iso) {
 }
 
 /** Modal dialog built from a form. Resolves with FormData values or null on dismiss. */
-export function formDialog({ title, fields, submitLabel = 'Save', danger = false, onSubmit }) {
+export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit }) {
     return new Promise((resolve) => {
         const titleId = `dlg-${Math.random().toString(36).slice(2, 9)}`;
         const err = h('p.error-text', { role: 'alert' });
@@ -142,7 +142,7 @@ export function formDialog({ title, fields, submitLabel = 'Save', danger = false
             err,
             h(
                 'div.actions',
-                h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, 'Cancel'),
+                h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, cancelLabel),
                 h(danger ? 'button.danger' : 'button.primary', { type: 'submit', value: 'ok' }, submitLabel),
             ),
         );
