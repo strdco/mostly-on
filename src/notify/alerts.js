@@ -112,7 +112,8 @@ export function collectConditions() {
                     key: `lag:${db.id}:${r.server_id}`,
                     kind: 'lag',
                     severity: 'warn',
-                    message: `${db.name} on ${r.server_name} is ${formatDuration(l.seconds)} behind (${plural(l.files ?? 0, 'log')} not restored yet; threshold ${formatDuration(thresholdSeconds)})`,
+                    message:
+                        `${db.name} on ${r.server_name} is ${formatDuration(l.seconds)} behind (${plural(l.files ?? 0, 'log')} not restored yet; threshold ${formatDuration(thresholdSeconds)})`,
                 }));
             }
             const [last] = restores.list({ databaseId: db.id, serverId: r.server_id, limit: 1 });

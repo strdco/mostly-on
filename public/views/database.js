@@ -25,6 +25,31 @@ function confirmNameInput(name) {
 }
 
 /** "Add secondary": pick a server, the backup to start from and the restore mode. */
+const MODE_LABEL = { norecovery: 'Not readable (NORECOVERY)', standby: 'Readable between restores (STANDBY)' };
+
+/** The secondary's restore mode, explained for people who do not live in SQL Server. */
+function restoreModeFields({ mode = 'norecovery' } = {}) {
+    const select = h(
+        'select',
+        { name: 'restore_mode' },
+        h('option', { value: 'norecovery', selected: mode === 'norecovery' }, `${MODE_LABEL.norecovery}, recommended`),
+        h('option', { value: 'standby', selected: mode === 'standby' }, `${MODE_LABEL.standby}, for reports`),
+    );
+    const modeField = field(
+        'Secondary copy',
+        select,
+        'Not readable: nobody can query the copy; it is only there to take over if the primary fails. ' +
+            'Readable: people can run read-only queries (reports) on it and see the data as of the last restore. ' +
+            'Each time a log is restored (as often as the LOG backups run), anyone using the copy is disconnected and their running queries are cancelled.',
+    );
+    return { select, fields: [modeField] };
+}
+
+/** The mode description for tables. */
+function modeText(r) {
+    return r.restore_mode === 'standby' ? `${MODE_LABEL.standby}; readers are disconnected at each restore` : MODE_LABEL.norecovery;
+}
+
 async function seedDialog(db) {
     const servers = (await get('/api/servers')).filter((s) => s.enabled && !db.replicas.some((r) => r.server_id === s.id && r.role === 'primary'));
     if (!servers.length) {
@@ -43,8 +68,8 @@ async function seedDialog(db) {
     const status = h('p.status-text.muted', { id: statusId, role: 'status', 'aria-live': 'polite' });
     target.setAttribute('aria-describedby', statusId);
 
-    const mode = h('select', { name: 'restore_mode' }, h('option', { value: 'norecovery' }, 'NORECOVERY (no access)'), h('option', { value: 'standby' }, 'STANDBY (read-only between restores)'));
-    const disconnect = field('Disconnect readers before each restore', h('input', { type: 'checkbox', name: 'disconnect_users' }), 'Without this, a reader holding the database delays the restore until it disconnects.');
+    const rm = restoreModeFields();
+    const mode = rm.select;
     const overwriteBox = h('input', { type: 'checkbox', name: 'overwrite' });
     const confirm = confirmNameInput('confirm');
     const overwrite = h(
@@ -55,11 +80,6 @@ async function seedDialog(db) {
         field(`Type ${db.name} to confirm`, confirm),
     );
 
-    const syncMode = () => {
-        disconnect.hidden = mode.value !== 'standby';
-    };
-    mode.addEventListener('change', syncMode);
-    syncMode();
 
     let check = 0;
     const preflight = async () => {
@@ -73,9 +93,16 @@ async function seedDialog(db) {
             if (!pf.compat.ok) notes.push(pf.compat.reason);
             else if (pf.compat.reason) notes.push(pf.compat.reason);
             notes.push(`Files go to ${pf.dataPath} (data) and ${pf.logPath} (log).`);
-            mode.querySelector('option[value=standby]').disabled = !pf.compat.standby || !pf.standbyPath;
-            if (mode.value === 'standby' && (!pf.compat.standby || !pf.standbyPath)) mode.value = 'norecovery';
-            syncMode();
+            const standbyOk = pf.compat.standby && pf.standbyPath;
+            mode.querySelector('option[value=standby]').disabled = !standbyOk;
+            if (mode.value === 'standby' && !standbyOk) mode.value = 'norecovery';
+            if (!standbyOk) {
+                notes.push(
+                    !pf.compat.standby
+                        ? 'A readable copy is not possible here: it needs the same SQL Server version on both servers.'
+                        : 'A readable copy is not possible here until the server has a STANDBY folder (edit the server).',
+                );
+            }
             if (pf.existsOnTarget) {
                 overwrite.hidden = false;
                 notes.push(`${db.name} exists there (${pf.existsOnTarget.standby ? 'STANDBY' : pf.existsOnTarget.state}${pf.existsOnTarget.sameDatabase ? ', same database' : ', a different database'}).`);
@@ -102,8 +129,7 @@ async function seedDialog(db) {
                 radio('source', 'new_full', 'A fresh FULL backup taken now', true),
                 radio('source', 'latest', 'The latest FULL (and DIFF) already on disk'),
             ),
-            field('Restore mode', mode),
-            disconnect,
+            ...rm.fields,
             overwrite,
         ],
         submitLabel: 'Start seeding',
@@ -112,7 +138,6 @@ async function seedDialog(db) {
                 server_id: Number(v.server_id),
                 source: v.source,
                 restore_mode: v.restore_mode,
-                disconnect_users: v.restore_mode === 'standby' && v.disconnect_users,
                 overwrite: !overwrite.hidden && v.overwrite,
                 confirm: v.confirm,
             }),
@@ -120,19 +145,12 @@ async function seedDialog(db) {
 }
 
 function settingsDialog(db, r) {
-    const mode = h(
-        'select',
-        { name: 'restore_mode' },
-        h('option', { value: 'norecovery', selected: r.restore_mode === 'norecovery' }, 'NORECOVERY (no access)'),
-        h('option', { value: 'standby', selected: r.restore_mode === 'standby' }, 'STANDBY (read-only between restores)'),
-    );
+    const rm = restoreModeFields({ mode: r.restore_mode });
     return formDialog({
         title: `Shipping to ${r.server_name}`,
-        fields: [
-            field('Restore mode', mode, 'Takes effect with the next log restore.'),
-            field('Disconnect readers before each restore (STANDBY)', h('input', { type: 'checkbox', name: 'disconnect_users', checked: !!r.disconnect_users })),
-        ],
-        onSubmit: (v) => put(`/api/databases/${db.id}/replicas/${r.server_id}`, { restore_mode: v.restore_mode, disconnect_users: v.disconnect_users }),
+        fields: [...rm.fields, h('p.muted', 'Changes apply from the next log restore.')],
+        onSubmit: (v) =>
+            put(`/api/databases/${db.id}/replicas/${r.server_id}`, { restore_mode: v.restore_mode }),
     });
 }
 
@@ -218,7 +236,7 @@ async function failoverDialog(db, r) {
 }
 
 function reseedDialog(db, r) {
-    const mode = h('select', { name: 'restore_mode' }, h('option', { value: 'norecovery' }, 'NORECOVERY (no access)'), h('option', { value: 'standby' }, 'STANDBY (read-only between restores)'));
+    const rm = restoreModeFields({ mode: r.restore_mode || 'norecovery' });
     return formDialog({
         title: `Reseed ${db.name} on ${r.server_name}`,
         fields: [
@@ -230,13 +248,18 @@ function reseedDialog(db, r) {
                 radio('source', 'new_full', 'A fresh FULL backup taken now', true),
                 radio('source', 'latest', 'The latest FULL (and DIFF) already on disk'),
             ),
-            field('Restore mode', mode),
+            ...rm.fields,
             field(`Type ${db.name} to confirm`, confirmNameInput('confirm')),
         ],
         submitLabel: 'Reseed',
         danger: true,
         onSubmit: (v) =>
-            post(`/api/databases/${db.id}/replicas/${r.server_id}/reseed`, { confirm: v.confirm, safety_backup: v.safety_backup, source: v.source, restore_mode: v.restore_mode }),
+            post(`/api/databases/${db.id}/replicas/${r.server_id}/reseed`, {
+                confirm: v.confirm,
+                safety_backup: v.safety_backup,
+                source: v.source,
+                restore_mode: v.restore_mode,
+            }),
     });
 }
 
@@ -470,11 +493,14 @@ export function databaseView(id) {
                         cell: (r) =>
                             r.role === 'primary'
                                 ? ''
-                                : [chainBadge(r), r.lag?.loop?.lastError ? h('div.small.error-text', r.lag.loop.lastError) : null],
+                                : [
+                                      chainBadge(r),
+                                      r.lag?.loop?.lastError ? h('div.small.error-text', r.lag.loop.lastError) : null,
+                                  ],
                     },
                     {
-                        label: 'Mode',
-                        cell: (r) => (r.role === 'primary' ? '' : `${r.restore_mode.toUpperCase()}${r.restore_mode === 'standby' && r.disconnect_users ? ', disconnects readers' : ''}`),
+                        label: 'Copy',
+                        cell: (r) => (r.role === 'secondary' ? modeText(r) : ''),
                     },
                     { label: 'Lag', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagBadge(r.lag, threshold) : '') },
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },

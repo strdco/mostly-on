@@ -67,6 +67,17 @@ function lockHolder(db) {
     };
 }
 
+/** applyAvailableLogs until it stops for a reason other than "more to do" (one pass stops after 1000 logs). */
+async function applyAll(args) {
+    let r;
+    let restored = 0;
+    do {
+        r = await applyAvailableLogs(args);
+        restored += r.restored;
+    } while (r.status === 'more');
+    return { ...r, restored };
+}
+
 // --- shared validation and preview -------------------------------------------------
 
 function loadTopology(databaseId, targetServerId) {
@@ -337,7 +348,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
             label: `Restore every available log on ${target.name}`,
             guidance: `Nothing has changed on ${oldServer.name}; it is still the primary. Fix the cause (a missing log file puts the chain back with Recheck), then resume.`,
             run: async (ctx) => {
-                const r = await applyAvailableLogs({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
+                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
                 if (r.status !== 'caught_up') throw new Error(r.reason || `Restore stopped (${r.status})`);
                 return `${r.restored} log(s) restored; ${target.name} is at LSN ${r.position}`;
             },
@@ -386,7 +397,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
             },
             run: async (ctx) => {
                 const tail = backups.get(ctx.state.tailFileId);
-                const r = await applyAvailableLogs({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
+                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
                 if (!r.position || L.lt(r.position, tail.last_lsn)) {
                     throw new Error(`${target.name} stopped at LSN ${r.position}, before the end of the tail log (${tail.last_lsn}): ${r.reason || r.status}`);
                 }
@@ -524,8 +535,8 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
             label: `Restore every available log on ${target.name}`,
             guidance: `Nothing has been recovered yet. Fix the cause and resume, or mark the operation resolved.`,
             run: async (ctx) => {
-                const r = await applyAvailableLogs({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
-                if (r.status === 'reseed' || r.status === 'stopped') throw new Error(r.reason);
+                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
+                if (!['caught_up', 'broken'].includes(r.status)) throw new Error(r.reason || `Restore stopped (${r.status}); resume to try again`);
                 const files = backups.all(db.id);
                 const landed = lag({ files, position: r.position, lineage: forks.lineage(db.id) }).lastRestored;
                 ctx.save({ gap: r.status === 'broken' ? r.reason : null, recoveredAt: r.position, dataUpTo: landed?.backup_finish ?? null });

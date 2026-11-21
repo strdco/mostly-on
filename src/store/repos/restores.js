@@ -22,6 +22,11 @@ export function finish(id, outcome, error = null) {
         .run(outcome, error ? String(error).slice(0, 2000) : null, nowIso(), id);
 }
 
+/** Forgets a restore that never started (SQL Server refused it because readers held the database). */
+export function discard(id) {
+    getDb().prepare("DELETE FROM restores WHERE id=? AND outcome='running'").run(id);
+}
+
 export function get(id) {
     return getDb().prepare(`SELECT ${COLS} ${FROM} WHERE r.id=?`).get(id);
 }

@@ -139,7 +139,8 @@ export function checkLive(db, server, live) {
  *
  * @param {{db:object, server:object, mode?:'norecovery'|'standby', operationId?:number|null, onProgress?:(t:string)=>void}} p
  *   mode overrides the replica's restore mode (failovers always use NORECOVERY).
- * @returns {Promise<{status:'caught_up'|'broken'|'reseed'|'stopped', reason?:string, restored:number,
+ *   Every log restore disconnects anyone reading a STANDBY copy first.
+ * @returns {Promise<{status:'caught_up'|'broken'|'reseed'|'stopped'|'readers'|'yield'|'more', reason?:string, restored:number,
  *           position:string|null, forkGuid:string|null, lastFile:object|null}>}
  *   Throws on errors that are worth retrying (connection, unexpected SQL errors).
  */
@@ -190,9 +191,11 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
         lastFileId = file.id;
         onProgress?.(`Restoring ${file.rel_path} on ${server.name}`);
         try {
-            await restoreFile({ db, server, file, operationId, mode: mode || rep.restore_mode, disconnectUsers: !!rep.disconnect_users });
+            await restoreFile({ db, server, file, operationId, mode: mode || rep.restore_mode });
         } catch (err) {
-            if (err.restoreKind === 'already_applied') continue; // position is re-read; the guard above stops a loop
+            if (err.restoreKind === 'already_applied') continue;
+            // Someone reconnected in the instant between the disconnect and the restore: try again shortly.
+            if (err.restoreKind === 'in_use') return result('readers', { ...at, reason: `Someone reconnected to ${db.name} on ${server.name} just as the restore started` }); // position is re-read; the guard above stops a loop
             if (err.restoreKind === 'too_recent') return result('broken', { ...at, reason: `SQL Server refused ${file.rel_path} as too recent: ${sqlErrorText(err)}` });
             if (err.restoreKind === 'wrong_fork') return result('reseed', { ...at, reason: `SQL Server refused ${file.rel_path} as being on another recovery path: ${sqlErrorText(err)}` });
             if (err.restoreKind === 'cannot_open' && !fileOnDisk(file)) {
@@ -227,6 +230,11 @@ async function pass(dbId, serverId, w) {
         if (r.status === 'broken') return stopShipping(db, server, 'broken', r.reason);
         if (r.status === 'reseed') return stopShipping(db, server, 'needs_reseed', r.reason);
         if (r.status === 'stopped' || r.status === 'yield') return;
+        if (r.status === 'readers') {
+            // Not a failure: no backoff, the next poll (or backup) tries again.
+            log.info('Restore deferred: a reader reconnected', { database: db.name, server: server.name });
+            return;
+        }
         if (r.status === 'more') w.again = true;
         const restored = r.restored;
 

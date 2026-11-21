@@ -53,7 +53,6 @@ export function replicaRoutes(router) {
             serverId: idParam(b.server_id, 'server_id'),
             source: b.source,
             restoreMode: b.restore_mode,
-            disconnectUsers: !!b.disconnect_users,
             overwrite: b.overwrite === true,
             confirm: typeof b.confirm === 'string' ? b.confirm : null,
         });
@@ -81,7 +80,6 @@ export function replicaRoutes(router) {
             }
             patch.restore_mode = b.restore_mode;
         }
-        if (b.disconnect_users !== undefined) patch.disconnect_users = !!b.disconnect_users;
         const updated = databases.updateReplica(db.id, rep.server_id, patch);
         events.add('info', 'restore', `Shipping settings of ${db.name} on ${rep.server_name} changed`, { databaseId: db.id, serverId: rep.server_id, data: patch });
         changed(db, rep.server_id);

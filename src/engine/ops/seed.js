@@ -101,7 +101,7 @@ export async function seedPreflight(databaseId, targetServerId, { reseed = false
  */
 export async function startSeed(
     databaseId,
-    { serverId, source = 'new_full', restoreMode = 'norecovery', disconnectUsers = false, overwrite = false, confirm = null, reseed = false, safetyBackup = false },
+    { serverId, source = 'new_full', restoreMode = 'norecovery', overwrite = false, confirm = null, reseed = false, safetyBackup = false },
 ) {
     if (!SOURCES.includes(source)) throw fail(400, `source must be one of ${SOURCES.join(', ')}`);
     if (!RESTORE_MODES.includes(restoreMode)) throw fail(400, `restore_mode must be one of ${RESTORE_MODES.join(', ')}`);
@@ -133,13 +133,12 @@ export async function startSeed(
             targetServerId: target.id,
             source,
             restoreMode,
-            disconnectUsers: !!disconnectUsers,
             overwrite: !!pf.existsOnTarget,
             reseed: !!reseed,
             safetyBackup: !!(reseed && safetyBackup),
             previousRole: pf.replica?.role ?? null,
         };
-        databases.addSecondary({ databaseId: db.id, serverId: target.id, restoreMode, disconnectUsers });
+        databases.addSecondary({ databaseId: db.id, serverId: target.id, restoreMode });
         const stepDefs = seedSteps({ db, target, params });
         const operation = createOperation({ type: reseed ? 'reseed' : 'seed', databaseId: db.id, serverId: target.id, params, stepDefs });
         events.add(

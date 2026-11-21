@@ -233,7 +233,11 @@ export function safetyBackup({ continueAfterError = false } = {}) {
 export const RESTORE_HEADERONLY = 'RESTORE HEADERONLY FROM DISK=@path;';
 
 /** RESTORE LOG WITH NORECOVERY or STANDBY=@undo, optionally disconnecting readers first. */
-export function restoreLog({ standby = false, disconnectUsers = false } = {}) {
-    const restore = `RESTORE LOG @db FROM DISK=@path WITH ${standby ? 'STANDBY=@undo' : 'NORECOVERY'}, CHECKSUM;`;
-    return disconnectUsers ? `${KILL_SESSIONS}\n${restore}` : restore;
+/**
+ * RESTORE LOG, after disconnecting anyone using the database. Only a STANDBY
+ * copy can have readers; they are always disconnected so restores stay on
+ * time (user decision). For a NORECOVERY copy the KILL list is empty.
+ */
+export function restoreLog({ standby = false } = {}) {
+    return `${KILL_SESSIONS}\nRESTORE LOG @db FROM DISK=@path WITH ${standby ? 'STANDBY=@undo' : 'NORECOVERY'}, CHECKSUM;`;
 }

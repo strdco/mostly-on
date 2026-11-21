@@ -32,15 +32,15 @@ export function fileOnDisk(file) {
  * classifyRestoreError() result.
  *
  * @param {{db:object, server:object, file:object, operationId?:number|null, mode?:'norecovery'|'standby',
- *          disconnectUsers?:boolean, moves?:{from:string,to:string}[], replace?:boolean, onInfo?:(m:string)=>void}} p
+ *          moves?:{from:string,to:string}[], replace?:boolean, onInfo?:(m:string)=>void}} p
  */
-export async function restoreFile({ db, server, file, operationId = null, mode = 'norecovery', disconnectUsers = false, moves = [], replace = false, onInfo }) {
+export async function restoreFile({ db, server, file, operationId = null, mode = 'norecovery', moves = [], replace = false, onInfo }) {
     const sqlPath = translatePath(file.rel_path, server, pathOpts('rel', 'sql'));
     const params = { db: T.sysname(db.name), path: T.nvarchar(sqlPath) };
     let text;
     if (file.type === 'LOG') {
         const standby = mode === 'standby';
-        text = Q.restoreLog({ standby, disconnectUsers });
+        text = Q.restoreLog({ standby });
         if (standby) params.undo = T.nvarchar(undoFilePath(server, db.name));
     } else if (file.type === 'FULL' || file.type === 'DIFF') {
         text = Q.restoreDatabase({ moveCount: moves.length, replace });
@@ -57,7 +57,9 @@ export async function restoreFile({ db, server, file, operationId = null, mode =
         await query(server.id, text, params, { timeoutMs: 0, onInfo });
     } catch (err) {
         const kind = classifyRestoreError(err);
-        restores.finish(restoreId, kind === 'already_applied' ? 'already_applied' : 'failed', sqlErrorText(err));
+        // "In use": someone reconnected between the disconnect and the restore. Nothing was restored.
+        if (kind === 'in_use') restores.discard(restoreId);
+        else restores.finish(restoreId, kind === 'already_applied' ? 'already_applied' : 'failed', sqlErrorText(err));
         err.restoreKind = kind;
         throw err;
     }

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { openDb, closeDb, getDb, migrate } from '../../src/store/db.js';
 import * as servers from '../../src/store/repos/servers.js';
 import * as settings from '../../src/store/repos/settings.js';
@@ -15,7 +16,8 @@ test('migrations create the schema and are idempotent', () => {
         assert.ok(tables.includes(t), `missing table ${t}`);
     }
     migrate(getDb()); // second run is a no-op
-    assert.equal(getDb().prepare('SELECT COUNT(*) FROM schema_migrations').pluck().get(), 1);
+    const files = fs.readdirSync(new URL('../../src/store/migrations/', import.meta.url)).filter((f) => /^\d{3}_.+\.sql$/.test(f));
+    assert.equal(getDb().prepare('SELECT COUNT(*) FROM schema_migrations').pluck().get(), files.length);
     closeDb();
 });
 

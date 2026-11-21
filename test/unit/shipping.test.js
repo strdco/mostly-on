@@ -161,8 +161,8 @@ test('backoff grows and is capped', () => {
 test('generated RESTORE statements only contain parameter placeholders', () => {
     const sql = restoreDatabase({ moveCount: 2, replace: true });
     assert.equal(sql, 'RESTORE DATABASE @db FROM DISK=@path WITH NORECOVERY, CHECKSUM, STATS=10, REPLACE, MOVE @move_from0 TO @move_to0, MOVE @move_from1 TO @move_to1;');
-    assert.equal(restoreLog(), 'RESTORE LOG @db FROM DISK=@path WITH NORECOVERY, CHECKSUM;');
-    const standby = restoreLog({ standby: true, disconnectUsers: true });
+    assert.match(restoreLog(), /KILL[\s\S]*RESTORE LOG @db FROM DISK=@path WITH NORECOVERY, CHECKSUM;$/);
+    const standby = restoreLog({ standby: true });
     assert.match(standby, /STANDBY=@undo/);
     assert.match(standby, /KILL/);
     assert.match(standby, /DB_ID\(@db\)/);

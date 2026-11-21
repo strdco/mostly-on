@@ -40,7 +40,6 @@ export function failoverRoutes(router) {
             serverId: idParam(ctx.params.serverId, 'serverId'),
             source: b.source || 'new_full',
             restoreMode: b.restore_mode || 'norecovery',
-            disconnectUsers: !!b.disconnect_users,
             confirm: typeof b.confirm === 'string' ? b.confirm : null,
             reseed: true,
             safetyBackup: b.safety_backup !== false,

@@ -22,7 +22,7 @@ export function setFamilyGuid(id, familyGuid) {
 }
 
 const REPLICA_COLS = `r.database_id, r.server_id, s.name AS server_name, r.role, r.chain_state, r.chain_reason,
-    r.restore_mode, r.disconnect_users, r.position_lsn, r.position_fork_guid, r.last_restored_file_id,
+    r.restore_mode, r.position_lsn, r.position_fork_guid, r.last_restored_file_id,
     r.last_restored_at, r.updated_at`;
 
 export function replicas(databaseId) {
@@ -58,7 +58,7 @@ export function replicasOnServer(serverId) {
  * Adds a server as a secondary in state 'seeding', or puts an existing
  * secondary back into 'seeding' (reseed). Never touches a primary.
  */
-export function addSecondary({ databaseId, serverId, restoreMode, disconnectUsers }) {
+export function addSecondary({ databaseId, serverId, restoreMode }) {
     return tx(() => {
         const existing = replica(databaseId, serverId);
         if (existing && existing.role === 'primary') throw new Error('Server is the primary of this database');
@@ -67,23 +67,23 @@ export function addSecondary({ databaseId, serverId, restoreMode, disconnectUser
             getDb()
                 .prepare(
                     `UPDATE database_replicas SET role='secondary', chain_state='seeding', chain_reason=NULL, restore_mode=?,
-                        disconnect_users=?, position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL,
+                        position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL,
                         last_restored_at=NULL, updated_at=? WHERE database_id=? AND server_id=?`,
                 )
-                .run(restoreMode, disconnectUsers ? 1 : 0, now, databaseId, serverId);
+                .run(restoreMode, now, databaseId, serverId);
         } else {
             getDb()
                 .prepare(
-                    `INSERT INTO database_replicas (database_id, server_id, role, chain_state, restore_mode, disconnect_users, updated_at)
-                     VALUES (?, ?, 'secondary', 'seeding', ?, ?, ?)`,
+                    `INSERT INTO database_replicas (database_id, server_id, role, chain_state, restore_mode, updated_at)
+                     VALUES (?, ?, 'secondary', 'seeding', ?, ?)`,
                 )
-                .run(databaseId, serverId, restoreMode, disconnectUsers ? 1 : 0, now);
+                .run(databaseId, serverId, restoreMode, now);
         }
         return replica(databaseId, serverId);
     });
 }
 
-const REPLICA_PATCHABLE = ['chain_state', 'chain_reason', 'restore_mode', 'disconnect_users', 'position_lsn', 'position_fork_guid', 'last_restored_file_id', 'last_restored_at'];
+const REPLICA_PATCHABLE = ['chain_state', 'chain_reason', 'restore_mode', 'position_lsn', 'position_fork_guid', 'last_restored_file_id', 'last_restored_at'];
 
 /** Updates any subset of the replica's shipping fields. */
 export function updateReplica(databaseId, serverId, patch) {
@@ -112,7 +112,7 @@ export function swapPrimary(databaseId, { newPrimaryId, oldPrimaryId, oldPrimary
         // Demote first: the partial unique index allows only one primary.
         getDb()
             .prepare(
-                `UPDATE database_replicas SET role=?, chain_state='ok', chain_reason=NULL, restore_mode='norecovery', disconnect_users=0,
+                `UPDATE database_replicas SET role=?, chain_state='ok', chain_reason=NULL, restore_mode='norecovery',
                     position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL, last_restored_at=NULL, updated_at=?
                  WHERE database_id=? AND server_id=?`,
             )
