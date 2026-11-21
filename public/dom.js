@@ -114,10 +114,14 @@ export function formatBytes(n) {
     return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/** A moment in the browser's local time, ISO style: "2026-11-21 14:03:09". */
 export function formatTime(iso) {
     if (!iso) return '–';
     const d = new Date(iso);
-    return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' });
+    if (Number.isNaN(d.getTime())) return '–';
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 export function ago(iso) {
@@ -236,4 +240,94 @@ export function tooltip(trigger, text) {
     tip.addEventListener('mouseenter', () => clearTimeout(hideTimer));
     tip.addEventListener('mouseleave', () => hide());
     return { tip, show };
+}
+
+let menuSeq = 0;
+
+/**
+ * A button that opens a popup menu of commands: an auto popover (light
+ * dismiss, Escape) placed below the button by script. Arrow keys, Home and
+ * End move between items; opening from the keyboard (Enter, Space,
+ * ArrowDown) focuses the first usable item; closing returns focus to the
+ * button. Items: [{ label, hint?, disabled?, onSelect }]; a disabled item
+ * stays reachable (aria-disabled) so its hint is read out.
+ * Returns [button, menu]: keep them next to each other.
+ */
+export function menuButton(label, items, { className = '' } = {}) {
+    const id = `menu-${++menuSeq}`;
+    const trigger = h(`button${className}`, { type: 'button', id: `${id}-trigger`, 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-controls': id }, label, h('span.menu-caret', { 'aria-hidden': 'true' }, ' ▾'));
+    const buttons = items.map((it) =>
+        h(
+            'button',
+            { type: 'button', role: 'menuitem', tabindex: '-1', 'aria-disabled': it.disabled ? 'true' : null },
+            h('span', it.label),
+            it.hint ? h('span.menu-hint', it.hint) : null,
+        ),
+    );
+    const menu = h('div.menu', { id, popover: 'auto', role: 'menu', 'aria-labelledby': trigger.id }, buttons);
+    const usable = () => buttons.filter((b) => b.getAttribute('aria-disabled') !== 'true');
+    const isOpen = () => menu.matches(':popover-open');
+    let enterOnOpen = false;
+
+    const place = () => {
+        const r = trigger.getBoundingClientRect();
+        const m = menu.getBoundingClientRect();
+        const gap = 4;
+        const below = r.bottom + gap + m.height <= window.innerHeight - 8 || r.top - gap - m.height < 8;
+        menu.style.top = `${Math.round(below ? r.bottom + gap : r.top - gap - m.height)}px`;
+        menu.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - m.width - 8)))}px`;
+    };
+    const open = (enter) => {
+        enterOnOpen = enter;
+        if (!isOpen()) menu.showPopover();
+        else if (enter) (usable()[0] ?? buttons[0])?.focus();
+    };
+    const close = ({ restore = true, fromPointer = false } = {}) => {
+        if (restore) trigger.focus({ focusVisible: !fromPointer });
+        if (isOpen()) menu.hidePopover();
+    };
+
+    menu.addEventListener('toggle', (e) => {
+        const opened = e.newState === 'open';
+        trigger.setAttribute('aria-expanded', String(opened));
+        if (opened) {
+            place();
+            if (enterOnOpen) (usable()[0] ?? buttons[0])?.focus();
+        } else if (menu.contains(document.activeElement)) {
+            trigger.focus();
+        }
+    });
+    trigger.addEventListener('click', (e) => {
+        if (isOpen()) return close({ fromPointer: e.detail > 0 });
+        open(e.detail === 0); // detail 0: Enter or Space, so enter the menu
+    });
+    trigger.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            open(true);
+        }
+    });
+    menu.addEventListener('keydown', (e) => {
+        const i = buttons.indexOf(document.activeElement);
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+            e.preventDefault();
+            const n = buttons.length;
+            const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (i + (e.key === 'ArrowUp' ? -1 : 1) + n) % n;
+            buttons[next].focus();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            close();
+        } else if (e.key === 'Tab') {
+            close({ restore: false });
+        }
+    });
+    buttons.forEach((b, i) => {
+        b.addEventListener('pointermove', () => b !== document.activeElement && b.focus({ focusVisible: false }));
+        b.addEventListener('click', (e) => {
+            if (b.getAttribute('aria-disabled') === 'true') return;
+            close({ fromPointer: e.detail > 0 });
+            items[i].onSelect();
+        });
+    });
+    return [trigger, menu];
 }

@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, formatTime, tooltip } from '../dom.js';
+import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, formatTime, tooltip, menuButton } from '../dom.js';
 import { get, post, put } from '../api.js';
 import { stateBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagBadge, formatDuration, busyText } from './overview.js';
 import { operationsTable } from './operations.js';
@@ -339,9 +339,30 @@ async function pointInTimeDialog(db) {
         max: localInputValue(until),
         value: localInputValue(new Date(Math.max(from.getTime(), until.getTime() - 15 * 60_000))),
     });
-    // Polite live region: the moment on the primary's clock, when it differs from this browser's.
-    const clock = h('p.small.muted', { 'aria-live': 'polite' });
+    // The moment on the primary's clock, when it differs from this browser's. Not a live
+    // region: dragging the slider would announce it at every step.
+    const clock = h('p.small.muted');
     const chosen = () => (moment.value ? new Date(moment.value) : null);
+
+    // A slider over the same range, one step per second, kept in sync with the field.
+    const toSec = (d) => Math.floor(d.getTime() / 1000);
+    const slider = h('input.range', { type: 'range', min: toSec(from), max: toSec(until), step: 1, 'aria-label': 'Moment to restore to' });
+    const syncSlider = () => {
+        const d = chosen();
+        if (d) slider.value = String(toSec(d));
+        slider.setAttribute('aria-valuetext', d ? formatTime(d.toISOString()) : 'no moment chosen');
+        slider.style.setProperty('--control-value', slider.value);
+    };
+    slider.addEventListener('input', () => {
+        moment.value = localInputValue(new Date(Number(slider.value) * 1000));
+        moment.setCustomValidity('');
+        sync();
+    });
+    const sliderBlock = h(
+        'div.range-block',
+        slider,
+        h('div.range-ends.small.muted', { 'aria-hidden': 'true' }, h('span', 'earliest possible'), h('span', range.untilNow ? 'now' : formatTime(range.to ?? range.from))),
+    );
 
     const servers = range.servers.filter((s) => s.ok);
     const preferred = servers.find((s) => s.role === 'secondary') ?? servers[0];
@@ -372,7 +393,6 @@ async function pointInTimeDialog(db) {
             h(
                 'ul',
                 h('li', `Everyone using ${db.name} on ${primaryName} is disconnected, and it accepts no changes until the rollback is done.`),
-                h('li', `First, a final log backup captures every change up to now. It and the other backups from after the moment stay on the backup share until retention deletes them, but Mostly On cannot restore the database to a moment after the rollback point any more.`),
                 h('li', 'If you might need some of those changes, restore a copy as it is now first, before rolling back.'),
                 secondaries.length
                     ? h('li', `${secondaries.join(' and ')} ${secondaries.length === 1 ? 'is restored to the same moment and then continues' : 'are restored to the same moment and then continue'} as usual. A secondary that cannot be restored is marked for reinitializing.`)
@@ -398,6 +418,7 @@ async function pointInTimeDialog(db) {
         if (d && !nameEdited) nameInput.value = copyName(db, d);
         const offset = range.primary.tz_offset_minutes;
         clear(clock).append(d && offset != null && offset !== -d.getTimezoneOffset() ? `That is ${serverClock(d, offset)} on ${primaryName}'s clock.` : '');
+        syncSlider();
     };
     moment.addEventListener('input', sync);
     modes.addEventListener('change', sync);
@@ -408,10 +429,11 @@ async function pointInTimeDialog(db) {
         : `any moment from ${formatTime(range.from)} to ${formatTime(range.to ?? range.from)}. ${primaryName} is not reachable, so later moments are not available.`;
 
     return formDialog({
-        title: `Restore ${db.name} to a point in time`,
+        title: `Restore ${db.name}`,
         fields: [
             h('p', `Mostly On can restore ${db.name} to ${span}`),
-            field(`Restore to (your time, ${offsetText(-new Date().getTimezoneOffset())})`, moment, 'Date and time, to the second.'),
+            field(`Restore to (your time, ${offsetText(-new Date().getTimezoneOffset())})`, moment, 'Date and time, to the second, or drag the slider below.'),
+            sliderBlock,
             clock,
             modes,
             copyGroup,
@@ -515,8 +537,8 @@ function retentionForm(db, settings, reload) {
         h('input', { type: 'number', name: key, min: 1, max: 3650, step: 1, inputmode: 'numeric', value: own[key] ?? '', placeholder: `${defaults[key]} (default)` });
     const inputs = { full: input('full'), diff: input('diff'), log: input('log') };
     const problem = h('p.error-text', { role: 'alert' });
-    const save = h('button.primary', { type: 'submit' }, 'Save retention');
-    const clearBtn = h('button', { type: 'button' }, 'Use the defaults');
+    const save = h('button.primary', { type: 'submit' }, 'Set retention');
+    const clearBtn = h('button', { type: 'button' }, 'Revert to defaults');
     const valueOf = (k) => (inputs[k].value === '' ? null : Number(inputs[k].value));
     const submit = async (body) => {
         const effective = { full: body.full_days ?? defaults.full, diff: body.diff_days ?? defaults.diff, log: body.log_days ?? defaults.log };
@@ -536,10 +558,11 @@ function retentionForm(db, settings, reload) {
     const form = h(
         'form.stack.settings-form',
         h(
-            'div.field-row',
-            field('Keep FULL backups (days)', inputs.full),
-            field('Keep DIFF backups (days)', inputs.diff),
-            field('Keep LOG backups (days)', inputs.log),
+            'fieldset.retention-days',
+            h('legend', 'Keep backups for (days)'),
+            field('FULL', inputs.full),
+            field('DIFF', inputs.diff),
+            field('LOG', inputs.log),
         ),
         problem,
         h('div.actions', save, clearBtn),
@@ -588,6 +611,7 @@ export function stopManagingDialog(db) {
 export function databaseView(id) {
     let root;
     let timer;
+    let moreOpen = false; // "Show more…" stays as the user left it across live re-renders
 
     async function backupNow(type) {
         try {
@@ -596,6 +620,17 @@ export function databaseView(id) {
         } catch (err) {
             toast(err.message, 'err');
         }
+    }
+
+    // DIFF and LOG backups build on a FULL: until Mostly On has one, they are greyed out.
+    function backupMenu(db) {
+        const noFull = !db.latest.FULL;
+        const needsFull = noFull ? 'needs a full backup first' : null;
+        return menuButton('Backup', [
+            { label: 'Full backup', onSelect: () => backupNow('FULL') },
+            { label: 'Differential backup', hint: needsFull, disabled: noFull, onSelect: () => backupNow('DIFF') },
+            { label: 'Log backup', hint: needsFull, disabled: noFull, onSelect: () => backupNow('LOG') },
+        ]);
     }
 
     // Disabled (but focusable, with its reason as a tooltip) while other copies exist.
@@ -622,13 +657,15 @@ export function databaseView(id) {
         const stopped = db.replicas.filter((r) => r.role !== 'diverged' && (['broken', 'needs_reseed'].includes(r.chain_state) || (r.chain_state === 'seeding' && r.chain_reason)));
         const diverged = db.replicas.filter((r) => r.role === 'diverged');
         const unacked = db.foreignBackups.filter((f) => !f.acknowledged_at);
+        const stuckOps = db.operations.filter((o) => o.resumable || o.resolvable);
         // Native append() would render null as the text "null"; h() skips it.
         clear(root).append(
             ...[
             h('h1', db.name),
             h(
                 'div.actions',
-                ['FULL', 'DIFF', 'LOG'].map((t) => h('button', { type: 'button', onclick: () => backupNow(t) }, `Back up ${t} now`)),
+                backupMenu(db),
+                dialogButton('Restore…', () => pointInTimeDialog(db)),
                 h(
                     'button.primary',
                     {
@@ -640,7 +677,6 @@ export function databaseView(id) {
                     },
                     'Add secondary',
                 ),
-                dialogButton('Restore to a point in time…', () => pointInTimeDialog(db)),
                 stopButton(db),
             ),
             stopped.length
@@ -772,43 +808,57 @@ export function databaseView(id) {
                 ],
             }),
             ...retentionForm(db, settings, load),
-            h('h2', 'Backup history'),
-            dataTable({
-                caption: '100 most recent backup files',
-                rows: files,
-                limit: 10,
-                empty: 'No backups yet.',
-                columns: [
-                    { label: 'Type', header: true, cell: (f) => f.type + (f.is_tail ? ' (tail-log, from a failover)' : '') },
-                    { label: 'Finished', cell: (f) => formatTime(f.backup_finish) },
-                    { label: 'File', cell: (f) => h('span.mono', f.rel_path.split('/').pop()) },
-                    { label: 'Size', num: true, cell: (f) => formatBytes(f.size_bytes) },
-                    { label: 'Status', cell: (f) => badge(...(FILE_STATUS[f.file_status] || [f.file_status, ''])) },
-                ],
-            }),
-            h('h2', 'Restore history'),
-            dataTable({
-                caption: '50 most recent restores on secondaries',
-                rows: restoreRows,
-                limit: 10,
-                empty: 'Nothing restored yet.',
-                columns: [
-                    { label: 'Started', header: true, cell: (x) => formatTime(x.started_at) },
-                    { label: 'Server', cell: (x) => x.server_name },
-                    { label: 'Backup', cell: (x) => [`${x.backup_type} `, h('span.mono', x.rel_path.split('/').pop())] },
-                    { label: 'Outcome', cell: (x) => [badge(OUTCOME_TEXT[x.outcome] || x.outcome, OUTCOME_KIND[x.outcome]), x.error ? h('div.small.error-text', x.error) : null] },
-                    {
-                        label: 'Took',
-                        num: true,
-                        cell: (x) => (x.finished_at ? formatDuration(Math.round((new Date(x.finished_at) - new Date(x.started_at)) / 1000)) : '–'),
+            // Failed or interrupted operations stay in view: they are resumed from here.
+            stuckOps.length ? h('h2', 'Needs your attention') : null,
+            stuckOps.length ? operationsTable(stuckOps, 'Operations that stopped before they finished') : null,
+            h(
+                'details.more',
+                {
+                    open: moreOpen,
+                    ontoggle: (e) => {
+                        moreOpen = e.target.open;
+                        e.target.querySelector('.more-label').textContent = moreOpen ? 'Show less' : 'Show more…';
                     },
-                    { label: 'Operation', cell: (x) => (x.operation_id ? `#${x.operation_id}` : 'restore loop') },
-                ],
-            }),
-            h('h2', 'Operations'),
-            operationsTable(db.operations, 'Recent operations (excluding routine scheduled backups)', 10),
-            h('h2', 'Events'),
-            eventsTable(evts, 'Recent events', 10),
+                },
+                h('summary', h('span.more-label', moreOpen ? 'Show less' : 'Show more…'), h('span.small.muted', ' Backup and restore history, operations, events')),
+                h('h2', 'Backup history'),
+                dataTable({
+                    caption: '100 most recent backup files',
+                    rows: files,
+                    limit: 10,
+                    empty: 'No backups yet.',
+                    columns: [
+                        { label: 'Type', header: true, cell: (f) => f.type + (f.is_tail ? ' (tail-log, from a failover)' : '') },
+                        { label: 'Finished', cell: (f) => formatTime(f.backup_finish) },
+                        { label: 'File', cell: (f) => h('span.mono', f.rel_path.split('/').pop()) },
+                        { label: 'Size', num: true, cell: (f) => formatBytes(f.size_bytes) },
+                        { label: 'Status', cell: (f) => badge(...(FILE_STATUS[f.file_status] || [f.file_status, ''])) },
+                    ],
+                }),
+                h('h2', 'Restore history'),
+                dataTable({
+                    caption: '50 most recent restores on secondaries',
+                    rows: restoreRows,
+                    limit: 10,
+                    empty: 'Nothing restored yet.',
+                    columns: [
+                        { label: 'Started', header: true, cell: (x) => formatTime(x.started_at) },
+                        { label: 'Server', cell: (x) => x.server_name },
+                        { label: 'Backup', cell: (x) => [`${x.backup_type} `, h('span.mono', x.rel_path.split('/').pop())] },
+                        { label: 'Outcome', cell: (x) => [badge(OUTCOME_TEXT[x.outcome] || x.outcome, OUTCOME_KIND[x.outcome]), x.error ? h('div.small.error-text', x.error) : null] },
+                        {
+                            label: 'Took',
+                            num: true,
+                            cell: (x) => (x.finished_at ? formatDuration(Math.round((new Date(x.finished_at) - new Date(x.started_at)) / 1000)) : '–'),
+                        },
+                        { label: 'Operation', cell: (x) => (x.operation_id ? `#${x.operation_id}` : 'restore loop') },
+                    ],
+                }),
+                h('h2', 'Operations'),
+                operationsTable(db.operations, 'Recent operations (excluding routine scheduled backups)', 10),
+                h('h2', 'Events'),
+                eventsTable(evts, 'Recent events', 10),
+            ),
             ].filter((x) => x !== null),
         );
     }

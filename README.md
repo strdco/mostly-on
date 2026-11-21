@@ -292,7 +292,7 @@ For server maintenance, **Fail over all databases** on a server's page moves eve
 
 ## Restoring to a point in time
 
-Someone deleted the wrong rows at 14:03? On the database's page, press **Restore to a point in time…**, pick the date and time (to the second, in your browser's time zone) and choose what to do. The dialog shows the moments Mostly On can restore: from just after the oldest FULL backup that still has every log backup after it, up to now while the primary is reachable.
+Someone deleted the wrong rows at 14:03? On the database's page, press **Restore…**, pick the date and time (type it to the second, in your browser's time zone, or drag the slider across the restorable range) and choose what to do. The dialog shows the moments Mostly On can restore: from just after the oldest FULL backup that still has every log backup after it, up to now while the primary is reachable.
 
 ### Restore a copy (safe)
 
