@@ -41,7 +41,7 @@ services:
   sql1:
     <<: *mssql
     hostname: sql1
-    ports: ["14331:1433"]
+    ports: ["${SQL1_PORT:-14331}:1433"]
     volumes:
       - sql1-data:/var/opt/mssql
       - backup:/var/opt/mssql/backup
@@ -49,7 +49,7 @@ services:
   sql2:
     <<: *mssql
     hostname: sql2
-    ports: ["14332:1433"]
+    ports: ["${SQL2_PORT:-14332}:1433"]
     volumes:
       - sql2-data:/var/opt/mssql
       - backup:/var/opt/mssql/backup
@@ -70,7 +70,7 @@ services:
       PUSHOVER_APP_TOKEN: ${PUSHOVER_APP_TOKEN:-}
       PUSHOVER_USER_KEY: ${PUSHOVER_USER_KEY:-}
       PUSHOVER_API_URL: ${PUSHOVER_API_URL:-https://api.pushover.net/1/messages.json}
-    ports: ["8080:8080"]
+    ports: ["${CONTROLLER_PORT:-8080}:8080"]
     volumes:
       - controller-data:/data
       - backup:/backup

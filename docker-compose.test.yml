@@ -10,7 +10,7 @@ services:
     command: ["node", "/mock/mock-pushover.mjs"]
     volumes:
       - ./test/mock-pushover.mjs:/mock/mock-pushover.mjs:ro
-    ports: ["9911:9911"]
+    ports: ["${MOCK_PUSHOVER_PORT:-9911}:9911"]
     restart: unless-stopped
 
   controller:
