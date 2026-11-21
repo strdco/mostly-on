@@ -40,6 +40,62 @@ export function buildMoves(fileList, { defaultDataPath, defaultLogPath, dbName }
     });
 }
 
+/**
+ * MOVE clauses for a copy restored under a new name next to the original:
+ * every file gets a name derived from the new database name, so nothing
+ * collides with the original's files ("Sales_20261121_1430.mdf",
+ * "Sales_20261121_1430_log.ldf", "Sales_20261121_1430_Archive.ndf").
+ */
+export function copyMoves(fileList, { defaultDataPath, defaultLogPath, newName }) {
+    if (!defaultDataPath || !defaultLogPath) throw new Error('The target server has not reported its default data and log paths yet (is it reachable?)');
+    const base = safeName(newName);
+    const used = new Set();
+    let firstLog = true;
+    return fileList.map((f) => {
+        let dir;
+        let name;
+        if (f.type === 'D') {
+            dir = defaultDataPath;
+            name = f.fileId === 1 ? `${base}.mdf` : `${base}_${safeName(f.logicalName)}.ndf`;
+        } else if (f.type === 'L') {
+            dir = defaultLogPath;
+            name = firstLog ? `${base}_log.ldf` : `${base}_${safeName(f.logicalName)}.ldf`;
+            firstLog = false;
+        } else if (f.type === 'S') {
+            dir = defaultDataPath;
+            name = `${base}_${safeName(f.logicalName)}`;
+        } else {
+            throw new Error(`Backup contains a file of type ${f.type} (${f.logicalName}), which Mostly On cannot place`);
+        }
+        if (used.has(name.toLowerCase())) {
+            const dot = name.lastIndexOf('.');
+            name = dot > 0 ? `${name.slice(0, dot)}_${f.fileId}${name.slice(dot)}` : `${name}_${f.fileId}`;
+        }
+        used.add(name.toLowerCase());
+        return { from: f.logicalName, to: sqlPathApi(dir).join(dir, name) };
+    });
+}
+
+/**
+ * MOVE clauses for restoring a database over itself (RESTORE ... REPLACE):
+ * each file goes back where the database keeps it now (matched by logical
+ * name), files it does not have yet go where buildMoves() puts them. Files
+ * already at the path the backup names need no MOVE.
+ *
+ * @param {object[]} fileList     RESTORE FILELISTONLY
+ * @param {{logicalName:string, physicalName:string}[]} current  the database's files on the server now
+ * @param {{defaultDataPath:string, defaultLogPath:string, dbName:string}} target
+ */
+export function inPlaceMoves(fileList, current, target) {
+    const now = new Map(current.map((f) => [f.logicalName.toLowerCase(), f.physicalName]));
+    const missing = fileList.filter((f) => !now.has(f.logicalName.toLowerCase()));
+    const fallback = new Map(missing.length ? buildMoves(missing, target).map((m) => [m.from, m.to]) : []);
+    return fileList
+        .map((f) => ({ from: f.logicalName, to: now.get(f.logicalName.toLowerCase()) ?? fallback.get(f.logicalName), backupPath: f.physicalName }))
+        .filter((m) => m.to !== m.backupPath)
+        .map(({ from, to }) => ({ from, to }));
+}
+
 /** STANDBY undo file for a database on a server (SQL Server path). */
 export function undoFilePath(server, dbName) {
     const dir = server.standby_root || server.default_data_path;

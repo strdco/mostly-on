@@ -10,6 +10,8 @@ import * as events from '../../store/repos/events.js';
 import * as inspect from '../../sql/inspect.js';
 import * as health from '../../engine/health.js';
 import * as retention from '../../engine/retention.js';
+import * as settings from '../../store/repos/settings.js';
+import { checkRetention, effectiveRetention, globalRetention } from '../../engine/retention-rules.js';
 import { startBackup, BACKUP_TYPES } from '../../engine/backup.js';
 import { validateSchedule } from '../../engine/schedule-math.js';
 import { holders } from '../../engine/locks.js';
@@ -50,6 +52,11 @@ function summary(db) {
         schedules: schedules.list(db.id),
         foreignLogBackups: foreign.unacknowledged(db.id),
         busy: holders(db.id),
+        // own: this database's values (null = the global default); effective: what retention uses.
+        retention: {
+            own: { full: db.retention_full_days ?? null, diff: db.retention_diff_days ?? null, log: db.retention_log_days ?? null },
+            effective: effectiveRetention(db, globalRetention(settings.all())),
+        },
     };
 }
 
@@ -158,6 +165,27 @@ export function databaseRoutes(router) {
         evaluateSoon();
         events.add('info', 'foreign-backup', `Backup taken outside Mostly On acknowledged (backup set ${ctx.params.uuid})`);
         return { ok: true };
+    });
+
+    // A database's own retention days; null (or empty) = use the global value.
+    router.put('/api/databases/:id/retention', async (ctx) => {
+        const db = mustGet(idParam(ctx.params.id));
+        const b = ctx.body || {};
+        const days = (k) => {
+            const v = b[k];
+            if (v === null || v === undefined || v === '') return null;
+            const n = Number(v);
+            if (!Number.isInteger(n) || n < 1 || n > 3650) throw new HttpError(400, `${k} must be a whole number of days (1-3650), or empty for the default`);
+            return n;
+        };
+        const own = { full: days('full_days'), diff: days('diff_days'), log: days('log_days') };
+        const effective = effectiveRetention({ retention_full_days: own.full, retention_diff_days: own.diff, retention_log_days: own.log }, globalRetention(settings.all()));
+        const problem = checkRetention(effective);
+        if (problem) throw new HttpError(400, problem);
+        const updated = databases.setRetention(db.id, own);
+        events.add('info', 'retention', `Backup retention of ${db.name}: FULL ${effective.full}, DIFF ${effective.diff}, LOG ${effective.log} days`, { databaseId: db.id, data: own });
+        publish('database.changed', { databaseId: db.id });
+        return summary(updated);
     });
 
     router.post('/api/retention/run', async (ctx) => retention.runAll({ dryRun: ctx.body?.dryRun !== false }));

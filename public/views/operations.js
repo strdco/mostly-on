@@ -7,6 +7,8 @@ const STEP_KIND = { done: 'ok', skipped: 'ok', running: '', pending: '', failed:
 export function opTitle(op) {
     if (op.type === 'backup') return `${op.params.type} backup${op.params.trigger ? ` (${op.params.trigger})` : ''}`;
     if (op.type === 'seed') return `Add secondary${op.params.overwrite ? ' (replacing an existing copy)' : ''}`;
+    if (op.type === 'pitr_copy') return `Restore a copy as it was at ${formatTime(op.params.at)} (${op.params.newName})`;
+    if (op.type === 'pitr_rollback') return `Roll back to ${formatTime(op.params.at)}`;
     const titles = {
         reseed: 'Reinitialize',
         planned_failover: 'Failover',

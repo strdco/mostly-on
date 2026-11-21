@@ -7,6 +7,7 @@ import { nowIso } from '../../store/db.js';
 import { resumeSeed } from './seed.js';
 import { resumeFailover } from './failover.js';
 import { resumeSwitchoverAll } from './switchover-all.js';
+import { resumePointInTime } from './pitr.js';
 
 const RESUMERS = {
     seed: resumeSeed,
@@ -14,6 +15,8 @@ const RESUMERS = {
     planned_failover: resumeFailover,
     forced_failover: resumeFailover,
     switchover_all: resumeSwitchoverAll,
+    pitr_copy: resumePointInTime,
+    pitr_rollback: resumePointInTime,
 };
 const CLOSABLE = ['failed', 'interrupted'];
 

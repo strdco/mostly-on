@@ -236,7 +236,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 - **Backups.** Each managed database has a FULL, DIFF and LOG schedule (by default: FULL weekly, DIFF daily, LOG every 5 minutes), editable on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express cannot compress).
 - **Shipping.** After every log backup, each secondary restores it (`WITH NORECOVERY`, or `STANDBY` for a readable copy). Readers of a readable copy are disconnected when a restore is due, so the copy stays current. "Behind" on the dashboard is how old the newest data on a secondary is.
 - **Stopped shipping.** If a log backup a secondary needs is missing, or SQL Server refuses it, Mostly On stops shipping to that secondary and tells you why. It never skips ahead or guesses. Put the file back and press **Try again**, or **Reinitialize** the secondary (a fresh copy from the primary).
-- **Retention.** Old backup files are deleted after the number of days you set. Files a secondary still needs, and the newest complete set needed to restore each database, are always kept.
+- **Retention.** Old backup files are deleted after the number of days you set (Settings), per backup type; a database can have its own values (its page, **Backup retention**). Files a secondary still needs, and the newest complete set needed to restore each database, are always kept. FULL backups must be kept at least as long as DIFF and LOG backups, because those are useless without the FULL they build on; Mostly On refuses settings that break this rule.
 - **Alerts.** Mostly On alerts you once when a problem starts, reminds you every few hours while it lasts, and sends one notice when it is resolved. Alerts cover:
   - a server is unreachable;
   - a database is not in the state it should be;
@@ -288,6 +288,34 @@ When the old primary comes back, use **Take offline** if applications might stil
 
 For server maintenance, **Fail over all databases** on a server's page moves every database whose primary is on that server to another server, one at a time, each with a tail-log backup. If one fails, the rest are not started; resume the batch once it is fixed.
 
+## Restoring to a point in time
+
+Someone deleted the wrong rows at 14:03? On the database's page, press **Restore to a point in time…**, pick the date and time (to the second, in your browser's time zone) and choose what to do. The dialog shows the moments Mostly On can restore: from just after the oldest FULL backup that still has every log backup after it, up to now while the primary is reachable.
+
+### Restore a copy (safe)
+
+Mostly On restores the database as it was at that moment under a **new name** (for example `Sales_20261121_1403`), on any registered server. Nothing that exists is changed, so this is the right choice almost every time: look at the copy, then copy the rows you need back into the live database.
+
+1. If the moment is newer than the last log backup, take a log backup first.
+2. Pick the newest FULL (and DIFF) from before the moment and every log backup after it, and check that each file is on the share.
+3. Restore them under the new name with new file names, stopping at the moment (`RESTORE LOG ... WITH STOPAT`).
+4. Bring the copy online and give it the original database's owner.
+
+Mostly On does not back up or manage the copy. Drop it when you are done (`DROP DATABASE [Sales_20261121_1403];`).
+
+### Roll back the database (destructive)
+
+Puts the managed database itself back to that moment, on the primary and on every secondary. **Every change made after the moment disappears from the database.** You type the database name to confirm.
+
+1. Wait for running backups and restores of this database to finish.
+2. Disconnect all users and take a **tail-log backup** on the primary: every change up to now goes into the backups, and the database accepts no changes until the rollback is done.
+3. Restore the primary to the moment (`REPLACE`, `STOPAT`), bring it online, give it its owner back and let users in.
+4. Record that the database continues on a new branch of its history, as after a failover.
+5. Restore each secondary to the same moment, so it can follow the new branch. A secondary that cannot be restored (for example because it is unreachable) is marked for reinitializing.
+6. Take the first log backup; shipping and the schedules continue from there.
+
+The tail-log backup and the other backups from after the moment stay on the share until retention deletes them. However, the dashboard only offers moments on the database's current branch of history, so it cannot undo a rollback. **If you might need any of the changes made after the moment, restore a copy as it is now first, then roll back.**
+
 ---
 
 ## Upgrading
@@ -322,6 +350,8 @@ The integration suite starts its own isolated compose project (`mostly-on-it`) w
 3. Fail back, and get the original owner back.
 4. Stop the primary, fail over without it, and check that shipped rows survived and the unshipped row is lost.
 5. Bring the old primary back, see it flagged out of sync, and reinitialize it.
+6. Restore copies of the database as it was at a moment, from the backups and after a fresh log backup: the row written after the moment is not in the copy, and the original is untouched.
+7. Roll the database back to a moment: the change after it is gone, the tail-log backup that holds it stays on the share, and the secondary continues from the first log backup on the new branch.
 6. Check that notifications are sent once and not repeated after a controller restart, using the mock Pushover in `docker-compose.test.yml`.
 
 It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards for a look around, and `IT_REUSE=1` to rerun against it.
@@ -335,4 +365,5 @@ It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards 
 - **SQL Server 2019 or newer only.** Readable (STANDBY) secondaries need the same major version as the primary, and a secondary cannot run an older major version than its primary.
 - **A short window during a failover with a tail-log backup.** Between disconnecting everyone (`SINGLE_USER`) and taking the tail-log backup, another program can grab the one allowed connection. The step then fails with "database is in use"; **Resume** tries again.
 - **Backup times around daylight-saving changes.** SQL Server records backup times in the server's local time. Mostly On converts them with the server's current UTC offset, so in the hour around a DST change, lag and "last backup" times can be off by an hour. Backups and restores themselves are not affected.
+- **Point-in-time restore and time zones.** SQL Server reads the moment in the local time of the server that wrote the log backup. Mostly On converts it with that server's current UTC offset, so a moment within the hour around a DST change can be off by an hour; check the copy before relying on it.
 - **No database size monitoring.** Express's 10 GB data limit is not tracked by Mostly On; watch it with your usual monitoring.

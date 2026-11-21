@@ -18,6 +18,7 @@ import { pathOpts } from './context.js';
 import { retentionPlan } from './chain.js';
 import { tryAcquire } from './locks.js';
 import { publish } from '../bus.js';
+import { checkRetention, effectiveRetention, globalRetention, safeRetention } from './retention-rules.js';
 import { log } from '../log.js';
 
 let timer = null;
@@ -27,7 +28,8 @@ let lastHistoryPurge = 0;
 function filesInUse() {
     const ids = new Set();
     for (const op of ops.unfinished()) {
-        for (const k of ['fileId', 'fullFileId', 'diffFileId', 'tailFileId', 'safetyFileId']) if (op.ctx[k]) ids.add(op.ctx[k]);
+        for (const k of ['fileId', 'fullFileId', 'diffFileId', 'tailFileId', 'safetyFileId', 'freshLogFileId']) if (op.ctx[k]) ids.add(op.ctx[k]);
+        for (const id of op.ctx.planFileIds ?? []) ids.add(id);
     }
     return ids;
 }
@@ -54,6 +56,24 @@ function deleteFile(file) {
  * Applies retention to one database.
  * @returns {{database:string, deleted:object[], kept:number, blocked:string|null, errors:string[]}}
  */
+const warnedInconsistent = new Set();
+
+/**
+ * The database's effective retention (its own values, else the global ones).
+ * FULL is never shorter than DIFF or LOG: a stored mismatch (older catalogs)
+ * is corrected here and reported once.
+ */
+function retentionDaysFor(db) {
+    const effective = effectiveRetention(databases.get(db.id) ?? db, globalRetention(settings.all()));
+    const problem = checkRetention(effective);
+    if (problem && !warnedInconsistent.has(db.id)) {
+        warnedInconsistent.add(db.id);
+        events.add('warn', 'retention', `${db.name}: ${problem} Mostly On keeps FULL backups ${Math.max(effective.diff, effective.log)} days instead until you fix the retention settings.`, { databaseId: db.id });
+    }
+    const safe = safeRetention(effective);
+    return { FULL: safe.full, DIFF: safe.diff, LOG: safe.log };
+}
+
 export function applyToDatabase(db, { dryRun = false } = {}) {
     const result = { database: db.name, databaseId: db.id, deleted: [], kept: 0, blocked: null, errors: [], protected: [] };
     const release = tryAcquire(db.id, 'retention');
@@ -66,11 +86,7 @@ export function applyToDatabase(db, { dryRun = false } = {}) {
         const plan = retentionPlan({
             files,
             secondaries: databases.replicas(db.id),
-            retentionDays: {
-                FULL: settings.get('retention.full_days'),
-                DIFF: settings.get('retention.diff_days'),
-                LOG: settings.get('retention.log_days'),
-            },
+            retentionDays: retentionDaysFor(db),
             now: new Date(),
             extraProtected: filesInUse(),
             lineage: forks.lineage(db.id),

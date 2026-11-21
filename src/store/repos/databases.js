@@ -5,16 +5,24 @@ import { nextRun } from '../../engine/schedule-math.js';
 
 export function list({ includeUnmanaged = false } = {}) {
     return getDb()
-        .prepare(`SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, created_at, updated_at FROM databases ${includeUnmanaged ? '' : "WHERE status='managed'"} ORDER BY name`)
+        .prepare(`SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, retention_full_days, retention_diff_days, retention_log_days, created_at, updated_at FROM databases ${includeUnmanaged ? '' : "WHERE status='managed'"} ORDER BY name`)
         .all();
 }
 
 export function get(id) {
-    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, created_at, updated_at FROM databases WHERE id=?').get(id);
+    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, retention_full_days, retention_diff_days, retention_log_days, created_at, updated_at FROM databases WHERE id=?').get(id);
 }
 
 export function getByName(name) {
-    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, created_at, updated_at FROM databases WHERE name=?').get(name);
+    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, retention_full_days, retention_diff_days, retention_log_days, created_at, updated_at FROM databases WHERE name=?').get(name);
+}
+
+/** Sets a database's own retention days (null = use the global value). */
+export function setRetention(id, { full, diff, log }) {
+    getDb()
+        .prepare('UPDATE databases SET retention_full_days=?, retention_diff_days=?, retention_log_days=?, updated_at=? WHERE id=?')
+        .run(full, diff, log, nowIso(), id);
+    return get(id);
 }
 
 /**

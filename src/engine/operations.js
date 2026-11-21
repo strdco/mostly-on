@@ -69,7 +69,10 @@ export async function runOperation(opId, stepDefs, { quiet = false } = {}) {
         const ctx = {
             op,
             params: op.params,
-            state: ctxState,
+            /** The persisted context, including what this step saved so far. */
+            get state() {
+                return ctxState;
+            },
             /** Merge into the persisted operation context (survives a crash). */
             save(patch) {
                 ctxState = { ...ctxState, ...patch };

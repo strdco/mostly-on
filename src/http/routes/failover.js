@@ -1,4 +1,5 @@
-// Failovers, switch-over of a whole server, reseed and handling of diverged copies.
+// Failovers, switch-over of a whole server, reseed, handling of diverged copies
+// and point-in-time restores.
 import { HttpError, idParam } from '../router.js';
 import * as databases from '../../store/repos/databases.js';
 import * as serversRepo from '../../store/repos/servers.js';
@@ -8,6 +9,7 @@ import { sqlErrorText } from '../../sql/pool.js';
 import { failoverPreview, startFailover } from '../../engine/ops/failover.js';
 import { switchoverPlan, startSwitchoverAll } from '../../engine/ops/switchover-all.js';
 import { startSeed } from '../../engine/ops/seed.js';
+import { restoreRange, startPointInTime } from '../../engine/ops/pitr.js';
 import { holders } from '../../engine/locks.js';
 import { publish } from '../../bus.js';
 
@@ -28,6 +30,23 @@ export function failoverRoutes(router) {
             serverId: idParam(b.server_id, 'server_id'),
             tailLog: b.tail_log !== false,
             acceptDataLoss: b.accept_data_loss === true,
+        });
+        ctx.status = 202;
+        return { operation: started.operation };
+    });
+
+    // The moments the database can be restored to, and the servers a copy can go to.
+    router.get('/api/databases/:id/restore-range', async (ctx) => restoreRange(idParam(ctx.params.id)));
+
+    // { mode: 'copy', at, target_server_id, new_name } or { mode: 'rollback', at, confirm }.
+    router.post('/api/databases/:id/point-in-time', async (ctx) => {
+        const b = ctx.body || {};
+        const started = await startPointInTime(idParam(ctx.params.id), {
+            mode: b.mode,
+            at: b.at,
+            targetServerId: b.mode === 'copy' ? idParam(b.target_server_id, 'target_server_id') : null,
+            newName: b.new_name,
+            confirm: b.confirm,
         });
         ctx.status = 202;
         return { operation: started.operation };

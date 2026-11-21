@@ -237,3 +237,104 @@ export function retentionPlan({ files, secondaries, retentionDays, now, extraPro
     });
     return { deletable, protectedIds, blocked: null };
 }
+
+// --- point-in-time restore ---------------------------------------------------------
+//
+// msdb records backup times to the whole second (truncated), so:
+//  - a FULL or DIFF can be the base for a moment only if it finished at least
+//    a second before it (RESTORE ... STOPAT refuses a moment inside the base);
+//  - a log backup surely holds every change up to its recorded start time.
+
+const SECOND_MS = 1000;
+const ms = (iso) => new Date(iso).getTime();
+const baseReady = (f, t) => !!f.backup_finish && ms(f.backup_finish) + SECOND_MS <= t;
+
+/**
+ * The moments a database can be restored to from the backups on disk on the
+ * active lineage: every moment from `from` to `to` (ISO strings, UTC).
+ *   from  a second after the oldest FULL or DIFF from which every log backup
+ *         up to the newest one is there
+ *   to    the start of the newest log backup (null if there is none after the
+ *         base yet: then only a fresh log backup makes a moment restorable)
+ * Returns { from, to, newestLog } or { problem } when nothing can be restored.
+ */
+export function restorableRange({ files, lineage = null }) {
+    const present = files.filter((f) => f.file_status === 'present' && f.last_lsn && onLineage(f, lineage));
+    const fulls = present.filter((f) => f.type === 'FULL');
+    if (!fulls.length) return { from: null, to: null, newestLog: null, problem: 'There is no FULL backup on the backup share.' };
+    const bases = [
+        ...fulls.map((f) => ({ file: f, position: f.last_lsn })),
+        ...present.filter((f) => f.type === 'DIFF' && fulls.some((b) => b.backup_set_uuid === f.differential_base_guid)).map((f) => ({ file: f, position: f.last_lsn })),
+    ].sort((a, b) => ms(a.file.backup_finish) - ms(b.file.backup_finish));
+    let gap = null;
+    for (const base of bases) {
+        const r = reachable({ files, position: base.position, lineage });
+        if (r.gap) {
+            gap = r.gap;
+            continue;
+        }
+        const from = ms(base.file.backup_finish) + SECOND_MS;
+        const start = r.lastFile?.backup_start ? ms(r.lastFile.backup_start) : null;
+        return {
+            from: new Date(from).toISOString(),
+            to: start !== null && start >= from ? new Date(start).toISOString() : null,
+            newestLog: r.lastFile,
+            problem: null,
+        };
+    }
+    return { from: null, to: null, newestLog: null, problem: `No FULL or DIFF backup has every log backup after it: ${gap}` };
+}
+
+/**
+ * What to restore for the moment `at` (ISO, UTC):
+ *   full, diff  the newest FULL finished before the moment, and its newest DIFF
+ *               finished before it (or null)
+ *   logs        every log from there, in order, up to the first one that surely
+ *               holds the moment (restore each WITH STOPAT; stop as soon as the
+ *               database stops inside a log, see stopReached())
+ * Returns { full, diff, logs, stopAt, problem } where problem explains why the
+ * moment cannot be restored (null if it can).
+ */
+export function pointInTimePlan({ files, lineage = null, at }) {
+    const t = ms(at);
+    if (!Number.isFinite(t)) return { problem: 'That is not a valid moment.' };
+    const present = files.filter((f) => f.file_status === 'present' && f.last_lsn && onLineage(f, lineage));
+    const fulls = present.filter((f) => f.type === 'FULL' && baseReady(f, t));
+    if (!fulls.length) return { full: null, diff: null, logs: [], stopAt: at, problem: `There is no FULL backup from before ${at} on the backup share.` };
+    const full = fulls.reduce((a, b) => (newer(b, a) ? b : a));
+    const diffs = present.filter((f) => f.type === 'DIFF' && f.differential_base_guid === full.backup_set_uuid && baseReady(f, t));
+    const diff = diffs.length ? diffs.reduce((a, b) => (L.gt(b.last_lsn, a.last_lsn) ? b : a)) : null;
+
+    const logs = [];
+    let position = diff ? diff.last_lsn : full.last_lsn;
+    let fork = null;
+    for (;;) {
+        const next = nextLog({ files, position, forkGuid: fork, lineage });
+        if (next.status === 'broken') return { full, diff, logs, stopAt: at, problem: next.reason };
+        if (next.status === 'caught_up') break;
+        logs.push(next.file);
+        if (ms(next.file.backup_start) > t) return { full, diff, logs, stopAt: at, problem: null };
+        if (logs.length >= 100_000) break;
+        position = next.file.last_lsn;
+        fork = next.file.recovery_fork_guid || fork;
+    }
+    return { full, diff, logs, stopAt: at, problem: `The log backups do not reach ${at} yet; a new log backup is needed first.` };
+}
+
+/**
+ * After RESTORE LOG ... WITH STOPAT, NORECOVERY: did the database stop at the
+ * moment inside this log (true), or did the whole log come before it (false:
+ * restore the next one)? A stopped database's position is inside the log.
+ */
+export function stopReached(position, file) {
+    return !!position && L.lt(position, file.last_lsn);
+}
+
+/**
+ * STOPAT is read in the local time of the server that wrote the log (commit
+ * times in the log are local). Returns a Date whose UTC fields are that local
+ * wall-clock time, for a datetime2 parameter sent with useUTC.
+ */
+export function stopAtLocal(atIso, offsetMinutes) {
+    return new Date(ms(atIso) + (offsetMinutes || 0) * 60_000);
+}

@@ -11,7 +11,7 @@ import * as health from '../engine/health.js';
 import * as serversRepo from '../store/repos/servers.js';
 
 /** The helper procedure version this controller needs (helper_version() in the script). */
-export const HELPER_VERSION = 1;
+export const HELPER_VERSION = 2;
 
 function call(proc, params) {
     const names = Object.keys(params);
@@ -43,19 +43,30 @@ export function tailLog({ db, path, name, description, mode, continueAfterError 
     });
 }
 
-/** RESTORE DATABASE ... WITH NORECOVERY; moves: [{ from: logical name, to: path }]. */
-export function restoreDatabase({ db, path, moves = [], replace = false }) {
-    return call('restore_database', {
+/**
+ * RESTORE DATABASE ... WITH NORECOVERY; moves: [{ from: logical name, to: path }].
+ * mustNotExist: refuse if a database of that name exists (copies under a new name).
+ */
+export function restoreDatabase({ db, path, moves = [], replace = false, mustNotExist = false }) {
+    const params = {
         db: T.sysname(db),
         path: T.nvarchar(path, 400),
         moves: T.nvarcharMax(JSON.stringify(moves.map((m) => ({ from: m.from, to: m.to })))),
         replace: T.bit(replace),
-    });
+    };
+    if (mustNotExist) params.must_not_exist = T.bit(true);
+    return call('restore_database', params);
 }
 
-/** RESTORE LOG, NORECOVERY or (with undo) STANDBY; disconnects readers first. */
-export function restoreLog({ db, path, undo = null }) {
-    return call('restore_log', { db: T.sysname(db), path: T.nvarchar(path, 400), undo: T.nvarchar(undo, 400) });
+/**
+ * RESTORE LOG, NORECOVERY or (with undo) STANDBY; disconnects readers first.
+ * stopAt (point in time): a Date whose UTC fields are the moment in the local
+ * time of the server that wrote the log (chain.stopAtLocal()).
+ */
+export function restoreLog({ db, path, undo = null, stopAt = null }) {
+    const params = { db: T.sysname(db), path: T.nvarchar(path, 400), undo: T.nvarchar(undo, 400) };
+    if (stopAt) params.stop_at = T.datetime2(stopAt);
+    return call('restore_log', params);
 }
 
 /**

@@ -20,7 +20,14 @@ SELECT CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion')) AS product_vers
        CONVERT(nvarchar(260), SERVERPROPERTY(N'InstanceDefaultDataPath')) AS default_data_path,
        CONVERT(nvarchar(260), SERVERPROPERTY(N'InstanceDefaultLogPath')) AS default_log_path,
        CONVERT(nvarchar(128), @@SERVERNAME) AS server_name,
-       SYSUTCDATETIME() AS utc_now;`;
+       SYSUTCDATETIME() AS utc_now,
+       DATEPART(TZOFFSET, SYSDATETIMEOFFSET()) AS tz_offset_minutes;`;
+
+// The files of a database as they are on this server (for RESTORE ... REPLACE in place).
+export const DB_FILES = `
+SELECT mf.name AS logical_name, mf.physical_name, mf.type_desc
+FROM sys.master_files AS mf
+WHERE mf.database_id=DB_ID(@db);`;
 
 // One row per user database with everything the health/shipping logic needs.
 // redo_start_lsn/redo_start_fork_guid are only populated while RESTORING.

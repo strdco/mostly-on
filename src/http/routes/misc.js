@@ -5,6 +5,8 @@ import * as settings from '../../store/repos/settings.js';
 import * as events from '../../store/repos/events.js';
 import * as sessions from '../../store/repos/sessions.js';
 import { validateSchedule } from '../../engine/schedule-math.js';
+import * as databases from '../../store/repos/databases.js';
+import { checkAllRetention, globalRetention } from '../../engine/retention-rules.js';
 
 export function miscRoutes(router, { cfg }) {
     // Facts about this controller the dashboard shows (for example as placeholders).
@@ -26,6 +28,12 @@ export function miscRoutes(router, { cfg }) {
                 return [k, v];
             });
             for (const [k, v] of values) settings.check(k, v);
+            // FULL backups must outlive the DIFF and LOG backups that build on them, here and for every database.
+            if (values.some(([k]) => k.startsWith('retention.') && k.endsWith('_days'))) {
+                const merged = { ...settings.all(), ...Object.fromEntries(values) };
+                const problem = checkAllRetention(globalRetention(merged), databases.list());
+                if (problem) throw new Error(problem);
+            }
             for (const [k, v] of values) {
                 settings.set(k, v);
                 changed.push(k);

@@ -83,7 +83,7 @@ CREATE FUNCTION mostly_on.helper_version()
 RETURNS int
 AS
 BEGIN;
-    RETURN 1;
+    RETURN 2;
 END;
 GO
 
@@ -216,10 +216,17 @@ CREATE PROCEDURE mostly_on.restore_database
     @db                 sysname,
     @path               nvarchar(400),
     @moves              nvarchar(max)=NULL,
-    @replace            bit=0
+    @replace            bit=0,
+    @must_not_exist     bit=0
 AS
 SET NOCOUNT ON;
 EXEC mostly_on.check_database @db=@db, @must_exist=0;
+
+-- A copy restored under a new name never replaces a database that is already there.
+IF (@must_not_exist=1 AND DB_ID(@db) IS NOT NULL) BEGIN;
+    DECLARE @exists nvarchar(2048)=N'A database named '+@db+N' already exists on this server; choose another name.';
+    THROW 50003, @exists, 1;
+END;
 EXEC mostly_on.check_path @path=@path, @kind='backup';
 
 DECLARE @moves_table TABLE (
@@ -243,6 +250,18 @@ END;
 CLOSE targets;
 DEALLOCATE targets;
 
+-- Overwriting a database (a rollback of a readable copy): its readers go first.
+IF (@replace=1) BEGIN;
+    DECLARE @kill nvarchar(max);
+
+    SELECT @kill=STRING_AGG(CAST(N'KILL '+CONVERT(nvarchar(11), s.session_id)+N';' AS nvarchar(max)), N'')
+    FROM sys.dm_exec_sessions AS s
+    WHERE s.database_id=DB_ID(@db)
+      AND s.session_id!=@@SPID;
+
+    IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+END;
+
 -- MOVE clauses as escaped N'...' literals; @db and @path stay parameters.
 DECLARE @move nvarchar(max);
 
@@ -258,15 +277,21 @@ GO
 
 -- RESTORE LOG WITH NORECOVERY, or STANDBY (readable copy) when @undo is given.
 -- Anyone using a readable copy is disconnected first.
+-- @stop_at (point-in-time restore, always NORECOVERY): stop at that moment, in
+-- the local time of the server that wrote the log. STOPAT takes a string, not
+-- a datetime2 variable.
 CREATE PROCEDURE mostly_on.restore_log
     @db                 sysname,
     @path               nvarchar(400),
-    @undo               nvarchar(400)=NULL
+    @undo               nvarchar(400)=NULL,
+    @stop_at            datetime2(3)=NULL
 AS
 SET NOCOUNT ON;
 EXEC mostly_on.check_database @db=@db;
 EXEC mostly_on.check_path @path=@path, @kind='backup';
 IF (@undo IS NOT NULL) EXEC mostly_on.check_path @path=@undo, @kind='undo';
+IF (@undo IS NOT NULL AND @stop_at IS NOT NULL)
+    THROW 50004, N'A point-in-time restore cannot leave a readable (STANDBY) copy.', 1;
 
 DECLARE @kill nvarchar(max);
 
@@ -277,7 +302,11 @@ WHERE s.database_id=DB_ID(@db)
 
 IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
 
-IF (@undo IS NULL)
+DECLARE @stop nvarchar(30)=CONVERT(nvarchar(30), @stop_at, 126);
+
+IF (@stop IS NOT NULL)
+    RESTORE LOG @db FROM DISK=@path WITH NORECOVERY, STOPAT=@stop, CHECKSUM;
+ELSE IF (@undo IS NULL)
     RESTORE LOG @db FROM DISK=@path WITH NORECOVERY, CHECKSUM;
 ELSE
     RESTORE LOG @db FROM DISK=@path WITH STANDBY=@undo, CHECKSUM;

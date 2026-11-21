@@ -7,6 +7,8 @@
 //   3. fail back to sql1; a row written on sql2 comes along
 //   4. stop sql1, fail over without it: shipped rows survive, the unshipped one is lost
 //   5. start sql1: its copy is out of sync; reinitialize it and it ships again
+//   5b. restore copies as they were at a moment (from the backups, and after a fresh log backup)
+//   5c. roll the database back to a moment; the secondary follows the new branch
 //   6. alerts: one notification per problem, none re-sent after a controller restart
 //
 // Run: npm run test:integration   (Docker required; takes several minutes)
@@ -206,6 +208,97 @@ test('5. the old primary comes back out of sync and is reinitialized', async () 
     await shipTo('sql1');
     const r = await replica('sql1');
     assert.equal(r.chain_state, 'ok');
+    assert.equal(r.lag.files, 0, 'caught up');
+});
+
+/** Takes a LOG backup on the primary; returns its operation. */
+async function logBackup() {
+    const { operation } = await api.post(`/api/databases/${dbId}/backups`, { type: 'LOG' });
+    return succeeded(api.waitOp(operation.id));
+}
+
+/** "Now" on a server's clock, as an ISO string (msdb keeps whole seconds: leave gaps of 2+ s around it). */
+async function serverNow(server) {
+    return (await q(server, 'SELECT SYSUTCDATETIME() AS now;'))[0].now.toISOString();
+}
+
+async function pointInTime(body) {
+    const { operation } = await api.post(`/api/databases/${dbId}/point-in-time`, body);
+    return succeeded(api.waitOp(operation.id));
+}
+
+const countIn = async (server, dbName, note) => (await q(server, `SELECT COUNT(*) AS n FROM ${dbName}.dbo.orders WHERE note=@note;`, { note }))[0].n;
+
+test('5b. a copy restored to a moment has what was there then, and the original is untouched', async () => {
+    const primary = await primaryName();
+    const secondary = primary === 'sql1' ? 'sql2' : 'sql1';
+    await insertRow(primary, 'pitr before');
+    await logBackup();
+    await sleep(2500);
+    const moment = await serverNow(primary);
+    await sleep(2500);
+    await insertRow(primary, 'pitr after');
+    await logBackup();
+
+    const range = await api.get(`/api/databases/${dbId}/restore-range`);
+    assert.ok(range.from && new Date(range.from) < new Date(moment), `restorable from ${range.from}`);
+    assert.ok(range.untilNow, 'the primary is up, so any moment until now');
+
+    const op = await pointInTime({ mode: 'copy', at: moment, target_server_id: ids[secondary], new_name: 'ItShop_then' });
+    assert.equal(op.steps.find((s) => s.name === 'fresh_log').detail, 'Not needed: the backups already reach the moment');
+    assert.equal(await countIn(secondary, 'ItShop_then', 'pitr before'), 1);
+    assert.equal(await countIn(secondary, 'ItShop_then', 'pitr after'), 0, 'the row written after the moment is not in the copy');
+    assert.equal(await rowCount(primary, 'pitr after'), 1, 'the original keeps it');
+    assert.equal((await q(secondary, "SELECT SUSER_SNAME(owner_sid) AS owner FROM sys.databases WHERE name=N'ItShop_then';"))[0].owner, await dbOwner(primary), 'same owner as the original');
+
+    // A moment newer than the last log backup, on the primary's own server: a log backup is taken first,
+    // and the copy's files do not collide with the original's.
+    await insertRow(primary, 'pitr fresh');
+    const latest = await serverNow(primary); // "right now": the log backup must start after it
+    const op2 = await pointInTime({ mode: 'copy', at: latest, target_server_id: ids[primary], new_name: 'ItShop_now' });
+    assert.match(op2.steps.find((s) => s.name === 'fresh_log').detail, /LOG backup #\d+/);
+    assert.equal(await countIn(primary, 'ItShop_now', 'pitr fresh'), 1);
+
+    await assert.rejects(
+        api.post(`/api/databases/${dbId}/point-in-time`, { mode: 'copy', at: latest, target_server_id: ids[primary], new_name: 'ItShop_now' }),
+        /already exists/,
+    );
+    await q(secondary, 'DROP DATABASE ItShop_then;');
+    await q(primary, 'DROP DATABASE ItShop_now;');
+});
+
+test('5c. a rollback puts the database back to a moment; the secondary follows', async () => {
+    const primary = await primaryName();
+    const secondary = primary === 'sql1' ? 'sql2' : 'sql1';
+    await insertRow(primary, 'rb keep');
+    await logBackup();
+    await sleep(2500);
+    const moment = await serverNow(primary);
+    await sleep(2500);
+    await insertRow(primary, 'rb gone'); // never in a log backup: only the tail-log backup has it
+    const owner = await dbOwner(primary);
+
+    await assert.rejects(api.post(`/api/databases/${dbId}/point-in-time`, { mode: 'rollback', at: moment, confirm: 'nope' }), /Type the database name/);
+    const op = await pointInTime({ mode: 'rollback', at: moment, confirm: DB });
+    assert.equal(op.type, 'pitr_rollback');
+    assert.equal(await dbState(primary), 'ONLINE');
+    assert.equal(await rowCount(primary, 'rb keep'), 1);
+    assert.equal(await rowCount(primary, 'rb gone'), 0, 'the change after the moment is rolled back');
+    assert.equal(await rowCount(primary, 'pitr after'), 1, 'earlier changes stay');
+    assert.match(op.steps.find((s) => s.name === 'secondaries').detail, new RegExp(`${secondary}: restored to the moment`));
+    assert.match(op.steps.find((s) => s.name === 'record_fork').detail, /new branch/);
+    assert.equal(await dbOwner(primary), owner, 'the owner is kept');
+
+    const files = await api.get(`/api/databases/${dbId}/backups?limit=100`);
+    const tail = files.find((f) => f.is_tail && f.operation_id === op.id);
+    assert.ok(tail && tail.file_status === 'present', 'the tail-log backup with the rolled-back change stays on the share');
+
+    // The secondary continues across the new branch: the first log after the rollback reaches it.
+    assert.equal((await replica(secondary)).chain_state, 'ok');
+    await insertRow(primary, 'after rollback');
+    await shipTo(secondary);
+    const r = await replica(secondary);
+    assert.equal(r.chain_state, 'ok', r.chain_reason);
     assert.equal(r.lag.files, 0, 'caught up');
 });
 

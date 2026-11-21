@@ -17,7 +17,14 @@ export async function serverInfo(serverId) {
         defaultLogPath: row.default_log_path,
         serverName: row.server_name,
         utcNow: row.utc_now,
+        tzOffsetMinutes: row.tz_offset_minutes,
     };
+}
+
+/** The files of a database on a server: [{ logicalName, physicalName, type }] (empty if it does not exist). */
+export async function dbFiles(serverId, dbName) {
+    const r = await query(serverId, Q.DB_FILES, { db: T.sysname(dbName) });
+    return r.recordset.map((f) => ({ logicalName: f.logical_name, physicalName: f.physical_name, type: f.type_desc }));
 }
 
 export async function databases(serverId) {

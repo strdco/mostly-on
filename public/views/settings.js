@@ -4,6 +4,7 @@
 import { h, clear, field, toast, formatTime, dataTable } from '../dom.js';
 import { get, post, put } from '../api.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
+import { retentionProblem } from './retention.js';
 
 const SECTIONS = [
     {
@@ -33,7 +34,8 @@ const SECTIONS = [
     {
         id: 'retention',
         title: 'Backup retention',
-        intro: 'Backup files a secondary still needs, and the newest complete set needed to restore each database, are always kept, whatever their age.',
+        intro: 'These are the defaults; a database can have its own (on its page). Backup files a secondary still needs, and the newest complete set needed to restore each database, are always kept, whatever their age.',
+        check: (v) => retentionProblem({ full: v['retention.full_days'], diff: v['retention.diff_days'], log: v['retention.log_days'] }),
         fields: [
             { key: 'retention.enabled', label: 'Delete old backup files', type: 'checkbox' },
             { key: 'retention.full_days', label: 'Keep FULL backups (days)', min: 1 },
@@ -74,14 +76,20 @@ function sectionForm(section, values) {
         inputs.map(([f, input]) => field(f.label, input, f.hint)),
         h('div.actions', save),
     );
+    // Problems are shown next to the fields, and announced.
+    const problem = h('p.error-text', { role: 'alert' });
+    form.insertBefore(problem, form.lastChild);
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const values = Object.fromEntries(inputs.map(([f, input]) => [f.key, f.type === 'checkbox' ? input.checked : Number(input.value)]));
+        problem.textContent = section.check?.(values) || '';
+        if (problem.textContent) return;
         save.disabled = true; // no double posts
         try {
-            await put('/api/settings', Object.fromEntries(inputs.map(([f, input]) => [f.key, f.type === 'checkbox' ? input.checked : Number(input.value)])));
+            await put('/api/settings', values);
             toast(`${section.title} saved`, 'ok');
         } catch (err) {
-            toast(err.message, 'err');
+            problem.textContent = err.message;
         } finally {
             save.disabled = false;
         }

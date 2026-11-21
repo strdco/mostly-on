@@ -4,6 +4,7 @@ import { stateBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagBadge,
 import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
+import { retentionProblem } from './retention.js';
 
 function editSchedule(db, s) {
     return scheduleDialog({
@@ -294,6 +295,139 @@ function takeOfflineDialog(db, r) {
     });
 }
 
+// --- point-in-time restore ------------------------------------------------------------
+
+const pad = (n) => String(n).padStart(2, '0');
+
+/** A Date as the value of <input type=datetime-local> (the browser's local time, seconds included). */
+function localInputValue(d) {
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function offsetText(minutes) {
+    const m = Math.abs(minutes);
+    return `UTC${minutes < 0 ? '−' : '+'}${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+}
+
+/** The same moment on a server's clock, e.g. "2026-11-21 13:15:00 (UTC+00:00)". */
+function serverClock(d, offsetMinutes) {
+    const s = new Date(d.getTime() + offsetMinutes * 60_000).toISOString();
+    return `${s.slice(0, 10)} ${s.slice(11, 19)} (${offsetText(offsetMinutes)})`;
+}
+
+/** A default name for a copy: Sales_20261121_1415 (the moment, local time). */
+function copyName(db, d) {
+    return `${db.name}_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`.slice(0, 100);
+}
+
+async function pointInTimeDialog(db) {
+    const range = await get(`/api/databases/${db.id}/restore-range`);
+    if (!range.from) {
+        toast(`${db.name} cannot be restored to a point in time yet: ${range.problem}`, 'err');
+        return null;
+    }
+    const from = new Date(range.from);
+    const until = range.untilNow ? new Date(range.now) : new Date(range.to ?? range.from);
+    const primaryName = range.primary.name;
+
+    const moment = h('input', {
+        type: 'datetime-local',
+        name: 'at',
+        step: 1,
+        required: true,
+        min: localInputValue(from),
+        max: localInputValue(until),
+        value: localInputValue(new Date(Math.max(from.getTime(), until.getTime() - 15 * 60_000))),
+    });
+    // Polite live region: the moment on the primary's clock, when it differs from this browser's.
+    const clock = h('p.small.muted', { 'aria-live': 'polite' });
+    const chosen = () => (moment.value ? new Date(moment.value) : null);
+
+    const servers = range.servers.filter((s) => s.ok);
+    const preferred = servers.find((s) => s.role === 'secondary') ?? servers[0];
+    const serverSelect = h(
+        'select',
+        { name: 'target_server_id' },
+        servers.map((s) => h('option', { value: s.id, selected: s === preferred }, `${s.name}${s.role === 'primary' ? ' (the primary)' : s.role === 'secondary' ? ' (a secondary)' : ''}`)),
+    );
+    const nameInput = h('input', { type: 'text', name: 'new_name', required: true, maxlength: 100, pattern: '[A-Za-z0-9_][A-Za-z0-9_\\-]*', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false' });
+    let nameEdited = false;
+    nameInput.addEventListener('input', () => {
+        nameEdited = true;
+    });
+
+    const lost = h('strong');
+    const copyGroup = h(
+        'fieldset.plain',
+        field('Restore it on', serverSelect, 'The copy is a new database next to everything else on that server. Nothing that exists is changed.'),
+        field('Name of the copy', nameInput, 'Letters, digits, _ and -. Mostly On does not back up the copy: drop it when you are done with it.'),
+    );
+    const secondaries = range.secondaries.map((s) => s.name);
+    const rollbackGroup = h(
+        'fieldset.plain',
+        { hidden: true, disabled: true },
+        h(
+            'div.callout.err',
+            h('p', h('strong', `Every change made to ${db.name} after `), lost, h('strong', ' disappears from the database.')),
+            h(
+                'ul',
+                h('li', `Everyone using ${db.name} on ${primaryName} is disconnected, and it accepts no changes until the rollback is done.`),
+                h('li', `First, a final log backup captures every change up to now. It and the other backups from after the moment stay on the backup share until retention deletes them, but Mostly On cannot restore the database to a moment after the rollback point any more.`),
+                h('li', 'If you might need some of those changes, restore a copy as it is now first, before rolling back.'),
+                secondaries.length
+                    ? h('li', `${secondaries.join(' and ')} ${secondaries.length === 1 ? 'is restored to the same moment and then continues' : 'are restored to the same moment and then continue'} as usual. A secondary that cannot be restored is marked for reinitializing.`)
+                    : null,
+            ),
+        ),
+        field(`Type ${db.name} to confirm`, confirmNameInput('confirm')),
+    );
+
+    const modes = h(
+        'fieldset.choices',
+        h('legend', 'What to do'),
+        radio('mode', 'copy', 'Restore a copy under a new name (safe: nothing existing changes)', true),
+        radio('mode', 'rollback', `Roll back ${db.name} itself to that moment, on ${primaryName} and every secondary`),
+    );
+
+    const sync = () => {
+        const d = chosen();
+        const rollback = modes.querySelector('input[value=rollback]').checked;
+        copyGroup.hidden = copyGroup.disabled = rollback;
+        rollbackGroup.hidden = rollbackGroup.disabled = !rollback;
+        lost.textContent = d ? formatTime(d.toISOString()) : 'the moment you choose';
+        if (d && !nameEdited) nameInput.value = copyName(db, d);
+        const offset = range.primary.tz_offset_minutes;
+        clear(clock).append(d && offset != null && offset !== -d.getTimezoneOffset() ? `That is ${serverClock(d, offset)} on ${primaryName}'s clock.` : '');
+    };
+    moment.addEventListener('input', sync);
+    modes.addEventListener('change', sync);
+    sync();
+
+    const span = range.untilNow
+        ? `any moment from ${formatTime(range.from)} until now. For a moment after the newest log backup, Mostly On takes a log backup first.`
+        : `any moment from ${formatTime(range.from)} to ${formatTime(range.to ?? range.from)}. ${primaryName} is not reachable, so later moments are not available.`;
+
+    return formDialog({
+        title: `Restore ${db.name} to a point in time`,
+        fields: [
+            h('p', `Mostly On can restore ${db.name} to ${span}`),
+            field(`Restore to (your time, ${offsetText(-new Date().getTimezoneOffset())})`, moment, 'Date and time, to the second.'),
+            clock,
+            modes,
+            copyGroup,
+            rollbackGroup,
+        ],
+        submitLabel: 'Restore',
+        onSubmit: (v) => {
+            const d = chosen();
+            if (!d) throw new Error('Choose the date and time to restore to');
+            return v.mode === 'rollback'
+                ? post(`/api/databases/${db.id}/point-in-time`, { mode: 'rollback', at: d.toISOString(), confirm: v.confirm })
+                : post(`/api/databases/${db.id}/point-in-time`, { mode: 'copy', at: d.toISOString(), target_server_id: Number(v.target_server_id), new_name: v.new_name });
+        },
+    });
+}
+
 async function replicaAction(fn, okMessage) {
     try {
         await fn();
@@ -370,6 +504,61 @@ function replicaActions(db, r, reload) {
     );
 }
 
+/**
+ * The database's own retention days. Empty fields use the global default
+ * (shown as placeholder); the same FULL >= DIFF/LOG rule as the server.
+ */
+function retentionForm(db, settings, reload) {
+    const defaults = { full: settings['retention.full_days'], diff: settings['retention.diff_days'], log: settings['retention.log_days'] };
+    const own = db.retention?.own || {};
+    const input = (key) =>
+        h('input', { type: 'number', name: key, min: 1, max: 3650, step: 1, inputmode: 'numeric', value: own[key] ?? '', placeholder: `${defaults[key]} (default)` });
+    const inputs = { full: input('full'), diff: input('diff'), log: input('log') };
+    const problem = h('p.error-text', { role: 'alert' });
+    const save = h('button.primary', { type: 'submit' }, 'Save retention');
+    const clearBtn = h('button', { type: 'button' }, 'Use the defaults');
+    const valueOf = (k) => (inputs[k].value === '' ? null : Number(inputs[k].value));
+    const submit = async (body) => {
+        const effective = { full: body.full_days ?? defaults.full, diff: body.diff_days ?? defaults.diff, log: body.log_days ?? defaults.log };
+        problem.textContent = retentionProblem(effective) || '';
+        if (problem.textContent) return;
+        save.disabled = true;
+        try {
+            await put(`/api/databases/${db.id}/retention`, body);
+            toast(`Retention of ${db.name} saved`, 'ok');
+            reload();
+        } catch (err) {
+            problem.textContent = err.message;
+        } finally {
+            save.disabled = false;
+        }
+    };
+    const form = h(
+        'form.stack.settings-form',
+        h(
+            'div.field-row',
+            field('Keep FULL backups (days)', inputs.full),
+            field('Keep DIFF backups (days)', inputs.diff),
+            field('Keep LOG backups (days)', inputs.log),
+        ),
+        problem,
+        h('div.actions', save, clearBtn),
+    );
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        submit({ full_days: valueOf('full'), diff_days: valueOf('diff'), log_days: valueOf('log') });
+    });
+    clearBtn.addEventListener('click', () => {
+        for (const i of Object.values(inputs)) i.value = '';
+        submit({ full_days: null, diff_days: null, log_days: null });
+    });
+    return [
+        h('h2', 'Backup retention'),
+        h('p.muted', `Leave a field empty to use the default (Settings). FULL backups must be kept at least as long as DIFF and LOG backups. Files a secondary still needs, and the newest complete set, are always kept.`),
+        form,
+    ];
+}
+
 const OUTCOME_KIND = { success: 'ok', already_applied: 'ok', running: '', failed: 'err', interrupted: 'warn' };
 const OUTCOME_TEXT = { success: 'restored', already_applied: 'already restored', running: 'running', failed: 'failed', interrupted: 'interrupted' };
 const ROLE_TEXT = { primary: 'primary', secondary: 'secondary', diverged: 'out of sync' };
@@ -432,6 +621,7 @@ export function databaseView(id) {
                     },
                     'Add secondary',
                 ),
+                dialogButton('Restore to a point in time…', () => pointInTimeDialog(db)),
                 h('button.danger', { type: 'button', onclick: () => unmanage(db) }, 'Stop managing'),
             ),
             stopped.length
@@ -562,6 +752,7 @@ export function databaseView(id) {
                     },
                 ],
             }),
+            ...retentionForm(db, settings, load),
             h('h2', 'Backup history'),
             dataTable({
                 caption: '100 most recent backup files',
