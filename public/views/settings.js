@@ -1,56 +1,66 @@
-// Settings: notifications, alert rules, monitoring intervals, retention, msdb
-// history and the default schedules for newly managed databases. Every
-// section saves on its own; the server validates everything before storing.
-import { h, clear, field, toast, formatTime, dataTable } from '../dom.js';
+// Settings: notifications and alert rules, monitoring intervals, retention,
+// default schedules and msdb history, each in its own card. Every card saves on
+// its own; the server validates everything before storing.
+import { h, clear, toast, formatTime } from '../dom.js';
 import { get, post, put } from '../api.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
 import { retentionProblem } from './retention.js';
 
-const SECTIONS = [
+/*
+ * Card fields:
+ *   { key, label, unit, min, step?, hint? }      a number, with its unit after the box
+ *   { key, label, type: 'switch', hint? }         an on/off switch
+ *   { group: 'Legend', fields: [...] }            short number fields side by side
+ */
+const CARDS = [
     {
         id: 'alerts',
-        title: 'Alerts',
-        intro: [
-            'Alerts are sent once when a problem starts, as reminders while it lasts, and once when it is resolved. ',
-            h('a', { href: '#/alerts' }, 'See current alerts'),
-            '.',
-        ],
+        title: 'Notifications and alerts',
+        top: 'channels', // the Pushover status and test button go first
+        saved: 'Alert settings',
+        intro: ['Sent once when a problem starts, as reminders while it lasts, and once when it is resolved. ', h('a', { href: '#/alerts' }, 'See current alerts'), '.'],
         fields: [
-            { key: 'alerts.lag_threshold_minutes', label: 'Lag threshold (minutes)', min: 1, hint: 'Alert when a secondary’s newest restored log is older than this. Rows turn amber at half of it.' },
-            { key: 'alerts.reminder_hours', label: 'Reminder interval (hours)', min: 0, step: 'any', hint: 'Repeat a notification while the problem lasts. 0 = no reminders.' },
-            { key: 'alerts.debounce_seconds', label: 'Debounce (seconds)', min: 0, hint: 'A problem must last this long before it alerts, and be gone this long before it resolves.' },
-            { key: 'alerts.interval_seconds', label: 'Check alerts every (seconds)', min: 5 },
+            { key: 'alerts.lag_threshold_minutes', label: 'Alert when a secondary is behind by', unit: 'minutes', min: 1, hint: 'Rows turn amber at half of it.' },
+            { key: 'alerts.reminder_hours', label: 'Remind every', unit: 'hours', min: 0, step: 'any', hint: '0 = no reminders.' },
+            { key: 'alerts.debounce_seconds', label: 'Wait before alerting', unit: 'seconds', min: 0, hint: 'A problem must last this long to alert, and be gone this long to resolve.' },
+            { key: 'alerts.interval_seconds', label: 'Check alerts every', unit: 'seconds', min: 5 },
         ],
     },
     {
         id: 'monitoring',
         title: 'Monitoring',
+        intro: 'How often Mostly-On looks at the servers.',
         fields: [
-            { key: 'health.interval_seconds', label: 'Check server health every (seconds)', min: 5, hint: 'Connectivity, version and the state of every database.' },
-            { key: 'restore.poll_seconds', label: 'Look for logs to restore every (seconds)', min: 5, hint: 'Secondaries also restore right after each backup; this poll is the fallback.' },
-            { key: 'discovery.interval_seconds', label: 'Look for new databases every (seconds)', min: 30 },
+            { key: 'health.interval_seconds', label: 'Check server health every', unit: 'seconds', min: 5, hint: 'Connectivity, version and the state of every database.' },
+            { key: 'restore.poll_seconds', label: 'Look for logs to restore every', unit: 'seconds', min: 5, hint: 'Secondaries also restore right after each backup; this is the fallback.' },
+            { key: 'discovery.interval_seconds', label: 'Look for new databases every', unit: 'seconds', min: 30 },
         ],
     },
     {
         id: 'retention',
         title: 'Backup retention',
-        intro: 'These are the defaults; a database can have its own (on its page). Backup files a secondary still needs, and the newest complete set needed to restore each database, are always kept, whatever their age.',
+        intro: 'The defaults; a database can have its own (on its page). Files a secondary still needs, and the newest complete set for each database, are always kept.',
         check: (v) => retentionProblem({ full: v['retention.full_days'], diff: v['retention.diff_days'], log: v['retention.log_days'] }),
         fields: [
-            { key: 'retention.enabled', label: 'Delete old backup files', type: 'checkbox' },
-            { key: 'retention.full_days', label: 'Keep FULL backups (days)', min: 1 },
-            { key: 'retention.diff_days', label: 'Keep DIFF backups (days)', min: 1 },
-            { key: 'retention.log_days', label: 'Keep LOG backups (days)', min: 1 },
-            { key: 'retention.interval_minutes', label: 'Run retention every (minutes)', min: 1 },
+            { key: 'retention.enabled', label: 'Delete old backup files', type: 'switch' },
+            {
+                group: 'Keep backups for (days)',
+                fields: [
+                    { key: 'retention.full_days', label: 'FULL', min: 1 },
+                    { key: 'retention.diff_days', label: 'DIFF', min: 1 },
+                    { key: 'retention.log_days', label: 'LOG', min: 1 },
+                ],
+            },
+            { key: 'retention.interval_minutes', label: 'Look for old files every', unit: 'minutes', min: 1 },
         ],
     },
     {
         id: 'msdb',
         title: 'Backup history in SQL Server',
-        intro: 'SQL Server records every backup and restore in its msdb database. With a log backup every few minutes, that history grows without limit and slows msdb down.',
+        intro: 'SQL Server records every backup and restore in msdb. With a log backup every few minutes, that history grows without limit and slows msdb down.',
         fields: [
-            { key: 'msdb_history.purge_enabled', label: 'Purge old backup and restore history on every server (daily)', type: 'checkbox' },
-            { key: 'msdb_history.keep_days', label: 'Keep history (days)', min: 1, hint: 'Keep at least as long as your longest backup retention.' },
+            { key: 'msdb_history.purge_enabled', label: 'Purge old history on every server (daily)', type: 'switch' },
+            { key: 'msdb_history.keep_days', label: 'Keep history for', unit: 'days', min: 1, hint: 'At least as long as your longest backup retention.' },
         ],
     },
 ];
@@ -61,40 +71,68 @@ const DEFAULT_SCHEDULES = [
     ['LOG', 'schedule.default_log'],
 ];
 
-function sectionForm(section, values) {
-    const inputs = section.fields.map((f) => {
-        const input =
-            f.type === 'checkbox'
-                ? h('input', { type: 'checkbox', name: f.key, checked: !!values[f.key] })
-                : h('input', { type: 'number', name: f.key, value: String(values[f.key]), min: String(f.min ?? 0), step: String(f.step ?? 1), required: true, inputmode: f.step === 'any' ? 'decimal' : 'numeric' });
-        return [f, input];
+let seq = 0;
+const uid = (key) => `set-${key.replace(/\W/g, '-')}-${++seq}`;
+
+/** One field; returns [element, [{ f, input }]] so the card can read the values back. */
+function settingField(f, values) {
+    if (f.group) {
+        const parts = f.fields.map((g) => settingField(g, values));
+        return [h('fieldset.days', h('legend', f.group), parts.map(([el]) => el)), parts.flatMap(([, inputs]) => inputs)];
+    }
+    const id = uid(f.key);
+    const hintId = f.hint ? `${id}-hint` : null;
+    if (f.type === 'switch') {
+        const input = h('input.switch', { type: 'checkbox', switch: true, role: 'switch', id, name: f.key, checked: !!values[f.key], 'aria-describedby': hintId });
+        return [h('div.setting-switch', input, h('label', { for: id }, f.label), f.hint ? h('span.hint', { id: hintId }, f.hint) : null), [{ f, input }]];
+    }
+    const input = h('input', {
+        type: 'number',
+        id,
+        name: f.key,
+        value: String(values[f.key]),
+        min: String(f.min ?? 0),
+        step: String(f.step ?? 1),
+        required: true,
+        inputmode: f.step === 'any' ? 'decimal' : 'numeric',
+        'aria-describedby': [f.unit ? `${id}-unit` : null, hintId].filter(Boolean).join(' ') || null,
     });
-    const save = h('button.primary', { type: 'submit' }, `Save ${section.title.toLowerCase()}`);
-    const form = h(
-        'form.stack.settings-form',
-        { 'aria-labelledby': `h-${section.id}` },
-        inputs.map(([f, input]) => field(f.label, input, f.hint)),
-        h('div.actions', save),
-    );
-    // Problems are shown next to the fields, and announced.
+    return [
+        h(
+            'div.field',
+            h('label', { for: id }, f.label),
+            h('div.with-unit', input, f.unit ? h('span.unit', { id: `${id}-unit` }, f.unit) : null),
+            f.hint ? h('span.hint', { id: hintId }, f.hint) : null,
+        ),
+        [{ f, input }],
+    ];
+}
+
+/** A card: heading, a line of explanation, its fields side by side, and its own Save. */
+function settingsCard(card, values, extra = null) {
+    const parts = card.fields.map((f) => settingField(f, values));
+    const inputs = parts.flatMap(([, i]) => i);
     const problem = h('p.error-text', { role: 'alert' });
-    form.insertBefore(problem, form.lastChild);
+    const save = h('button.primary', { type: 'submit' }, 'Save', h('span.visually-hidden', ` ${card.title}`));
+    const switches = parts.filter(([el]) => el.classList.contains('setting-switch')).map(([el]) => el);
+    const rest = parts.filter(([el]) => !el.classList.contains('setting-switch')).map(([el]) => el);
+    const form = h('form.card-form', { 'aria-labelledby': `h-${card.id}` }, switches, h('div.setting-grid', rest), problem, h('div.actions', save));
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const values = Object.fromEntries(inputs.map(([f, input]) => [f.key, f.type === 'checkbox' ? input.checked : Number(input.value)]));
-        problem.textContent = section.check?.(values) || '';
+        const v = Object.fromEntries(inputs.map(({ f, input }) => [f.key, f.type === 'switch' ? input.checked : Number(input.value)]));
+        problem.textContent = card.check?.(v) || '';
         if (problem.textContent) return;
         save.disabled = true; // no double posts
         try {
-            await put('/api/settings', values);
-            toast(`${section.title} saved`, 'ok');
+            await put('/api/settings', v);
+            toast(`${card.saved ?? card.title} saved`, 'ok');
         } catch (err) {
             problem.textContent = err.message;
         } finally {
             save.disabled = false;
         }
     });
-    return [h('h2', { id: `h-${section.id}` }, section.title), section.intro ? h('p.muted', section.intro) : null, form];
+    return h('section.settings-card', { 'aria-labelledby': `h-${card.id}` }, h('h2', { id: `h-${card.id}` }, card.title), extra, card.intro ? h('p.muted.small', card.intro) : null, form);
 }
 
 export function settingsView() {
@@ -104,16 +142,16 @@ export function settingsView() {
     async function loadChannels() {
         const d = await get('/api/notifications');
         const pushover = d.channels.find((c) => c.name === 'pushover');
+        const testBtn = h('button', { type: 'button', onclick: () => sendTest(testBtn) }, 'Send test notification');
         clear(channelBox).append(
             ...[
                 h(
-                    'p',
-                    'Pushover: ',
-                    pushover?.configured
-                        ? h('strong', 'configured')
-                        : [h('strong', 'not configured'), '. Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY in the controller’s environment and restart it.'],
+                    'div.inline-row',
+                    h('span', 'Pushover: ', pushover?.configured ? h('strong', 'configured') : h('strong', 'not configured')),
+                    pushover?.configured ? testBtn : null,
                 ),
-                d.lastSentAt ? h('p.muted', `Last notification sent ${formatTime(d.lastSentAt)}.`) : null,
+                pushover?.configured ? null : h('p.small.muted', 'Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY in the controller’s environment and restart it.'),
+                d.lastSentAt ? h('p.small.muted', `Last notification sent ${formatTime(d.lastSentAt)}.`) : null,
                 d.lastError ? h('div.callout.err', h('strong', 'The last notification failed: '), d.lastError, d.nextAttemptAt ? ` Next attempt ${formatTime(d.nextAttemptAt)}.` : '') : null,
             ].filter((x) => x !== null),
         );
@@ -134,56 +172,62 @@ export function settingsView() {
 
     function renderSchedules(values) {
         clear(schedulesBox).append(
-            dataTable({
-                caption: 'Default schedules',
-                rows: DEFAULT_SCHEDULES,
-                columns: [
-                    { label: 'Type', header: true, cell: ([type]) => type },
-                    { label: 'Schedule', cell: ([, key]) => describeSchedule(values[key]) },
-                    {
-                        label: 'Actions',
-                        cell: ([type, key]) =>
-                            h(
-                                'button',
-                                {
-                                    type: 'button',
-                                    onclick: async () => {
-                                        const updated = await scheduleDialog({
-                                            title: `Default ${type} schedule`,
-                                            schedule: values[key],
-                                            withEnabled: false,
-                                            onSubmit: (v) => put('/api/settings', { [key]: v }),
-                                        });
-                                        if (updated) {
-                                            toast(`Default ${type} schedule saved`, 'ok');
-                                            renderSchedules(updated);
-                                        }
-                                    },
+            h(
+                'dl.schedule-list',
+                DEFAULT_SCHEDULES.map(([type, key]) => [
+                    h('dt', type),
+                    h('dd', describeSchedule(values[key])),
+                    h(
+                        'dd',
+                        h(
+                            'button.small-button',
+                            {
+                                type: 'button',
+                                onclick: async () => {
+                                    const updated = await scheduleDialog({
+                                        title: `Default ${type} schedule`,
+                                        schedule: values[key],
+                                        withEnabled: false,
+                                        onSubmit: (v) => put('/api/settings', { [key]: v }),
+                                    });
+                                    if (updated) {
+                                        toast(`Default ${type} schedule saved`, 'ok');
+                                        renderSchedules(updated);
+                                    }
                                 },
-                                h('span', 'Edit'),
-                                h('span.visually-hidden', ` default ${type} schedule`),
-                            ),
-                    },
-                ],
-            }),
+                            },
+                            h('span', 'Edit'),
+                            h('span.visually-hidden', ` default ${type} schedule`),
+                        ),
+                    ),
+                ]),
+            ),
         );
     }
 
     return {
         async render(el) {
             const values = await get('/api/settings');
-            channelBox = h('div');
+            channelBox = h('div.stack-tight');
             schedulesBox = h('div');
-            const testBtn = h('button', { type: 'button', onclick: () => sendTest(testBtn) }, 'Send test notification');
+            const cards = Object.fromEntries(CARDS.map((c) => [c.id, settingsCard(c, values, c.top === 'channels' ? channelBox : null)]));
             el.append(
                 h('h1', 'Settings'),
-                h('h2', 'Notifications'),
-                channelBox,
-                h('div.actions', testBtn),
-                ...SECTIONS.flatMap((s) => sectionForm(s, values)).filter((x) => x !== null),
-                h('h2', 'Default schedules'),
-                h('p.muted', 'Used when you start managing a database. Existing databases keep their own schedules (edit those on the database’s page). Times are the controller’s local time.'),
-                schedulesBox,
+                h('p.muted', 'Each box saves on its own.'),
+                h(
+                    'div.settings-grid',
+                    cards.alerts,
+                    cards.monitoring,
+                    cards.retention,
+                    h(
+                        'section.settings-card',
+                        { 'aria-labelledby': 'h-schedules' },
+                        h('h2', { id: 'h-schedules' }, 'Default schedules'),
+                        h('p.muted.small', 'For databases you start managing. Existing databases keep their own (edit those on the database’s page). Times are the controller’s local time.'),
+                        schedulesBox,
+                    ),
+                    cards.msdb,
+                ),
             );
             renderSchedules(values);
             await loadChannels();
