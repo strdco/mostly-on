@@ -29,6 +29,10 @@ import { serverRoutes } from './http/routes/servers.js';
 import { miscRoutes } from './http/routes/misc.js';
 import { databaseRoutes } from './http/routes/databases.js';
 import { operationRoutes } from './http/routes/operations.js';
+import { alertRoutes } from './http/routes/alerts.js';
+import * as notifier from './notify/notifier.js';
+import { createPushover } from './notify/pushover.js';
+import * as alerts from './notify/alerts.js';
 
 let cfg;
 try {
@@ -53,6 +57,9 @@ discovery.start();
 scheduler.start();
 retention.start();
 restoreLoop.start();
+notifier.register(createPushover(cfg.pushover));
+if (!notifier.anyConfigured()) log.warn('No notification channel configured (PUSHOVER_APP_TOKEN, PUSHOVER_USER_KEY); alerts are only shown in the dashboard');
+alerts.start();
 
 const deps = { cfg };
 const server = createHttpServer(cfg, (router) => {
@@ -63,6 +70,7 @@ const server = createHttpServer(cfg, (router) => {
     replicaRoutes(router, deps);
     failoverRoutes(router, deps);
     operationRoutes(router, deps);
+    alertRoutes(router, deps);
 });
 
 server.listen(cfg.port, cfg.host, () => {
@@ -74,6 +82,7 @@ async function shutdown(signal) {
     if (stopping) return;
     stopping = true;
     log.info('Shutting down', { signal });
+    alerts.stop();
     scheduler.stop();
     restoreLoop.stop();
     retention.stop();

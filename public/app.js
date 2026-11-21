@@ -4,10 +4,11 @@ import { clear, toast } from './dom.js';
 import { loginView } from './views/login.js';
 import { serversView, serverDetailView } from './views/servers.js';
 import { eventsView } from './views/events.js';
-import { placeholderView } from './views/placeholder.js';
 import { overviewView } from './views/overview.js';
 import { databaseView } from './views/database.js';
 import { operationsView } from './views/operations.js';
+import { alertsView } from './views/alerts.js';
+import { settingsView } from './views/settings.js';
 
 const app = document.getElementById('app');
 const topbar = document.getElementById('topbar');
@@ -23,7 +24,8 @@ const routes = [
     [/^\/servers\/(\d+)$/, (m) => serverDetailView(Number(m[1]))],
     [/^\/events$/, () => eventsView()],
     [/^\/operations$/, () => operationsView()],
-    [/^\/settings$/, () => placeholderView('Settings', 'Settings UI arrives in a later phase.')],
+    [/^\/alerts$/, () => alertsView()],
+    [/^\/settings$/, () => settingsView()],
 ];
 
 function currentPath() {

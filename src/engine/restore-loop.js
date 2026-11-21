@@ -274,8 +274,8 @@ export function lagOf(dbId, replicas) {
 }
 
 // Diverged copies that are ONLINE and writable: applications could be using
-// the old primary while the new one is live (split brain). Reported once per
-// occurrence; Phase 5 alerts take this over.
+// the old primary while the new one is live (split brain). Logged once per
+// occurrence; the split:<db>:<srv> alert (notify/alerts.js) sends the notifications.
 const divergedOnline = new Set();
 
 function watchDiverged(db, r) {

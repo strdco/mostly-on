@@ -1,0 +1,23 @@
+# Test overrides: a mock Pushover API that records every message.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+#   curl http://localhost:9911/messages
+name: mostly-on
+
+services:
+  mock-pushover:
+    image: node:26-trixie-slim
+    command: ["node", "/mock/mock-pushover.mjs"]
+    volumes:
+      - ./test/mock-pushover.mjs:/mock/mock-pushover.mjs:ro
+    ports: ["9911:9911"]
+    restart: unless-stopped
+
+  controller:
+    environment:
+      PUSHOVER_APP_TOKEN: test-app-token
+      PUSHOVER_USER_KEY: test-user-key
+      PUSHOVER_API_URL: http://mock-pushover:9911/1/messages.json
+    depends_on:
+      mock-pushover:
+        condition: service_started

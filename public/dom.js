@@ -153,8 +153,14 @@ export function formDialog({ title, fields, submitLabel = 'Save', danger = false
 export function field(label, input, hint) {
     const id = input.id || `f-${Math.random().toString(36).slice(2, 9)}`;
     input.id = id;
-    if (input.type === 'checkbox') {
-        return h('div.check', input, h('label', { for: id }, label), hint ? h('span.hint', hint) : null);
+    let hintEl = null;
+    if (hint) {
+        // Screen readers read the hint after the label.
+        hintEl = h('span.hint', { id: `${id}-hint` }, hint);
+        input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), hintEl.id].filter(Boolean).join(' '));
     }
-    return h('div.field', h('label', { for: id }, label), input, hint ? h('span.hint', hint) : null);
+    if (input.type === 'checkbox') {
+        return h('div.check', input, h('label', { for: id }, label), hintEl);
+    }
+    return h('div.field', h('label', { for: id }, label), input, hintEl);
 }

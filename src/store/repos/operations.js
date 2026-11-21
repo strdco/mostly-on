@@ -84,6 +84,34 @@ export function unfinished() {
     return getDb().prepare(`SELECT ${COLS} FROM operations WHERE status IN ('queued', 'running') ORDER BY id`).all().map(shape);
 }
 
+/**
+ * Per managed database and backup type: the newest failed or interrupted
+ * backup, if no backup of that type was cataloged after it.
+ */
+export function failedBackups() {
+    return getDb()
+        .prepare(
+            `WITH failed AS (
+                 SELECT o.id, o.database_id, json_extract(o.params, '$.type') AS backup_type, o.error, o.status, o.created_at,
+                        ROW_NUMBER() OVER (PARTITION BY o.database_id, json_extract(o.params, '$.type') ORDER BY o.id DESC) AS rn
+                 FROM operations AS o JOIN databases AS d ON d.id=o.database_id AND d.status='managed'
+                 WHERE o.type='backup' AND o.status IN ('failed', 'interrupted'))
+             SELECT f.id, f.database_id, f.backup_type, f.error, f.status, f.created_at
+             FROM failed AS f
+             WHERE f.rn=1
+               AND f.created_at>COALESCE((SELECT MAX(b.created_at) FROM backup_files AS b WHERE b.database_id=f.database_id AND b.type=f.backup_type), '')`,
+        )
+        .all();
+}
+
+/** Top-level non-backup operations (seeds, failovers ...) that failed or were interrupted and are not resolved. */
+export function needingAttention() {
+    return getDb()
+        .prepare(`SELECT ${COLS} FROM operations WHERE type!='backup' AND parent_id IS NULL AND status IN ('failed', 'interrupted') ORDER BY id`)
+        .all()
+        .map(shape);
+}
+
 /** Deletes routine backup operations older than the cutoff. */
 export function purgeRoutine(beforeIso) {
     return getDb()

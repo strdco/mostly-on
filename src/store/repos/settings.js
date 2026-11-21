@@ -7,7 +7,8 @@ export const DEFAULTS = Object.freeze({
     'restore.poll_seconds': 30,
     'alerts.interval_seconds': 30,
     'alerts.lag_threshold_minutes': 30,
-    'alerts.reminder_hours': 4,
+    'alerts.reminder_hours': 4, // 0 = no reminders
+    'alerts.debounce_seconds': 60, // a condition must hold (or be gone) this long before it alerts (or resolves)
     'retention.full_days': 28,
     'retention.diff_days': 14,
     'retention.log_days': 7,
@@ -24,6 +25,16 @@ const VALIDATORS = {
     number: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
     boolean: (v) => typeof v === 'boolean',
     object: (v) => v !== null && typeof v === 'object' && !Array.isArray(v),
+};
+
+// Lower bounds for numbers where 0 would make a loop spin or an alert meaningless.
+const MINIMUMS = {
+    'health.interval_seconds': 5,
+    'discovery.interval_seconds': 30,
+    'restore.poll_seconds': 5,
+    'alerts.interval_seconds': 5,
+    'alerts.lag_threshold_minutes': 1,
+    'retention.interval_minutes': 1,
 };
 
 export function get(key) {
@@ -48,6 +59,7 @@ export function set(key, value) {
     if (!(key in DEFAULTS)) throw new Error(`Unknown setting ${key}`);
     const kind = typeof DEFAULTS[key];
     if (!VALIDATORS[kind](value)) throw new Error(`Setting ${key} must be a ${kind}`);
+    if (key in MINIMUMS && value < MINIMUMS[key]) throw new Error(`Setting ${key} must be at least ${MINIMUMS[key]}`);
     getDb()
         .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value')
         .run(key, JSON.stringify(value));

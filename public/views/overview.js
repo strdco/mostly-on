@@ -1,5 +1,6 @@
 import { h, clear, dataTable, badge, formDialog, toast, ago } from '../dom.js';
 import { get, post } from '../api.js';
+import { activeAlertsCallout } from './alerts.js';
 
 export function stateBadge(live, role) {
     if (!live) return badge('unknown');
@@ -55,11 +56,13 @@ export function expectedMinutes(schedule) {
 
 export function overviewView() {
     let managedBox;
+    let alertsBox;
     let discoveredBox;
     let timer;
 
     async function load() {
-        const [dbs, discovered, settings] = await Promise.all([get('/api/databases'), get('/api/discovered'), get('/api/settings')]);
+        const [dbs, discovered, settings, alerts] = await Promise.all([get('/api/databases'), get('/api/discovered'), get('/api/settings'), get('/api/alerts?status=active')]);
+        clear(alertsBox).append(...[activeAlertsCallout(alerts)].filter((x) => x !== null));
         const threshold = settings['alerts.lag_threshold_minutes'];
         clear(managedBox).append(
             dataTable({
@@ -159,12 +162,13 @@ export function overviewView() {
     return {
         async render(el) {
             managedBox = h('div');
+            alertsBox = h('div');
             discoveredBox = h('div');
-            el.append(h('h1', 'Overview'), managedBox, h('h2', 'Available to manage'), discoveredBox);
+            el.append(h('h1', 'Overview'), alertsBox, managedBox, h('h2', 'Available to manage'), discoveredBox);
             await load();
         },
         onEvent(evt) {
-            if (!['database.changed', 'replica.changed', 'backup.finished', 'backup.failed', 'discovery.changed', 'server.health', 'foreign.detected'].includes(evt.type)) return;
+            if (!['database.changed', 'replica.changed', 'backup.finished', 'backup.failed', 'discovery.changed', 'server.health', 'foreign.detected', 'alert.changed'].includes(evt.type)) return;
             clearTimeout(timer);
             timer = setTimeout(() => load().catch(() => {}), 400);
         },

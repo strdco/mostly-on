@@ -1,0 +1,104 @@
+// Alerts: what is wrong right now, and what was wrong recently.
+import { h, clear, dataTable, badge, formatTime } from '../dom.js';
+import { get } from '../api.js';
+import { formatDuration } from './overview.js';
+
+const KIND_LABEL = {
+    server_unreachable: 'Server unreachable',
+    db_state: 'Database state',
+    chain: 'Shipping stopped',
+    lag: 'Lag',
+    restore_failed: 'Restore failed',
+    backup_failed: 'Backup failed',
+    foreign_backup: 'Foreign backup',
+    diverged: 'Diverged copy',
+    split_brain: 'Split-brain risk',
+    operation: 'Operation',
+};
+
+const since = (iso) => formatDuration(Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000)));
+
+function target(a) {
+    if (a.kind === 'operation') return h('a', { href: '#/operations' }, 'Operations');
+    if (a.database_id) return h('a', { href: `#/databases/${a.database_id}` }, 'Database');
+    if (a.server_id) return h('a', { href: `#/servers/${a.server_id}` }, 'Server');
+    return '';
+}
+
+/** Callout for the overview: active alerts, or nothing. */
+export function activeAlertsCallout(alerts) {
+    const active = alerts.filter((a) => a.status === 'active');
+    if (!active.length) return null;
+    const errors = active.some((a) => a.severity === 'error');
+    return h(
+        errors ? 'div.callout.err' : 'div.callout.warn',
+        h('strong', `${active.length} active alert${active.length === 1 ? '' : 's'}. `),
+        h('a', { href: '#/alerts' }, 'See all alerts'),
+        h(
+            'ul',
+            active.map((a) => h('li', badge(a.severity === 'error' ? 'error' : 'warning', a.severity === 'error' ? 'err' : 'warn'), ' ', a.message, ' ', h('span.muted', `(for ${since(a.first_seen_at)})`))),
+        ),
+    );
+}
+
+export function alertsView() {
+    let box;
+    let timer;
+
+    async function load() {
+        const [alerts, delivery] = await Promise.all([get('/api/alerts'), get('/api/notifications')]);
+        const active = alerts.filter((a) => a.status === 'active');
+        const resolved = alerts.filter((a) => a.status === 'resolved');
+        const configured = delivery.channels.some((c) => c.configured);
+        clear(box).append(
+            ...[
+                configured
+                    ? delivery.lastError
+                        ? h('div.callout.err', h('strong', 'Notifications are failing. '), delivery.lastError, delivery.nextAttemptAt ? ` Next attempt ${formatTime(delivery.nextAttemptAt)}.` : '')
+                        : null
+                    : h('div.callout.warn', 'No notification channel is configured, so alerts are only shown here. See ', h('a', { href: '#/settings' }, 'Settings'), '.'),
+                dataTable({
+                    caption: 'Active alerts',
+                    rows: active,
+                    empty: 'Nothing is wrong right now.',
+                    columns: [
+                        { label: 'Severity', cell: (a) => badge(a.severity === 'error' ? 'error' : 'warning', a.severity === 'error' ? 'err' : 'warn') },
+                        { label: 'Alert', header: true, cell: (a) => [h('div.small.muted', KIND_LABEL[a.kind] || a.kind), a.message] },
+                        { label: 'Since', cell: (a) => [formatTime(a.first_seen_at), h('div.small.muted', since(a.first_seen_at))] },
+                        { label: 'Last notified', cell: (a) => (a.last_notified_at ? formatTime(a.last_notified_at) : h('span.muted', 'not sent')) },
+                        { label: 'Go to', cell: target },
+                    ],
+                }),
+                h('h2', 'Resolved'),
+                dataTable({
+                    caption: 'Resolved alerts (kept 90 days)',
+                    rows: resolved,
+                    empty: 'No resolved alerts.',
+                    columns: [
+                        { label: 'Alert', header: true, cell: (a) => [h('div.small.muted', KIND_LABEL[a.kind] || a.kind), a.message] },
+                        { label: 'Started', cell: (a) => formatTime(a.first_seen_at) },
+                        { label: 'Resolved', cell: (a) => formatTime(a.resolved_at) },
+                        {
+                            label: 'Lasted',
+                            num: true,
+                            cell: (a) => formatDuration(Math.round((new Date(a.resolved_at) - new Date(a.first_seen_at)) / 1000)),
+                        },
+                    ],
+                }),
+            ].filter((x) => x !== null),
+        );
+    }
+
+    return {
+        async render(el) {
+            box = h('div');
+            el.append(h('h1', 'Alerts'), box);
+            await load();
+        },
+        onEvent(evt) {
+            if (evt.type !== 'alert.changed') return;
+            clearTimeout(timer);
+            timer = setTimeout(() => load().catch(() => {}), 400);
+        },
+    };
+}
