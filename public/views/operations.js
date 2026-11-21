@@ -59,10 +59,11 @@ export function stepList(op) {
     );
 }
 
-export function operationsTable(rows, caption = 'Operations') {
+export function operationsTable(rows, caption = 'Operations', limit = 0) {
     return dataTable({
         caption,
         rows,
+        limit,
         empty: 'No operations.',
         columns: [
             { label: '#', header: true, cell: (o) => `#${o.id}` },
@@ -91,7 +92,7 @@ export function operationsView() {
     let timer;
     async function load() {
         const rows = await get(`/api/operations?limit=200${includeRoutine ? '&include_routine=1' : ''}`);
-        clear(box).append(operationsTable(rows, 'Recent operations'));
+        clear(box).append(operationsTable(rows, 'Recent operations', 25));
     }
     return {
         async render(el) {

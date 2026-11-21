@@ -3,43 +3,13 @@ import { get, post, put } from '../api.js';
 import { stateBadge, ageBadge, expectedMinutes, chainBadge, lagBadge, formatDuration } from './overview.js';
 import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
+import { scheduleDialog, describeSchedule } from './schedule.js';
 
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-function describeSchedule(s) {
-    if (!s.enabled) return 'disabled';
-    if (s.kind === 'interval') return `every ${s.interval_minutes} min`;
-    if (s.kind === 'daily') return `daily at ${s.at_time}`;
-    return `${WEEKDAYS[s.weekday]}s at ${s.at_time}`;
-}
-
-async function editSchedule(db, s) {
-    const kind = h(
-        'select',
-        { name: 'kind' },
-        ['interval', 'daily', 'weekly'].map((k) => h('option', { value: k, selected: s.kind === k }, k)),
-    );
-    const interval = field('Every (minutes)', h('input', { type: 'number', name: 'interval_minutes', min: 1, max: 10080, value: s.interval_minutes || 5 }));
-    const time = field('At (controller local time)', h('input', { type: 'time', name: 'at_time', value: s.at_time || '01:00' }));
-    const weekday = field('Day', h('select', { name: 'weekday' }, WEEKDAYS.map((d, i) => h('option', { value: i, selected: s.weekday === i }, d))));
-    const sync = () => {
-        interval.hidden = kind.value !== 'interval';
-        time.hidden = kind.value === 'interval';
-        weekday.hidden = kind.value !== 'weekly';
-    };
-    kind.addEventListener('change', sync);
-    sync();
-    return formDialog({
+function editSchedule(db, s) {
+    return scheduleDialog({
         title: `${s.backup_type} schedule for ${db.name}`,
-        fields: [field('Enabled', h('input', { type: 'checkbox', name: 'enabled', checked: s.enabled })), field('Kind', kind), interval, time, weekday],
-        onSubmit: (v) =>
-            put(`/api/databases/${db.id}/schedules/${s.backup_type}`, {
-                enabled: v.enabled,
-                kind: v.kind,
-                interval_minutes: Number(v.interval_minutes),
-                at_time: v.at_time,
-                weekday: Number(v.weekday),
-            }),
+        schedule: s,
+        onSubmit: (v) => put(`/api/databases/${db.id}/schedules/${s.backup_type}`, v),
     });
 }
 
@@ -510,24 +480,6 @@ export function databaseView(id) {
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },
                 ],
             }),
-            h('h2', 'Restore history'),
-            dataTable({
-                caption: '50 most recent restores on secondaries',
-                rows: restoreRows,
-                empty: 'Nothing restored yet.',
-                columns: [
-                    { label: 'Started', header: true, cell: (x) => formatTime(x.started_at) },
-                    { label: 'Server', cell: (x) => x.server_name },
-                    { label: 'Backup', cell: (x) => [`${x.backup_type} `, h('span.mono', x.rel_path.split('/').pop())] },
-                    { label: 'Outcome', cell: (x) => [badge(x.outcome, OUTCOME_KIND[x.outcome]), x.error ? h('div.small.error-text', x.error) : null] },
-                    {
-                        label: 'Took',
-                        num: true,
-                        cell: (x) => (x.finished_at ? formatDuration(Math.round((new Date(x.finished_at) - new Date(x.started_at)) / 1000)) : '–'),
-                    },
-                    { label: 'Operation', cell: (x) => (x.operation_id ? `#${x.operation_id}` : 'restore loop') },
-                ],
-            }),
             h('h2', 'Schedules'),
             dataTable({
                 caption: 'Backup schedules',
@@ -558,6 +510,7 @@ export function databaseView(id) {
             dataTable({
                 caption: '100 most recent backup files',
                 rows: files,
+                limit: 10,
                 empty: 'No backups yet.',
                 columns: [
                     { label: 'Type', header: true, cell: (f) => f.type + (f.is_tail ? ' (tail)' : '') },
@@ -568,10 +521,29 @@ export function databaseView(id) {
                     { label: 'On disk', cell: (f) => badge(f.file_status, f.file_status === 'present' ? 'ok' : f.file_status === 'missing' ? 'err' : '') },
                 ],
             }),
+            h('h2', 'Restore history'),
+            dataTable({
+                caption: '50 most recent restores on secondaries',
+                rows: restoreRows,
+                limit: 10,
+                empty: 'Nothing restored yet.',
+                columns: [
+                    { label: 'Started', header: true, cell: (x) => formatTime(x.started_at) },
+                    { label: 'Server', cell: (x) => x.server_name },
+                    { label: 'Backup', cell: (x) => [`${x.backup_type} `, h('span.mono', x.rel_path.split('/').pop())] },
+                    { label: 'Outcome', cell: (x) => [badge(x.outcome, OUTCOME_KIND[x.outcome]), x.error ? h('div.small.error-text', x.error) : null] },
+                    {
+                        label: 'Took',
+                        num: true,
+                        cell: (x) => (x.finished_at ? formatDuration(Math.round((new Date(x.finished_at) - new Date(x.started_at)) / 1000)) : '–'),
+                    },
+                    { label: 'Operation', cell: (x) => (x.operation_id ? `#${x.operation_id}` : 'restore loop') },
+                ],
+            }),
             h('h2', 'Operations'),
-            operationsTable(db.operations, 'Recent operations (excluding routine scheduled backups)'),
+            operationsTable(db.operations, 'Recent operations (excluding routine scheduled backups)', 10),
             h('h2', 'Events'),
-            eventsTable(evts, 'Recent events'),
+            eventsTable(evts, 'Recent events', 10),
             ].filter((x) => x !== null),
         );
     }

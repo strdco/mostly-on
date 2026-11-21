@@ -4,6 +4,7 @@ import { openStream } from '../sse.js';
 import * as settings from '../../store/repos/settings.js';
 import * as events from '../../store/repos/events.js';
 import * as sessions from '../../store/repos/sessions.js';
+import { validateSchedule } from '../../engine/schedule-math.js';
 
 export function miscRoutes(router) {
     router.get('/api/settings', async () => settings.all());
@@ -12,7 +13,17 @@ export function miscRoutes(router) {
         const body = ctx.body || {};
         const changed = [];
         try {
-            for (const [k, v] of Object.entries(body)) {
+            // Validate everything before storing anything, so a bad value saves nothing.
+            const values = Object.entries(body).map(([k, v]) => {
+                if (k.startsWith('schedule.default_')) {
+                    if (v === null || typeof v !== 'object') throw new Error(`Setting ${k} must be a schedule`);
+                    const s = validateSchedule({ ...v, enabled: true });
+                    return [k, { kind: s.kind, interval_minutes: s.interval_minutes, at_time: s.at_time, weekday: s.weekday }];
+                }
+                return [k, v];
+            });
+            for (const [k, v] of values) settings.check(k, v);
+            for (const [k, v] of values) {
                 settings.set(k, v);
                 changed.push(k);
             }

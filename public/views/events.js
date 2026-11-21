@@ -3,10 +3,11 @@ import { get } from '../api.js';
 
 const LEVEL_KIND = { error: 'err', warn: 'warn', info: '', debug: '' };
 
-export function eventsTable(events, caption = 'Events') {
+export function eventsTable(events, caption = 'Events', limit = 0) {
     return dataTable({
         caption,
         rows: events,
+        limit,
         empty: 'No events.',
         columns: [
             { label: 'Time', cell: (e) => formatTime(e.ts) },
@@ -22,7 +23,7 @@ export function eventsView() {
     let timer;
     async function load() {
         const events = await get('/api/events?limit=300');
-        clear(container).append(eventsTable(events, 'Most recent events'));
+        clear(container).append(eventsTable(events, 'Most recent events', 50));
     }
     return {
         async render(el) {

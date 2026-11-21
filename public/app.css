@@ -82,6 +82,7 @@ body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
+    overflow-wrap: break-word; /* long file paths and LSNs must not push the page sideways */
 }
 
 a { color: var(--accent); }
@@ -92,11 +93,10 @@ h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
 [hidden] { display: none !important; }
 
 /* --- top bar ---------------------------------------------------------- */
+/* One nav at every width. Collapsed (default, and without script): a Menu
+   button opens the list as a popover. app.js adds .is-wide and removes the
+   popover attribute when the whole row fits, measured, not by breakpoint. */
 .topbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem 1rem;
     padding: 0.6rem 1rem;
     background: var(--surface);
     border-block-end: 1px solid var(--border);
@@ -104,20 +104,49 @@ h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
     inset-block-start: 0;
     z-index: 10;
 }
+.topbar-inner { display: flex; align-items: center; gap: 0.5rem 1rem; }
+.topbar-inner > * { flex-shrink: 0; white-space: nowrap; } /* keep the row's natural width measurable */
 .brand { font-weight: 700; text-decoration: none; color: var(--text); }
-.topbar nav { flex: 1 1 auto; overflow-x: auto; }
-.topbar nav ul { display: flex; gap: 0.25rem; list-style: none; margin: 0; padding: 0; }
-.topbar nav a {
+.site-nav { flex: 1 0 auto; display: flex; justify-content: flex-end; }
+.menu-button { anchor-name: --menu-button; }
+.site-menu { list-style: none; margin: 0; padding: 0; }
+.site-menu[popover] {
+    position: fixed;
+    inset: auto;
+    inset-block-start: 3.25rem; /* without anchor positioning */
+    inset-block-start: anchor(--menu-button bottom);
+    inset-inline-end: 1rem;
+    inline-size: min(80dvw, 16rem);
+    max-block-size: calc(100dvh - 6rem);
+    margin: 0.5rem 0 0;
+    padding: 0.35rem;
+    overflow: auto;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+}
+.site-menu a {
     display: block;
-    padding: 0.35rem 0.6rem;
+    padding: 0.5rem 0.75rem;
     border-radius: var(--radius);
     text-decoration: none;
     color: var(--muted);
     white-space: nowrap;
 }
-.topbar nav a[aria-current="page"] { color: var(--text); background: var(--surface-2); }
+.site-menu a:hover { background: var(--surface-2); color: var(--text); }
+/* Current page: weight and an underline bar, not colour alone. */
+.site-menu a[aria-current="page"] { color: var(--text); font-weight: 600; background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--accent); }
+.topbar.is-wide .menu-button { display: none; }
+.topbar.is-wide .site-nav { justify-content: flex-start; }
+.topbar.is-wide .site-menu { display: flex; gap: 0.25rem; }
+.topbar.is-wide .site-menu a { padding: 0.35rem 0.6rem; }
 .live { font-size: 0.8rem; color: var(--muted); }
 .live.on { color: var(--ok); }
+@media (forced-colors: active) {
+    .site-menu a[aria-current="page"] { outline: 2px solid CanvasText; }
+}
 
 main { padding: var(--gap); max-inline-size: 1400px; margin-inline: auto; outline: none; }
 
@@ -221,12 +250,25 @@ table.data td.num { text-align: end; font-variant-numeric: tabular-nums; }
     table.data tbody tr:last-child { border-block-end: none; }
     table.data th, table.data td { border: none; padding: 0.2rem 0.75rem; }
     table.data td.num { text-align: start; }
+    table.data caption { display: block; }
+    table.data td[data-empty] { display: none; } /* no "Actions:" with nothing after it */
     table.data td[data-label]::before {
         content: attr(data-label) ": ";
         color: var(--muted);
         font-size: 0.85rem;
     }
 }
+
+/* Row health: a stripe on the row's first cell, plus a text badge in the row. */
+table.data tr.row-warn > :first-child { box-shadow: inset 4px 0 0 var(--warn); }
+table.data tr.row-err > :first-child { box-shadow: inset 4px 0 0 var(--err); }
+@container (width < 640px) {
+    table.data tr.row-warn > :first-child, table.data tr.row-err > :first-child { box-shadow: none; }
+    table.data tr.row-warn { box-shadow: inset 4px 0 0 var(--warn); }
+    table.data tr.row-err { box-shadow: inset 4px 0 0 var(--err); }
+}
+.health-reasons { margin: 0.2rem 0 0; padding: 0; list-style: none; font-size: 0.8rem; color: var(--muted); font-weight: 400; }
+.table-more { margin-block: 0.4rem 0; }
 
 /* --- dialogs ----------------------------------------------------------------- */
 dialog {
@@ -267,3 +309,19 @@ dialog h2 { margin-block-start: 0; }
 ol.steps { margin: 0.4rem 0 0; padding-inline-start: 1.25rem; display: grid; gap: 0.3rem; }
 details summary { cursor: pointer; }
 .settings-form { max-width: 32rem; }
+
+/* Hides content visually but keeps it in the accessibility tree; focusable
+   content inside it (the skip control) shows while focused. */
+.visually-hidden:where(:not(:focus-within, :active)) {
+    position: absolute !important;
+    clip-path: inset(50%) !important;
+    overflow: hidden !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    white-space: nowrap !important;
+}
+.skip-link { position: fixed; inset-block-start: 0.5rem; inset-inline-start: 0.5rem; z-index: 200; }
+.settings-form input[type="number"] { max-inline-size: 10rem; }

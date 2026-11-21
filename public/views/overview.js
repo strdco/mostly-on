@@ -54,6 +54,48 @@ export function expectedMinutes(schedule) {
     return 7 * 24 * 60;
 }
 
+/**
+ * Overall health of one database row: 'ok' | 'warn' | 'err', with the reasons
+ * in words (colour is never the only signal).
+ */
+export function dbHealth(d, alerts, thresholdMinutes) {
+    const reasons = [];
+    let level = 0;
+    const flag = (lvl, text) => {
+        level = Math.max(level, lvl);
+        reasons.push(text);
+    };
+    const live = (x) => (x ? (x.isInStandby ? 'STANDBY' : x.state) : 'missing');
+    if (!d.primary) flag(2, 'no primary');
+    else if (d.primary.live && (d.primary.live.state !== 'ONLINE' || d.primary.live.isInStandby)) flag(2, `primary is ${live(d.primary.live)}`);
+    for (const r of d.replicas) {
+        if (r.role === 'diverged') flag(1, `diverged copy on ${r.server_name}`);
+        if (r.role !== 'secondary') continue;
+        if (['broken', 'needs_reseed'].includes(r.chain_state)) flag(2, `shipping to ${r.server_name} stopped`);
+        else if (r.chain_state === 'ok' && r.lag?.seconds != null) {
+            const t = thresholdMinutes * 60;
+            if (r.lag.seconds > t) flag(2, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
+            else if (r.lag.seconds > t / 2) flag(1, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
+        }
+    }
+    for (const t of ['FULL', 'DIFF', 'LOG']) {
+        const expect = expectedMinutes(d.schedules.find((s) => s.backup_type === t));
+        const at = d.latest[t]?.backup_finish;
+        if (!expect) continue;
+        if (!at) {
+            flag(1, `no ${t} backup yet`);
+            continue;
+        }
+        const mins = (Date.now() - new Date(at).getTime()) / 60000;
+        if (mins > expect * 3) flag(2, `last ${t} backup ${ago(at)}`);
+        else if (mins > expect * 1.5) flag(1, `last ${t} backup ${ago(at)}`);
+    }
+    if (d.foreignLogBackups) flag(2, 'foreign log backup found');
+    const mine = alerts.filter((a) => a.database_id === d.id);
+    if (mine.length) flag(mine.some((a) => a.severity === 'error') ? 2 : 1, `${mine.length} active alert${mine.length === 1 ? '' : 's'}`);
+    return { kind: ['ok', 'warn', 'err'][level], label: ['healthy', 'warning', 'error'][level], reasons };
+}
+
 export function overviewView() {
     let managedBox;
     let alertsBox;
@@ -64,13 +106,22 @@ export function overviewView() {
         const [dbs, discovered, settings, alerts] = await Promise.all([get('/api/databases'), get('/api/discovered'), get('/api/settings'), get('/api/alerts?status=active')]);
         clear(alertsBox).append(...[activeAlertsCallout(alerts)].filter((x) => x !== null));
         const threshold = settings['alerts.lag_threshold_minutes'];
+        const health = new Map(dbs.map((d) => [d.id, dbHealth(d, alerts, threshold)]));
         clear(managedBox).append(
             dataTable({
                 caption: 'Managed databases',
                 rows: dbs,
                 empty: 'No managed databases yet. Pick one from the list below.',
+                rowClass: (d) => (health.get(d.id).kind === 'ok' ? null : `row-${health.get(d.id).kind}`),
                 columns: [
                     { label: 'Database', header: true, cell: (d) => h('a', { href: `#/databases/${d.id}` }, d.name) },
+                    {
+                        label: 'Health',
+                        cell: (d) => {
+                            const x = health.get(d.id);
+                            return [badge(x.label, x.kind), x.reasons.length ? h('ul.health-reasons', x.reasons.map((r) => h('li', r))) : null];
+                        },
+                    },
                     { label: 'Primary', cell: (d) => (d.primary ? [d.primary.server_name, ' ', stateBadge(d.primary.live, 'primary')] : badge('none', 'err')) },
                     {
                         label: 'Secondaries',

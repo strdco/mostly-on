@@ -35,6 +35,10 @@ const MINIMUMS = {
     'alerts.interval_seconds': 5,
     'alerts.lag_threshold_minutes': 1,
     'retention.interval_minutes': 1,
+    'retention.full_days': 1,
+    'retention.diff_days': 1,
+    'retention.log_days': 1,
+    'msdb_history.keep_days': 1,
 };
 
 export function get(key) {
@@ -55,11 +59,16 @@ export function all() {
     return out;
 }
 
-export function set(key, value) {
+/** Throws if `value` is not acceptable for `key`. */
+export function check(key, value) {
     if (!(key in DEFAULTS)) throw new Error(`Unknown setting ${key}`);
     const kind = typeof DEFAULTS[key];
     if (!VALIDATORS[kind](value)) throw new Error(`Setting ${key} must be a ${kind}`);
     if (key in MINIMUMS && value < MINIMUMS[key]) throw new Error(`Setting ${key} must be at least ${MINIMUMS[key]}`);
+}
+
+export function set(key, value) {
+    check(key, value);
     getDb()
         .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value')
         .run(key, JSON.stringify(value));

@@ -44,31 +44,51 @@ export function clear(el) {
  * Responsive data table. columns: [{label, cell:(row)=>node|string, num?:bool, header?:bool}]
  * The first column with header:true is rendered as a row header (<th scope=row>).
  */
-export function dataTable({ caption, columns, rows, empty = 'Nothing here yet.' }) {
+// Tables the user expanded with "Show all", by caption, so a live re-render keeps them open.
+const expandedTables = new Set();
+
+const isEmpty = (v) => v === null || v === undefined || v === '' || v === false || (Array.isArray(v) && v.every(isEmpty));
+
+/**
+ * A table that stacks into cards in narrow containers.
+ * @param {object} o
+ * @param {number} [o.limit]  show this many rows, with a "Show all" toggle for the rest
+ * @param {(row) => string} [o.rowClass]
+ */
+export function dataTable({ caption, columns, rows, empty = 'Nothing here yet.', limit = 0, rowClass = null }) {
     const captionId = `cap-${Math.random().toString(36).slice(2, 9)}`;
     if (!rows.length) return h('p.muted', empty);
-    return h(
-        'div.table-wrapper',
-        { tabindex: 0, role: 'region', 'aria-labelledby': captionId },
+    const extra = limit && rows.length > limit + 2 ? rows.length - limit : 0; // don't hide just one or two rows
+    let open = expandedTables.has(caption);
+    const trs = rows.map((r, i) =>
         h(
-            'table.data',
-            h('caption', { id: captionId }, caption),
-            h('thead', h('tr', columns.map((c) => h('th', { scope: 'col' }, c.label)))),
-            h(
-                'tbody',
-                rows.map((r) =>
-                    h(
-                        'tr',
-                        columns.map((c) =>
-                            c.header
-                                ? h('th', { scope: 'row' }, c.cell(r))
-                                : h(c.num ? 'td.num' : 'td', { 'data-label': c.label }, c.cell(r)),
-                        ),
-                    ),
-                ),
-            ),
+            'tr',
+            { class: rowClass?.(r) || null, hidden: extra > 0 && !open && i >= limit },
+            columns.map((c) => {
+                const content = c.cell(r);
+                if (c.header) return h('th', { scope: 'row' }, content);
+                return h(c.num ? 'td.num' : 'td', { 'data-label': c.label, 'data-empty': isEmpty(content) }, content);
+            }),
         ),
     );
+    const table = h(
+        'div.table-wrapper',
+        { tabindex: 0, role: 'region', 'aria-labelledby': captionId },
+        h('table.data', h('caption', { id: captionId }, caption), h('thead', h('tr', columns.map((c) => h('th', { scope: 'col' }, c.label)))), h('tbody', trs)),
+    );
+    if (!extra) return table;
+    // The toggle stays in place (and keeps focus) in both states.
+    const label = () => (open ? `Show the first ${limit}` : `Show all ${rows.length}`);
+    const toggle = h('button.link', { type: 'button', 'aria-expanded': String(open) }, label());
+    toggle.addEventListener('click', () => {
+        open = !open;
+        if (open) expandedTables.add(caption);
+        else expandedTables.delete(caption);
+        trs.forEach((tr, i) => (tr.hidden = !open && i >= limit));
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.textContent = label();
+    });
+    return h('div', table, h('p.table-more', toggle));
 }
 
 export function badge(text, kind = '') {

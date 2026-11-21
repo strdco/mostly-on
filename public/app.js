@@ -28,6 +28,41 @@ const routes = [
     [/^\/settings$/, () => settingsView()],
 ];
 
+// --- navigation: inline when the whole row fits, a popover menu when not ----
+const topInner = topbar.querySelector('.topbar-inner');
+const siteMenu = document.getElementById('site-menu');
+const popoverSupported = Object.hasOwn(HTMLElement.prototype, 'popover');
+let lastHeaderWidth = 0;
+
+function layoutNav() {
+    if (topbar.hidden) return;
+    if (!popoverSupported) {
+        // Without the Popover API the list would be unreachable: always inline, wrapping if needed.
+        siteMenu.removeAttribute('popover');
+        topbar.classList.add('is-wide');
+        topInner.style.flexWrap = 'wrap';
+        return;
+    }
+    const width = topbar.clientWidth;
+    const wide = topbar.classList.contains('is-wide');
+    // While collapsed, only a wider header can make the row fit; re-measuring on
+    // every shrink would flip the layout back and forth.
+    if (!wide && width <= lastHeaderWidth) return;
+    lastHeaderWidth = width;
+    const wasOpen = siteMenu.matches(':popover-open');
+    siteMenu.removeAttribute('popover');
+    topbar.classList.add('is-wide');
+    const fits = topInner.scrollWidth <= topInner.clientWidth;
+    if (!fits) {
+        topbar.classList.remove('is-wide');
+        siteMenu.setAttribute('popover', 'auto');
+        if (wasOpen) siteMenu.showPopover();
+    }
+}
+const navObserver = new ResizeObserver(() => layoutNav());
+navObserver.observe(topbar);
+navObserver.observe(siteMenu);
+
 function currentPath() {
     return location.hash.replace(/^#/, '') || '/';
 }
@@ -46,11 +81,18 @@ async function render() {
         topbar.hidden = true;
         state.current = loginView({ onLogin });
         await state.current.render(clear(app));
+        announcePage(false);
         return;
     }
+    const wasHidden = topbar.hidden;
     topbar.hidden = false;
+    if (wasHidden) {
+        lastHeaderWidth = 0;
+        layoutNav();
+    }
     const path = currentPath();
     markNav(path);
+    if (siteMenu.matches(':popover-open')) siteMenu.hidePopover();
     for (const [re, make] of routes) {
         const m = re.exec(path);
         if (m) {
@@ -60,10 +102,24 @@ async function render() {
             } catch (err) {
                 if (err.status !== 401) toast(err.message, 'err');
             }
+            announcePage(navigated);
+            navigated = false;
             return;
         }
     }
     location.hash = '#/';
+}
+
+// After a route change: a unique title, and focus on the new page's content so
+// keyboard and screen reader users start there instead of on the old link.
+let navigated = false;
+function announcePage(moveFocus) {
+    const heading = app.querySelector('h1')?.textContent?.trim();
+    document.title = heading ? `${heading} · Mostly On` : 'Mostly On';
+    if (moveFocus) {
+        window.scrollTo(0, 0);
+        app.focus({ preventScroll: true });
+    }
 }
 
 function connectStream() {
@@ -126,7 +182,12 @@ window.addEventListener('auth-required', () => {
     render();
 });
 
-window.addEventListener('hashchange', render);
+document.getElementById('skip-to-content').addEventListener('click', () => app.focus());
+
+window.addEventListener('hashchange', () => {
+    navigated = true;
+    render();
+});
 
 try {
     const me = await get('/api/auth/me');
