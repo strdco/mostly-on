@@ -1,9 +1,7 @@
 // Pure helpers for restores (no I/O): MOVE targets, STANDBY undo files,
 // classification of RESTORE errors and retry backoff.
-import path from 'node:path';
-import { safeName } from '../paths.js';
+import { safeName, sqlPathApi } from '../paths.js';
 
-const posix = path.posix;
 const SAFE_FILE_RE = /^[A-Za-z0-9_.-]{1,120}$/;
 
 function baseName(p) {
@@ -38,7 +36,7 @@ export function buildMoves(fileList, { defaultDataPath, defaultLogPath, dbName }
             name = dot > 0 ? `${name.slice(0, dot)}_${f.fileId}${name.slice(dot)}` : `${name}_${f.fileId}`;
         }
         used.add(name.toLowerCase());
-        return { from: f.logicalName, to: posix.join(dir, name) };
+        return { from: f.logicalName, to: sqlPathApi(dir).join(dir, name) };
     });
 }
 
@@ -46,7 +44,7 @@ export function buildMoves(fileList, { defaultDataPath, defaultLogPath, dbName }
 export function undoFilePath(server, dbName) {
     const dir = server.standby_root || server.default_data_path;
     if (!dir) throw new Error(`Server ${server.name} has no standby path and has not reported its default data path`);
-    return posix.join(dir, `${safeName(dbName)}.tuf`);
+    return sqlPathApi(dir).join(dir, `${safeName(dbName)}.tuf`);
 }
 
 /** Every SQL error number in an mssql error (including preceding errors). */

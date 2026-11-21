@@ -2,6 +2,11 @@ import { h, clear, dataTable, badge, formDialog, field, toast, ago } from '../do
 import { get, post, put, del } from '../api.js';
 import { stateText, chainBadge } from './overview.js';
 
+/** host:port, or host\INSTANCE for a named instance. */
+export function serverAddress(s) {
+    return s.instance_name ? `${s.host}\\${s.instance_name}` : `${s.host}:${s.port}`;
+}
+
 export function setupBadge(setup) {
     if (!setup) return badge('setup not checked yet');
     return setup.ready ? badge(`ready (helper procedures v${setup.version})`, 'ok') : badge(setup.version == null ? 'setup needed' : 'setup out of date', 'err');
@@ -47,13 +52,18 @@ function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
         field(
             'Shared backup folder, as this SQL Server sees it',
             h('input', { type: 'text', name: 'sql_backup_root', required: true, value: s.sql_backup_root || '/var/opt/mssql/backup', spellcheck: 'false', autocapitalize: 'none' }),
-            'The folder all servers back up to, as a path on this server.',
+            'The folder all servers back up to, as a path on this server: for example /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup.',
         ),
         h(
             'details.more',
             h('summary', 'More options'),
             h(
                 'div.stack',
+                field(
+                    'Instance name (optional)',
+                    h('input', { type: 'text', name: 'instance_name', value: s.instance_name || '', placeholder: 'e.g. SQLEXPRESS', maxlength: 16, spellcheck: 'false', autocapitalize: 'none' }),
+                    'For a named instance. Mostly On then finds its port through the SQL Server Browser service (UDP 1434), and the port above is ignored. Leave empty to connect to the port directly.',
+                ),
                 field(
                     'Shared backup folder, as Mostly On sees it (optional)',
                     h('input', { type: 'text', name: 'controller_backup_root', value: s.controller_backup_root || '', placeholder: backupRoot, spellcheck: 'false', autocapitalize: 'none' }),
@@ -106,7 +116,7 @@ export function serversView() {
                 empty: 'No servers registered yet.',
                 columns: [
                     { label: 'Server', header: true, cell: (s) => h('a', { href: `#/servers/${s.id}` }, s.name) },
-                    { label: 'Address', cell: (s) => h('span.mono', `${s.host}:${s.port}`) },
+                    { label: 'Address', cell: (s) => h('span.mono', serverAddress(s)) },
                     { label: 'Status', cell: (s) => [healthBadge(s), s.health?.setup && !s.health.setup.ready ? [' ', setupBadge(s.health.setup)] : null] },
                     { label: 'Version', cell: (s) => (s.product_version ? `${s.health?.info?.versionName || ''} ${s.product_version}`.trim() : '–') },
                     { label: 'Edition', cell: (s) => s.edition || '–' },
@@ -282,7 +292,7 @@ export function serverDetailView(id) {
                 h(
                     'dl.kv',
                     h('dt', 'Status'), h('dd', healthBadge(s)),
-                    h('dt', 'Address'), h('dd.mono', `${s.host}:${s.port}`),
+                    h('dt', 'Address'), h('dd.mono', serverAddress(s)),
                     h('dt', 'Version'), h('dd', s.product_version ? `${hh?.info?.versionName || ''} (${s.product_version})` : '–'),
                     h('dt', 'Edition'), h('dd', s.edition || '–'),
                     h('dt', 'Backup path (SQL Server)'), h('dd.mono', s.sql_backup_root),

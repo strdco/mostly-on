@@ -7,6 +7,10 @@
 //
 // translatePath() is the ONLY place where paths are mapped between these
 // three namespaces. Nothing else should join or strip backup roots.
+//
+// SQL Server may run on Linux or Windows: a server's paths follow the style of
+// its own root ("/var/opt/mssql/backup", "D:\Backup", "\\fileserver\backup").
+// Relative paths and the controller's paths are always POSIX.
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -68,10 +72,32 @@ export function normalizeRel(rel) {
     return n;
 }
 
+// A drive letter ("D:\..." or "D:/...") or a UNC path ("\\host\share\...").
+const WINDOWS_ABS_RE = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/;
+
+/** True for an absolute Windows path (drive letter or UNC). */
+export function isWindowsPath(p) {
+    return typeof p === 'string' && WINDOWS_ABS_RE.test(p);
+}
+
+/** node:path flavour for a SQL Server path or root: win32 for Windows paths, else posix. */
+export function sqlPathApi(p) {
+    return isWindowsPath(p) ? path.win32 : posix;
+}
+
+/** Normalized root without a trailing separator (except "/" and "D:\"). */
+function trimRoot(root) {
+    if (isWindowsPath(root)) {
+        const n = path.win32.normalize(root);
+        return /^[A-Za-z]:\\$/.test(n) ? n : n.replace(/\\+$/, '');
+    }
+    return posix.normalize(root).replace(/\/+$/, '') || '/';
+}
+
 function rootOf(server, ns, controllerDefaultRoot) {
     if (ns === 'sql') {
         if (!server?.sql_backup_root) throw new Error('Server has no sql_backup_root');
-        return posix.normalize(server.sql_backup_root).replace(/\/+$/, '') || '/';
+        return trimRoot(server.sql_backup_root);
     }
     if (ns === 'controller') {
         const r = server?.controller_backup_root || controllerDefaultRoot;
@@ -97,13 +123,22 @@ export function translatePath(p, server, { from, to, controllerRoot }) {
         rel = normalizeRel(p);
     } else {
         const root = rootOf(server, from, controllerRoot);
-        const abs = posix.normalize(String(p));
-        const prefix = root === '/' ? '/' : root + '/';
-        if (!abs.startsWith(prefix)) throw new Error(`Path ${p} is not under the ${from} backup root ${root}`);
-        rel = normalizeRel(abs.slice(prefix.length));
+        if (isWindowsPath(root)) {
+            // Windows: either separator, and paths are case-insensitive.
+            const abs = path.win32.normalize(String(p));
+            const prefix = root.endsWith('\\') ? root : root + '\\';
+            if (!abs.toLowerCase().startsWith(prefix.toLowerCase())) throw new Error(`Path ${p} is not under the ${from} backup root ${root}`);
+            rel = normalizeRel(abs.slice(prefix.length).replace(/\\/g, '/'));
+        } else {
+            const abs = posix.normalize(String(p));
+            const prefix = root === '/' ? '/' : root + '/';
+            if (!abs.startsWith(prefix)) throw new Error(`Path ${p} is not under the ${from} backup root ${root}`);
+            rel = normalizeRel(abs.slice(prefix.length));
+        }
     }
     if (to === 'rel') return rel;
-    return posix.join(rootOf(server, to, controllerRoot), rel);
+    const root = rootOf(server, to, controllerRoot);
+    return isWindowsPath(root) ? path.win32.join(root, ...rel.split('/')) : posix.join(root, rel);
 }
 
 /**

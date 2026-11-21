@@ -1,8 +1,10 @@
 // Registered SQL Server instances.
 import { getDb, nowIso } from '../db.js';
 import { encrypt, decrypt } from '../../crypto.js';
+import path from 'node:path';
+import { isWindowsPath } from '../../paths.js';
 
-const PUBLIC_COLS = `id, name, host, port, username, encrypt, trust_server_cert, sql_backup_root,
+const PUBLIC_COLS = `id, name, host, port, instance_name, username, encrypt, trust_server_cert, sql_backup_root,
     controller_backup_root, standby_root, enabled, last_seen_at, last_error, product_version, edition,
     engine_edition, default_data_path, default_log_path, created_at, updated_at`;
 
@@ -60,6 +62,12 @@ export function validate(input, { partial = false } = {}) {
         if (!Number.isInteger(p) || p < 1 || p > 65535) err('port must be 1-65535');
         out.port = p;
     } else if (!partial) out.port = 1433;
+    if (has('instance_name')) {
+        // Named instance (reached through the SQL Server Browser service); empty = connect to host:port.
+        const v = input.instance_name === null ? '' : String(input.instance_name).trim();
+        if (v !== '' && !/^[A-Za-z_][A-Za-z0-9_$#@]{0,15}$/.test(v)) err('instance name must be 1-16 letters, digits or _ $ # @, starting with a letter or _');
+        out.instance_name = v || null;
+    }
     if (req('username')) {
         if (typeof input.username !== 'string' || !input.username || input.username.length > 128) err('username is invalid');
         out.username = input.username;
@@ -71,19 +79,27 @@ export function validate(input, { partial = false } = {}) {
     for (const k of ['encrypt', 'trust_server_cert', 'enabled']) {
         if (has(k)) out[k] = input[k] ? 1 : 0;
     }
-    const absPath = (k, required) => {
+    // windows: the path may also be a Windows one (SQL Server paths); the controller's are always POSIX.
+    const absPath = (k, required, { windows }) => {
         if (has(k) && input[k] !== null && input[k] !== '') {
-            const v = String(input[k]);
-            if (!v.startsWith('/') || v.includes('\0') || v.includes('..') || v.length > 400) err(`${k} must be an absolute POSIX path`);
-            out[k] = v.replace(/\/+$/, '') || '/';
+            const v = String(input[k]).trim();
+            const ok = v.startsWith('/') || (windows && isWindowsPath(v));
+            if (!ok || v.includes('\0') || v.split(/[\\/]/).includes('..') || v.length > 400) {
+                err(windows ? `${k} must be an absolute path, such as /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup` : `${k} must be an absolute path, such as /backup`);
+            }
+            if (isWindowsPath(v)) {
+                // One form only (D:\\Backup, \\\\fs\\share), so it matches what SQL Server and the setup script see.
+                const n = path.win32.normalize(v);
+                out[k] = /^[A-Za-z]:\\$/.test(n) ? n : n.replace(/\\+$/, '');
+            } else out[k] = v.replace(/\/+$/, '') || '/';
         } else if (has(k)) {
             if (required) err(`${k} is required`);
             out[k] = null;
         } else if (required && !partial) err(`${k} is required`);
     };
-    absPath('sql_backup_root', true);
-    absPath('controller_backup_root', false);
-    absPath('standby_root', false);
+    absPath('sql_backup_root', true, { windows: true });
+    absPath('controller_backup_root', false, { windows: false });
+    absPath('standby_root', false, { windows: true });
     return out;
 }
 
@@ -91,15 +107,16 @@ export function create(v, key) {
     const now = nowIso();
     const info = getDb()
         .prepare(
-            `INSERT INTO servers (name, host, port, username, password_enc, encrypt, trust_server_cert,
+            `INSERT INTO servers (name, host, port, instance_name, username, password_enc, encrypt, trust_server_cert,
                 sql_backup_root, controller_backup_root, standby_root, enabled, created_at, updated_at)
-             VALUES (@name, @host, @port, @username, @password_enc, @encrypt, @trust_server_cert,
+             VALUES (@name, @host, @port, @instance_name, @username, @password_enc, @encrypt, @trust_server_cert,
                 @sql_backup_root, @controller_backup_root, @standby_root, @enabled, @now, @now)`,
         )
         .run({
             name: v.name,
             host: v.host,
             port: v.port,
+            instance_name: v.instance_name ?? null,
             username: v.username,
             password_enc: encrypt(v.password, key),
             encrypt: v.encrypt ?? 1,
@@ -116,7 +133,7 @@ export function create(v, key) {
 export function update(id, v, key) {
     const cols = [];
     const args = {};
-    for (const k of ['name', 'host', 'port', 'username', 'encrypt', 'trust_server_cert', 'sql_backup_root', 'controller_backup_root', 'standby_root', 'enabled']) {
+    for (const k of ['name', 'host', 'port', 'instance_name', 'username', 'encrypt', 'trust_server_cert', 'sql_backup_root', 'controller_backup_root', 'standby_root', 'enabled']) {
         if (v[k] !== undefined) {
             cols.push(`${k}=@${k}`);
             args[k] = v[k];

@@ -13,6 +13,7 @@ import { pathOpts } from './context.js';
 import { tryAcquire, BusyError } from './locks.js';
 import { createOperation, runOperation } from './operations.js';
 import { publish } from '../bus.js';
+import { log } from '../log.js';
 
 export const BACKUP_TYPES = ['FULL', 'DIFF', 'LOG'];
 
@@ -20,16 +21,34 @@ function fail(status, message) {
     return Object.assign(new Error(message), { status, expose: true });
 }
 
-/** mkdir -p for the controller-side directory, with group-writable setgid dirs. */
+let chmodWarned = false;
+
+/**
+ * mkdir -p for the controller-side directory (SQL Server's BACKUP does not
+ * create folders). New folders are made group-writable with setgid, so SQL
+ * Server's user can write into them; on shares that ignore modes (SMB/CIFS),
+ * the mount options decide instead and the chmod is skipped.
+ */
 export function ensureDir(server, relDir) {
     const absDir = translatePath(relDir, server, pathOpts('rel', 'controller'));
     let cur = absDir.slice(0, absDir.length - relDir.length).replace(/\/+$/, '') || '/';
     if (!fs.existsSync(cur)) throw new Error(`Backup root ${cur} does not exist on the controller (is the shared volume mounted?)`);
     for (const part of relDir.split('/')) {
         cur = path.posix.join(cur, part);
-        if (!fs.existsSync(cur)) {
+        if (fs.existsSync(cur)) continue;
+        try {
             fs.mkdirSync(cur);
+        } catch (err) {
+            if (err.code === 'EEXIST') continue; // created meanwhile
+            throw new Error(`Mostly On cannot create the folder ${cur} on the backup share (${err.code || err.message}). Check that the share is mounted read-write for Mostly On's user (uid ${process.getuid?.() ?? '?'}).`);
+        }
+        try {
             fs.chmodSync(cur, 0o2770); // umask would otherwise drop group write
+        } catch (err) {
+            if (!chmodWarned) {
+                chmodWarned = true;
+                log.warn('Cannot set permissions on new backup folders; the share decides them (mount options)', { folder: cur, err: err.code || err.message });
+            }
         }
     }
 }

@@ -25,7 +25,7 @@ import * as health from './health.js';
 import * as L from '../lsn.js';
 import * as forks from '../store/repos/forks.js';
 import { nextLog, lag, lineageProblem } from './chain.js';
-import { restoreFile, fileOnDisk } from './restore.js';
+import { restoreFile, confirmOnDisk } from './restore.js';
 import { backoffMs } from './restore-plan.js';
 import { tryAcquire, exclusiveWaiting } from './locks.js';
 import { subscribe, publish } from '../bus.js';
@@ -184,7 +184,7 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
         if (file.id === lastFileId) {
             throw new Error(`Restoring ${file.rel_path} did not move ${db.name} on ${server.name} past LSN ${live.position}`);
         }
-        if (!fileOnDisk(file)) return result('broken', { ...at, reason: `The next log backup ${file.rel_path} is missing from the backup volume.` });
+        if (!(await confirmOnDisk(file))) return result('broken', { ...at, reason: `The next log backup ${file.rel_path} is missing from the backup volume.` });
 
         // A failover is waiting for this database: stop between files; it restores the rest itself.
         if (yieldToExclusive && exclusiveWaiting(db.id)) return result('yield', at);
@@ -198,7 +198,7 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
             if (err.restoreKind === 'in_use') return result('readers', { ...at, reason: `Someone reconnected to ${db.name} on ${server.name} just as the restore started` }); // position is re-read; the guard above stops a loop
             if (err.restoreKind === 'too_recent') return result('broken', { ...at, reason: `SQL Server refused ${file.rel_path} as too recent: ${sqlErrorText(err)}` });
             if (err.restoreKind === 'wrong_fork') return result('reseed', { ...at, reason: `SQL Server refused ${file.rel_path} as being on another recovery path: ${sqlErrorText(err)}` });
-            if (err.restoreKind === 'cannot_open' && !fileOnDisk(file)) {
+            if (err.restoreKind === 'cannot_open' && !(await confirmOnDisk(file))) {
                 return result('broken', { ...at, reason: `The next log backup ${file.rel_path} is missing from the backup volume.` });
             }
             throw err;

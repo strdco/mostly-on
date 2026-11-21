@@ -34,10 +34,11 @@ export const T = {
     lsn: (v) => ({ type: sql.VarChar(25), value: v }),
 };
 
-function poolConfig(s, { connectTimeoutMs = 15000, max = 6 } = {}) {
+export function poolConfig(s, { connectTimeoutMs = 15000, max = 6 } = {}) {
     return {
         server: s.host,
-        port: s.port,
+        // A named instance is found through the SQL Server Browser (UDP 1434); the driver then must not get a port.
+        port: s.instance_name ? undefined : s.port,
         user: s.username,
         password: s.password,
         database: 'master',
@@ -47,6 +48,7 @@ function poolConfig(s, { connectTimeoutMs = 15000, max = 6 } = {}) {
             encrypt: !!s.encrypt,
             trustServerCertificate: !!s.trust_server_cert,
             appName: 'mostly-on',
+            ...(s.instance_name ? { instanceName: s.instance_name } : {}),
             useUTC: true,
             abortTransactionOnError: true,
         },

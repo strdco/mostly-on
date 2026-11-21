@@ -26,7 +26,7 @@ import { createOperation, runOperation } from '../operations.js';
 import { tryAcquire, holders, BusyError } from '../locks.js';
 import * as forks from '../../store/repos/forks.js';
 import { newestBaseOnLineage, chainGap } from '../chain.js';
-import { restoreFile, fileOnDisk } from '../restore.js';
+import { restoreFile, fileOnDisk, confirmOnDisk } from '../restore.js';
 import { buildMoves, undoFilePath } from '../restore-plan.js';
 import { checkLive, nudge } from '../restore-loop.js';
 import { restoreCompatibility } from '../../sqlversion.js';
@@ -221,7 +221,7 @@ export function seedSteps({ db, target, params }) {
             label: `Prepare ${target.name}`,
             run: async (ctx) => {
                 const full = fileOf(ctx.state.fullFileId);
-                if (!fileOnDisk(full)) throw new Error(`Backup file ${full.rel_path} is missing from the backup volume`);
+                if (!(await confirmOnDisk(full))) throw new Error(`Backup file ${full.rel_path} is missing from the backup volume`);
                 const live = await liveState();
                 let note = '';
                 if (live) {
@@ -251,7 +251,7 @@ export function seedSteps({ db, target, params }) {
             },
             run: async (ctx) => {
                 const full = fileOf(ctx.state.fullFileId);
-                if (!fileOnDisk(full)) throw new Error(`Backup file ${full.rel_path} is missing from the backup volume`);
+                if (!(await confirmOnDisk(full))) throw new Error(`Backup file ${full.rel_path} is missing from the backup volume`);
                 await restoreFile({
                     db,
                     server: target,
@@ -276,7 +276,7 @@ export function seedSteps({ db, target, params }) {
             },
             run: async (ctx) => {
                 const diff = fileOf(ctx.state.diffFileId);
-                if (!fileOnDisk(diff)) throw new Error(`Backup file ${diff.rel_path} is missing from the backup volume`);
+                if (!(await confirmOnDisk(diff))) throw new Error(`Backup file ${diff.rel_path} is missing from the backup volume`);
                 await restoreFile({ db, server: target, file: diff, operationId: ctx.op.id, onInfo: (m) => ctx.progress(m) });
                 return recordPosition(db, target, diff);
             },
