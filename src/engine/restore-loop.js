@@ -68,7 +68,7 @@ export function loopStatus(dbId, serverId) {
 
 /**
  * Requests a restore pass for one secondary. `force` skips the retry backoff
- * (the user pressed "Restore now").
+ * (the user pressed Recheck, or a seed just finished).
  */
 export function nudge(dbId, serverId, { force = false } = {}) {
     if (!started) return;

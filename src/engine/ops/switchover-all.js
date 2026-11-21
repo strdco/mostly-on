@@ -47,7 +47,7 @@ function childSteps(plan, toId) {
                 started = await resumeFailover(prev);
             } else {
                 const db = databases.get(databaseId);
-                started = await startPlannedFailover(databaseId, { serverId: toId, confirm: db.name, parentId: ctx.op.id });
+                started = await startPlannedFailover(databaseId, { serverId: toId, parentId: ctx.op.id });
                 ctx.save({ children: { ...children, [databaseId]: started.operation.id } });
             }
             ctx.progress(`Running operation #${started.operation.id}`);
@@ -64,7 +64,7 @@ export async function startSwitchoverAll({ fromServerId, toServerId, confirm }) 
     if (!items.length) throw fail(409, `${from.name} is not the primary of any managed database`);
     const blocked = items.filter((i) => i.problem);
     if (blocked.length) throw fail(409, `Cannot switch over: ${blocked.map((b) => `${b.name}: ${b.problem}`).join('; ')}`, { blocked });
-    if (!health.getHealth(from.id)?.ok) throw fail(409, `${from.name} is unreachable; switch over needs it (use forced failovers per database)`);
+    if (!health.getHealth(from.id)?.ok) throw fail(409, `${from.name} is unreachable; switch over needs it (fail each database over from its own page instead)`);
     if (!health.getHealth(to.id)?.ok) throw fail(503, `${to.name} is unreachable`);
 
     const plan = items.map(({ databaseId, name }) => ({ databaseId, name }));

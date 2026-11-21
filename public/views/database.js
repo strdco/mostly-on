@@ -179,47 +179,71 @@ function removeDialog(db, r) {
     });
 }
 
-function previewList(pf, forced) {
+function previewList(pf) {
     const items = [];
     if (pf.target.error) items.push(h('li.error-text', pf.target.error));
     items.push(h('li', `${pf.target.name} is ${pf.target.state ?? 'unknown'} at LSN ${pf.target.position ?? '?'}; ${pf.chain.logsToApply ?? '?'} log(s) to restore before it takes over.`));
     if (pf.chain.gap) items.push(h('li.error-text', `The log chain stops early: ${pf.chain.gap}`));
-    if (forced) {
-        items.push(h('li', `Old primary ${pf.oldPrimary.name}: ${pf.oldPrimary.reachable ? `reachable (${pf.oldPrimary.state ?? 'database state unknown'}); a tail-log backup will be attempted` : 'unreachable; no tail-log backup'}.`));
-        items.push(h('li', `Afterwards ${pf.oldPrimary.name} is marked diverged and must be reseeded.`));
-    } else {
-        items.push(h('li', `${pf.oldPrimary.name} takes a tail-log backup (all its users are disconnected) and continues as a secondary.`));
-    }
     for (const o of pf.otherSecondaries) items.push(h('li', `${o.server}: ${o.note}.`));
     if (pf.oldPrimaryCanFollow) items.push(h('li.error-text', pf.oldPrimaryCanFollow));
     return h('ul', items);
 }
 
-async function failoverDialog(db, r, forced) {
-    const pf = await get(`/api/databases/${db.id}/failover-preview?server_id=${r.server_id}`);
-    const fields = [];
-    if (forced) {
-        const since = pf.dataLoss.since ? `${formatTime(pf.dataLoss.since)} (${formatDuration(pf.dataLoss.seconds)} ago)` : 'an unknown time';
-        fields.push(
-            h(
-                'div.callout.err',
-                h('strong', 'Data may be lost. '),
-                `Transactions committed on ${pf.oldPrimary.name} after ${since} are lost unless the tail-log backup succeeds. `,
-                pf.plannedPossible ? h('strong', `${pf.oldPrimary.name} looks healthy: a planned failover would lose nothing.`) : '',
-            ),
-        );
-    } else if (!pf.plannedPossible) {
-        fields.push(h('div.callout.warn', 'A planned failover needs the primary ONLINE and a healthy secondary with a complete chain. This one will probably stop at the first step that finds otherwise.'));
+/** What happens to the old primary, for the current state of the tail-log checkbox. */
+function tailOutcome(pf, tailLog) {
+    const old = pf.oldPrimary.name;
+    const since = pf.dataLoss.since ? `${formatTime(pf.dataLoss.since)} (${formatDuration(pf.dataLoss.seconds)} ago)` : 'the last shipped log (time unknown)';
+    if (tailLog && pf.plannedPossible) {
+        return h('p', `${old} disconnects all users of the database, takes the tail-log backup and continues as a secondary. Nothing is lost.`);
     }
-    fields.push(previewList(pf, forced));
-    if (forced) fields.push(field('I accept that transactions not yet shipped may be lost', h('input', { type: 'checkbox', name: 'accept', required: true })));
-    fields.push(field(`Type ${db.name} to confirm`, confirmNameInput('confirm')));
+    if (tailLog) {
+        return h(
+            'div.callout.warn',
+            h('strong', 'Data may be lost. '),
+            `A failover without data loss is not possible: ${pf.plannedBlocker}. Mostly On attempts a best-effort tail-log backup on ${old}; transactions committed after ${since} that it cannot capture are lost. `,
+            `${old} is then marked diverged and must be reseeded.`,
+        );
+    }
+    return h(
+        'div.callout.err',
+        h('strong', 'Without a tail-log backup, data will be lost. '),
+        `Transactions committed on ${old} after ${since} will never reach ${pf.target.name}. `,
+        `${old} will be set OFFLINE so nothing can keep writing to it. `,
+        pf.plannedPossible ? h('strong', `${old} looks healthy: with the tail-log backup, nothing would be lost.`) : '',
+    );
+}
+
+async function failoverDialog(db, r) {
+    const pf = await get(`/api/databases/${db.id}/failover-preview?server_id=${r.server_id}`);
+    const old = pf.oldPrimary.name;
+    const outcomeId = `tail-outcome-${r.server_id}`;
+    const tail = h('input', { type: 'checkbox', name: 'tail_log', checked: pf.oldPrimary.reachable, 'aria-describedby': outcomeId });
+    // Polite live region: unchecking the box announces the data-loss warning.
+    const outcome = h('div', { id: outcomeId, 'aria-live': 'polite' });
+    const sync = () => clear(outcome).append(tailOutcome(pf, tail.checked));
+    tail.addEventListener('change', sync);
+    sync();
+    const lastCheck = pf.oldPrimary.checkedAt ? ` at the last check (${formatTime(pf.oldPrimary.checkedAt)})` : '';
     return formDialog({
-        title: `${forced ? 'Forced' : 'Planned'} failover of ${db.name} to ${r.server_name}`,
-        fields,
-        submitLabel: forced ? 'Force failover' : 'Fail over',
+        title: `Fail over ${db.name} to ${r.server_name}`,
+        fields: [
+            previewList(pf),
+            field(
+                `Perform tail log backup on ${old}`,
+                tail,
+                `Captures the transactions not yet shipped. ${old} was ${pf.oldPrimary.reachable ? `reachable (${pf.oldPrimary.state ?? 'database state unknown'})` : 'unreachable'}${lastCheck}.`,
+            ),
+            outcome,
+        ],
+        submitLabel: 'Fail over',
         danger: true,
-        onSubmit: (v) => post(`/api/databases/${db.id}/failover`, { server_id: r.server_id, confirm: v.confirm, forced, accept_data_loss: forced && v.accept }),
+        onSubmit: (v) =>
+            post(`/api/databases/${db.id}/failover`, {
+                server_id: r.server_id,
+                tail_log: v.tail_log,
+                // The dialog showed a data-loss warning; the server refuses a lossy failover without this.
+                accept_data_loss: !(v.tail_log && pf.plannedPossible),
+            }),
     });
 }
 
@@ -307,10 +331,8 @@ function replicaActions(db, r, reload) {
     }
     return h(
         'div.actions',
-        r.chain_state === 'ok' ? dialogButton('Planned failover', () => failoverDialog(db, r, false), 'button.primary') : null,
-        ['ok', 'broken'].includes(r.chain_state) ? dialogButton('Forced failover', () => failoverDialog(db, r, true), 'button.danger') : null,
+        ['ok', 'broken'].includes(r.chain_state) ? dialogButton('Failover', () => failoverDialog(db, r), 'button.primary') : null,
         r.chain_state === 'needs_reseed' ? dialogButton('Reseed', () => reseedDialog(db, r), 'button.primary') : null,
-        r.chain_state === 'ok' ? h('button', { type: 'button', onclick: () => replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/restore-now`), `Restoring on ${r.server_name}`) }, 'Restore now') : null,
         ['broken', 'needs_reseed'].includes(r.chain_state)
             ? h('button', { type: 'button', onclick: () => replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/recheck`), `Rechecking ${r.server_name}`) }, 'Recheck')
             : null,
@@ -420,7 +442,7 @@ export function databaseView(id) {
                 ? h(
                       'div.callout.err',
                       h('strong', 'Diverged copies. '),
-                      'After a forced failover the old primary may hold transactions the new primary never received. Mostly On never restores onto or backs up a diverged copy.',
+                      'After a failover that could not move the old primary over cleanly (no tail-log backup, or the primary was down or damaged), the old primary may hold transactions the new primary never received. Mostly On never restores onto or backs up a diverged copy.',
                       h(
                           'ul',
                           diverged.map((r) =>
@@ -485,8 +507,6 @@ export function databaseView(id) {
                         cell: (r) => (r.role === 'primary' ? '' : `${r.restore_mode.toUpperCase()}${r.restore_mode === 'standby' && r.disconnect_users ? ', disconnects readers' : ''}`),
                     },
                     { label: 'Lag', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagBadge(r.lag, threshold) : '') },
-                    { label: 'Position (LSN)', cell: (r) => (r.position_lsn ? h('span.mono', r.position_lsn) : '') },
-                    { label: 'Last restore', cell: (r) => (r.role === 'primary' ? '' : formatTime(r.last_restored_at)) },
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },
                 ],
             }),

@@ -88,15 +88,6 @@ export function replicaRoutes(router) {
         return updated;
     });
 
-    // Run a restore pass now, skipping any retry backoff.
-    router.post('/api/databases/:id/replicas/:serverId/restore-now', async (ctx) => {
-        const db = mustGetDb(idParam(ctx.params.id));
-        const rep = mustGetSecondary(db, idParam(ctx.params.serverId, 'serverId'));
-        if (rep.chain_state !== 'ok') throw new HttpError(409, `Shipping to ${rep.server_name} is ${rep.chain_state}; recheck or reseed it first`);
-        nudge(db.id, rep.server_id, { force: true });
-        return { ok: true };
-    });
-
     // After fixing the cause of a broken chain (e.g. putting a missing file
     // back), let the restore loop try again. It stops again if nothing changed.
     router.post('/api/databases/:id/replicas/:serverId/recheck', async (ctx) => {

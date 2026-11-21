@@ -9,10 +9,13 @@
 //   NORECOVERY on the old primary), restore_tail, recover, multi_user,
 //   swap_roles (old primary becomes a secondary), first_log
 //
-// Forced (the primary is unavailable):
-//   lock, validate, tail_log (best effort, never fails), apply_logs (stops at
-//   a gap), recover (+ MULTI_USER), swap_roles (old primary becomes
+// Forced (the primary is unavailable, or the user chose no tail-log backup):
+//   lock, validate, tail_log (best effort, never fails) or offline_old (no
+//   tail log: set the old copy OFFLINE if reachable, never fails), apply_logs
+//   (stops at a gap), recover (+ MULTI_USER), swap_roles (old primary becomes
 //   diverged), other_secondaries (continue or need a reseed), first_log
+//
+// The UI has one Failover button; startFailover() picks the kind.
 //
 // The operation holds the database's exclusive lock until the roles are
 // swapped; the first log backup runs after it is released.
@@ -88,7 +91,16 @@ export async function failoverPreview(databaseId, targetServerId) {
     const { db, oldServer, target, rep } = loadTopology(databaseId, targetServerId);
     const ph = health.getHealth(oldServer.id);
     const th = health.getHealth(target.id);
-    const primaryLive = ph?.ok ? health.dbState(oldServer.id, db.name) : null;
+    // Ask the primary directly: the health snapshot can be a poll behind (e.g. just after a failover).
+    let primaryLive = ph?.ok ? health.dbState(oldServer.id, db.name) : null;
+    if (ph?.ok) {
+        try {
+            const p = await inspect.dbRestoreState(oldServer.id, db.name);
+            primaryLive = p ? { state: p.state, isInStandby: p.standby } : null;
+        } catch {
+            /* keep the snapshot */
+        }
+    }
     let live = null;
     let targetError = null;
     if (th?.ok) {
@@ -125,9 +137,18 @@ export async function failoverPreview(databaseId, targetServerId) {
     }
     const back = restoreCompatibility(th?.info?.majorVersion, ph?.info?.majorVersion ?? th?.info?.majorVersion);
     const problem = live ? checkLive(db, target, live) : null;
+    const primaryState = primaryLive ? (primaryLive.isInStandby ? 'STANDBY' : primaryLive.state) : null;
+    // Why a lossless (planned) failover is not possible, or null when it is.
+    let plannedBlocker = null;
+    if (!ph?.ok) plannedBlocker = `${oldServer.name} was unreachable at the last check${ph?.error ? ` (${ph.error})` : ''}`;
+    else if (primaryState !== 'ONLINE') plannedBlocker = `${db.name} is ${primaryState ?? 'missing'} on ${oldServer.name}`;
+    else if (rep.chain_state !== 'ok') plannedBlocker = `shipping to ${target.name} is ${rep.chain_state}`;
+    else if (reach?.gap) plannedBlocker = `the log chain to ${target.name} has a gap`;
+    else if (problem) plannedBlocker = problem.reseed || problem.retry;
+    else if (targetError) plannedBlocker = targetError;
     return {
         database: { id: db.id, name: db.name },
-        oldPrimary: { id: oldServer.id, name: oldServer.name, reachable: !!ph?.ok, state: primaryLive ? (primaryLive.isInStandby ? 'STANDBY' : primaryLive.state) : null },
+        oldPrimary: { id: oldServer.id, name: oldServer.name, reachable: !!ph?.ok, checkedAt: ph?.checkedAt ?? null, state: primaryState },
         target: {
             id: target.id,
             name: target.name,
@@ -150,8 +171,28 @@ export async function failoverPreview(databaseId, targetServerId) {
         },
         otherSecondaries: others,
         oldPrimaryCanFollow: back.ok ? null : back.reason,
-        plannedPossible: !!ph?.ok && primaryLive?.state === 'ONLINE' && rep.chain_state === 'ok' && !reach?.gap && !problem,
+        plannedPossible: !plannedBlocker,
+        plannedBlocker,
     };
+}
+
+/**
+ * The single entry point of the UI's Failover dialog. With a tail-log backup
+ * it is a planned failover when that is possible (nothing is lost; the old
+ * primary continues as a secondary), and otherwise a forced failover with a
+ * best-effort tail. Without one it is a forced failover that sets the old
+ * primary's copy OFFLINE if it can reach it. Every path that may lose data
+ * needs acceptDataLoss, so a primary that went down after the dialog opened
+ * cannot silently turn a lossless failover into a lossy one.
+ */
+export async function startFailover(databaseId, { serverId, tailLog, acceptDataLoss }) {
+    if (tailLog) {
+        const pf = await failoverPreview(databaseId, serverId);
+        if (pf.plannedPossible) return startPlannedFailover(databaseId, { serverId });
+        if (acceptDataLoss !== true) throw fail(409, `A failover without data loss is no longer possible (${pf.plannedBlocker}). Reopen the dialog to see what may be lost.`);
+        return startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog: 'best_effort' });
+    }
+    return startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog: 'none' });
 }
 
 // --- shared steps ---------------------------------------------------------------------
@@ -280,7 +321,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
             guidance: `Nothing has changed yet; ${oldServer.name} is still the primary. Fix the problem named in the error and resume, or mark the operation resolved.`,
             run: async (ctx) => {
                 const p = await live(oldServer);
-                if (!p || p.state !== 'ONLINE' || p.standby) throw new Error(`${db.name} is ${p ? p.state : 'missing'} on ${oldServer.name}; a planned failover needs it ONLINE (use a forced failover)`);
+                if (!p || p.state !== 'ONLINE' || p.standby) throw new Error(`${db.name} is ${p ? p.state : 'missing'} on ${oldServer.name}; a planned failover needs it ONLINE (fail over without a tail-log backup instead)`);
                 const t = await live(target);
                 const problem = checkLive(db, target, t);
                 if (problem) throw new Error(problem.reseed || problem.retry);
@@ -378,11 +419,10 @@ function plannedSteps({ db, oldServer, target, holder }) {
  * Validates and starts a planned failover (switchover) to a secondary.
  * Resolves once the operation exists; `done` settles when it has finished.
  */
-export async function startPlannedFailover(databaseId, { serverId, confirm, parentId = null }) {
+export async function startPlannedFailover(databaseId, { serverId, parentId = null }) {
     const { db, oldServer, target, rep } = loadTopology(databaseId, serverId);
-    if (confirm !== db.name) throw fail(400, `Type ${db.name} to confirm the failover`);
     if (rep.chain_state !== 'ok') throw fail(409, `Shipping to ${target.name} is ${rep.chain_state}; a planned failover needs a healthy secondary`);
-    if (!health.getHealth(oldServer.id)?.ok) throw fail(409, `The primary ${oldServer.name} is unreachable; use a forced failover`);
+    if (!health.getHealth(oldServer.id)?.ok) throw fail(409, `The primary ${oldServer.name} is unreachable; fail over without a tail-log backup instead`);
     if (!health.getHealth(target.id)?.ok) throw fail(503, `${target.name} is unreachable`);
     const holder = lockHolder(db);
     const stepDefs = plannedSteps({ db, oldServer, target, holder });
@@ -400,7 +440,27 @@ export async function startPlannedFailover(databaseId, { serverId, confirm, pare
 
 // --- forced failover ----------------------------------------------------------------
 
-function forcedSteps({ db, oldServer, target, holder }) {
+/** Forced failover without a tail-log backup: keep the old copy from taking writes. */
+function offlineOldStep(db, oldServer) {
+    return {
+        name: 'offline_old',
+        label: `Set ${db.name} OFFLINE on ${oldServer.name} if it is reachable (no tail-log backup)`,
+        check: (ctx) => (ctx.state.offlineAttempted ? `Already attempted: ${ctx.state.offlineResult}` : false),
+        run: async (ctx) => {
+            let result;
+            try {
+                await withDedicated(oldServer.id, (q) => q(Q.SET_OFFLINE, { db: T.sysname(db.name) }, { timeoutMs: 120_000 }), { connectTimeoutMs: 5000 });
+                result = `${db.name} on ${oldServer.name} is OFFLINE; nothing can write to it`;
+            } catch (err) {
+                result = `Could not set it OFFLINE (${errText(err)}); continuing. If ${oldServer.name} comes back with ${db.name} ONLINE, use Take offline in the Replicas table`;
+            }
+            ctx.save({ offlineAttempted: true, offlineResult: result });
+            return result;
+        },
+    };
+}
+
+function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' }) {
     const live = (server) => inspect.dbRestoreState(server.id, db.name);
     return [
         lockStep(holder, db),
@@ -419,7 +479,7 @@ function forcedSteps({ db, oldServer, target, holder }) {
                 return `${db.name} is ${t.standby ? 'STANDBY' : 'RESTORING'} on ${target.name} at LSN ${t.position}`;
             },
         },
-        {
+        tailLog === 'none' ? offlineOldStep(db, oldServer) : {
             name: 'tail_log',
             label: `Best-effort tail-log backup on ${oldServer.name} (NO_TRUNCATE, NORECOVERY)`,
             check: (ctx) => {
@@ -529,22 +589,22 @@ function forcedSteps({ db, oldServer, target, holder }) {
 }
 
 /** Validates and starts a forced failover to a secondary. */
-export async function startForcedFailover(databaseId, { serverId, confirm, acceptDataLoss }) {
+export async function startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog = 'best_effort' }) {
     const { db, oldServer, target, rep } = loadTopology(databaseId, serverId);
-    if (confirm !== db.name) throw fail(400, `Type ${db.name} to confirm the forced failover`);
     if (acceptDataLoss !== true) throw fail(400, 'Confirm that transactions not yet shipped to the target may be lost');
     if (!['ok', 'broken'].includes(rep.chain_state)) throw fail(409, `${target.name} is ${rep.chain_state} and cannot become the primary`);
     if (!health.getHealth(target.id)?.ok) throw fail(503, `${target.name} is unreachable`);
     const holder = lockHolder(db);
-    const stepDefs = forcedSteps({ db, oldServer, target, holder });
+    const stepDefs = forcedSteps({ db, oldServer, target, holder, tailLog });
     const operation = createOperation({
         type: 'forced_failover',
         databaseId: db.id,
         serverId: target.id,
-        params: { targetServerId: target.id, oldPrimaryServerId: oldServer.id },
+        params: { targetServerId: target.id, oldPrimaryServerId: oldServer.id, tailLog },
         stepDefs,
     });
-    events.add('warn', 'failover', `Forced failover of ${db.name} from ${oldServer.name} to ${target.name} started`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
+    const how = tailLog === 'none' ? 'without a tail-log backup' : 'with a best-effort tail-log backup';
+    events.add('warn', 'failover', `Forced failover of ${db.name} from ${oldServer.name} to ${target.name} ${how} started`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
     return { operation, done: execute(operation.id, stepDefs, holder, db) };
 }
 
@@ -580,7 +640,7 @@ export async function resumeFailover(op) {
     const steps = op.steps.map((s) => (s.name === 'lock' ? { ...s, status: 'pending', detail: undefined } : s));
     opsRepo.save(op.id, { steps });
     const holder = lockHolder(db);
-    const stepDefs = (op.type === 'forced_failover' ? forcedSteps : plannedSteps)({ db, oldServer, target, holder });
+    const stepDefs = (op.type === 'forced_failover' ? forcedSteps : plannedSteps)({ db, oldServer, target, holder, tailLog: op.params.tailLog });
     events.add('warn', 'failover', `Resuming ${op.type.replace('_', ' ')} #${op.id} of ${db.name}`, { databaseId: db.id, serverId: target.id, operationId: op.id });
     return { operation: op, done: execute(op.id, stepDefs, holder, db) };
 }

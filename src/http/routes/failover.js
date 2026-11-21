@@ -5,7 +5,7 @@ import * as serversRepo from '../../store/repos/servers.js';
 import * as events from '../../store/repos/events.js';
 import * as Q from '../../sql/tsql.js';
 import { query, T, sqlErrorText } from '../../sql/pool.js';
-import { failoverPreview, startPlannedFailover, startForcedFailover } from '../../engine/ops/failover.js';
+import { failoverPreview, startFailover } from '../../engine/ops/failover.js';
 import { switchoverPlan, startSwitchoverAll } from '../../engine/ops/switchover-all.js';
 import { startSeed } from '../../engine/ops/seed.js';
 import { holders } from '../../engine/locks.js';
@@ -20,12 +20,15 @@ function mustGetDb(id) {
 export function failoverRoutes(router) {
     router.get('/api/databases/:id/failover-preview', async (ctx) => failoverPreview(idParam(ctx.params.id), idParam(ctx.query.server_id, 'server_id')));
 
+    // { server_id, tail_log, accept_data_loss }. With tail_log it is a
+    // lossless planned failover when possible; see startFailover().
     router.post('/api/databases/:id/failover', async (ctx) => {
         const b = ctx.body || {};
-        const args = { serverId: idParam(b.server_id, 'server_id'), confirm: b.confirm };
-        const started = b.forced === true
-            ? await startForcedFailover(idParam(ctx.params.id), { ...args, acceptDataLoss: b.accept_data_loss === true })
-            : await startPlannedFailover(idParam(ctx.params.id), args);
+        const started = await startFailover(idParam(ctx.params.id), {
+            serverId: idParam(b.server_id, 'server_id'),
+            tailLog: b.tail_log !== false,
+            acceptDataLoss: b.accept_data_loss === true,
+        });
         ctx.status = 202;
         return { operation: started.operation };
     });
