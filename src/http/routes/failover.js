@@ -60,7 +60,7 @@ export function failoverRoutes(router) {
         } catch (err) {
             throw new HttpError(502, `Could not take ${db.name} offline on ${rep.server_name}: ${sqlErrorText(err)}`);
         }
-        events.add('warn', 'failover', `The diverged copy of ${db.name} on ${rep.server_name} was taken offline`, { databaseId: db.id, serverId: rep.server_id });
+        events.add('warn', 'failover', `The old, out-of-sync copy of ${db.name} on ${rep.server_name} was taken offline`, { databaseId: db.id, serverId: rep.server_id });
         publish('replica.changed', { databaseId: db.id, serverId: rep.server_id });
         return { ok: true };
     });

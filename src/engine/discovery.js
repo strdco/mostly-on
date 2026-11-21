@@ -81,12 +81,12 @@ export async function scanForeign(db) {
         const where = `${bs.devices.join(', ')} at ${bs.backup_finish}`;
         const refs = { databaseId: db.id, serverId: server.id, data: { uuid: bs.backup_set_uuid, devices: bs.devices, firstLsn: bs.first_lsn, lastLsn: bs.last_lsn } };
         if (bs.type === 'LOG') {
-            events.add('error', 'foreign-backup', `Foreign LOG backup of ${db.name} on ${server.name} (${where}). The log chain is broken from Mostly On's point of view: secondaries cannot restore past it.`, refs);
+            events.add('error', 'foreign-backup', `A LOG backup of ${db.name} was taken outside Mostly On, on ${server.name} (${where}). The secondaries never get the changes in it, so shipping stops. Stop the other tool (or make it use COPY_ONLY), then reinitialize the secondaries.`, refs);
             publish('foreign.detected', { databaseId: db.id, type: 'LOG' });
         } else if (bs.type === 'FULL') {
-            events.add('warn', 'foreign-backup', `Foreign FULL backup of ${db.name} on ${server.name} (${where}). It changes the differential base, so Mostly On takes a FULL instead of its next DIFF.`, refs);
+            events.add('warn', 'foreign-backup', `A FULL backup of ${db.name} was taken outside Mostly On, on ${server.name} (${where}). DIFF backups build on the last FULL, so Mostly On takes a FULL of its own instead of its next DIFF.`, refs);
         } else {
-            events.add('info', 'foreign-backup', `Foreign ${bs.type} backup of ${db.name} on ${server.name} (${where}).`, refs);
+            events.add('info', 'foreign-backup', `A ${bs.type} backup of ${db.name} was taken outside Mostly On, on ${server.name} (${where}).`, refs);
         }
     }
     if (changed) publish('database.changed', { databaseId: db.id });
@@ -103,7 +103,7 @@ function tryImportOwn(db, server, bs) {
     const controllerPath = translatePath(relPath, server, pathOpts('rel', 'controller'));
     if (!fs.existsSync(controllerPath)) return false;
     const file = recordBackupFile({ db, server, bs, relPath });
-    events.add('warn', 'backup', `Recovered catalog entry for ${bs.type} backup ${relPath} (taken by Mostly On, found in msdb but missing from the catalog)`, {
+    events.add('warn', 'backup', `Found a ${bs.type} backup Mostly On took but had not recorded (${relPath}); it is recorded now`, {
         databaseId: db.id,
         serverId: server.id,
         data: { fileId: file.id },

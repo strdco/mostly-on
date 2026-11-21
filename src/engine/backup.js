@@ -61,7 +61,7 @@ export function effectiveType(requested, state, db) {
     // DIFF
     const base = state.differentialBaseGuid && backups.byUuid(state.differentialBaseGuid);
     if (!base || base.file_status !== 'present' || base.database_id !== db.id) {
-        return { type: 'FULL', reason: 'the differential base is not a FULL backup Mostly On has on disk' };
+        return { type: 'FULL', reason: 'a DIFF builds on the last FULL backup, and that one was not taken by Mostly On' };
     }
     return { type: 'DIFF', reason: null };
 }
@@ -148,9 +148,9 @@ function backupSteps({ db, server, type, relPath, sqlPath }) {
     return [
         {
             name: 'backup',
-            label: `BACKUP ${type === 'LOG' ? 'LOG' : 'DATABASE'}${type === 'DIFF' ? ' (differential)' : ''} on ${server.name}`,
+            label: `${type} backup on ${server.name}`,
             // After a crash: the backup may have completed even though the step did not finish.
-            check: async () => ((await inspect.backupsetByPath(server.id, db.name, sqlPath)) ? 'Backup already in msdb' : false),
+            check: async () => ((await inspect.backupsetByPath(server.id, db.name, sqlPath)) ? 'SQL Server already has this backup on record' : false),
             run: async (ctx) => {
                 await query(
                     server.id,
@@ -168,12 +168,12 @@ function backupSteps({ db, server, type, relPath, sqlPath }) {
         },
         {
             name: 'catalog',
-            label: 'Record backup in catalog',
+            label: 'Record the backup',
             check: async (ctx) => {
                 const f = backups.byRelPath(relPath);
                 if (!f) return false;
                 ctx.save({ fileId: f.id });
-                return `Already cataloged as #${f.id}`;
+                return `Already recorded as #${f.id}`;
             },
             run: async (ctx) => {
                 const bs = await inspect.backupsetByPath(server.id, db.name, sqlPath);

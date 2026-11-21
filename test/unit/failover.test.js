@@ -59,7 +59,7 @@ test('at the forced-failover fork point the abandoned log is skipped', () => {
 });
 
 test('a secondary that restored past a fork point needs a reseed', () => {
-    assert.match(lineageProblem({ position: '600', forkGuid: 'F1', lineage }), /past LSN 500/);
+    assert.match(lineageProblem({ position: '600', forkGuid: 'F1', lineage }), /(LSN 500)/);
     assert.match(lineageProblem({ position: '450', forkGuid: 'FX', lineage }), /not on the current primary's recovery path/);
     assert.equal(lineageProblem({ position: '450', forkGuid: 'F1', lineage }), null, 'behind the fork point: it can follow');
     assert.equal(lineageProblem({ position: '650', forkGuid: 'F2', lineage }), null, 'on the newest fork');
@@ -73,7 +73,7 @@ test('reachable() walks the whole path and counts the logs', () => {
     assert.equal(r.gap, null);
     const gapped = reachable({ files: files.filter((f) => f !== L3), position: '150', forkGuid: 'F0', lineage });
     assert.equal(gapped.position, '400');
-    assert.match(gapped.gap, /covers LSN 400/);
+    assert.match(gapped.gap, /stopped at LSN 400/);
 });
 
 test('lag ignores abandoned logs', () => {

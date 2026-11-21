@@ -81,7 +81,7 @@ export async function reconcileOnStartup() {
                 if ((op.type === 'seed' || op.type === 'reseed') && op.params.targetServerId) {
                     const rep = databases.replica(op.database_id, op.params.targetServerId);
                     if (rep?.chain_state === 'seeding') {
-                        databases.updateReplica(op.database_id, op.params.targetServerId, { chain_reason: `Seed operation #${op.id} was interrupted by a controller restart; resume it from Operations` });
+                        databases.updateReplica(op.database_id, op.params.targetServerId, { chain_reason: `Adding this secondary (operation #${op.id}) was interrupted by a Mostly On restart; resume it from Operations` });
                     }
                 }
                 events.add('error', op.type, `Operation #${op.id} (${op.type}) was interrupted by a controller restart during step "${op.current_step}"`, {
@@ -158,7 +158,7 @@ function reportOrphans() {
             for (const n of names) if (!known.has(`${relDir}/${n}`)) orphans.push(`${relDir}/${n}`);
         }
         if (orphans.length) {
-            events.add('warn', 'controller', `${orphans.length} file(s) in the backup folders of ${db.name} are not in the catalog. They are left alone; delete them by hand if they are not needed.`, {
+            events.add('warn', 'controller', `${orphans.length} file(s) in the backup folders of ${db.name} were not made by Mostly On, or it has no record of them. They are left alone; delete them by hand if they are not needed.`, {
                 databaseId: db.id,
                 data: { files: orphans.slice(0, 50) },
             });

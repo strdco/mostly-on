@@ -1,6 +1,6 @@
 import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, formatTime } from '../dom.js';
 import { get, post, put } from '../api.js';
-import { stateBadge, ageBadge, expectedMinutes, chainBadge, lagBadge, formatDuration } from './overview.js';
+import { stateBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagBadge, formatDuration, busyText } from './overview.js';
 import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
@@ -51,18 +51,16 @@ function modeText(r) {
 }
 
 async function seedDialog(db) {
-    const servers = (await get('/api/servers')).filter((s) => s.enabled && !db.replicas.some((r) => r.server_id === s.id && r.role === 'primary'));
+    // Servers that already hold a copy are handled from their row in the Replicas table (Reinitialize).
+    const servers = (await get('/api/servers')).filter((s) => s.enabled && !db.replicas.some((r) => r.server_id === s.id));
     if (!servers.length) {
-        toast('Register another SQL Server first; every enabled server already holds the primary.', 'err');
+        toast(`Every server already holds a copy of ${db.name}. Register another SQL Server first (Servers page).`, 'err');
         return null;
     }
     const target = h(
         'select',
         { name: 'server_id', required: true },
-        servers.map((s) => {
-            const rep = db.replicas.find((r) => r.server_id === s.id);
-            return h('option', { value: s.id }, rep ? `${s.name} (${rep.role}, ${rep.chain_state}: reseed)` : s.name);
-        }),
+        servers.map((s) => h('option', { value: s.id }, s.name)),
     );
     const statusId = `st-${uid()}`;
     const status = h('p.status-text.muted', { id: statusId, role: 'status', 'aria-live': 'polite' });
@@ -75,7 +73,7 @@ async function seedDialog(db) {
     const overwrite = h(
         'div.callout.err',
         { hidden: true },
-        h('p', h('strong', `${db.name} already exists on this server. `), 'Seeding replaces it. Its data is lost unless you have a backup of it.'),
+        h('p', h('strong', `${db.name} already exists on this server. `), 'Adding the secondary replaces it. Its data is lost unless you have a backup of it.'),
         field('Overwrite the existing database', overwriteBox),
         field(`Type ${db.name} to confirm`, confirm),
     );
@@ -99,13 +97,17 @@ async function seedDialog(db) {
             if (!standbyOk) {
                 notes.push(
                     !pf.compat.standby
-                        ? 'A readable copy is not possible here: it needs the same SQL Server version on both servers.'
-                        : 'A readable copy is not possible here until the server has a STANDBY folder (edit the server).',
+                        ? 'A read-only copy is not possible here: it needs the same SQL Server version on both servers.'
+                        : 'A read-only copy is not possible here until the server has a STANDBY folder (edit the server).',
                 );
             }
             if (pf.existsOnTarget) {
                 overwrite.hidden = false;
-                notes.push(`${db.name} exists there (${pf.existsOnTarget.standby ? 'STANDBY' : pf.existsOnTarget.state}${pf.existsOnTarget.sameDatabase ? ', same database' : ', a different database'}).`);
+                notes.push(
+                    pf.existsOnTarget.sameDatabase
+                        ? `That server already has an older copy of ${db.name}.`
+                        : `That server already has a different database called ${db.name}.`,
+                );
             }
             status.textContent = notes.join(' ');
             status.classList.toggle('error-text', !pf.compat.ok);
@@ -126,13 +128,13 @@ async function seedDialog(db) {
             h(
                 'fieldset.choices',
                 h('legend', 'Start from'),
-                radio('source', 'new_full', 'A fresh FULL backup taken now', true),
-                radio('source', 'latest', 'The latest FULL (and DIFF) already on disk'),
+                radio('source', 'new_full', 'A new FULL backup, taken now (recommended)', true),
+                radio('source', 'latest', 'The newest FULL (and DIFF) backup already taken: quicker, no extra load on the primary'),
             ),
             ...rm.fields,
             overwrite,
         ],
-        submitLabel: 'Start seeding',
+        submitLabel: 'Add secondary',
         onSubmit: (v) =>
             post(`/api/databases/${db.id}/secondaries`, {
                 server_id: Number(v.server_id),
@@ -170,8 +172,18 @@ function removeDialog(db, r) {
 function previewList(pf) {
     const items = [];
     if (pf.target.error) items.push(h('li.error-text', pf.target.error));
-    items.push(h('li', `${pf.target.name} is ${pf.target.state ?? 'unknown'} at LSN ${pf.target.position ?? '?'}; ${pf.chain.logsToApply ?? '?'} log(s) to restore before it takes over.`));
-    if (pf.chain.gap) items.push(h('li.error-text', `The log chain stops early: ${pf.chain.gap}`));
+    const n = pf.chain.logsToApply;
+    items.push(
+        h(
+            'li',
+            n == null
+                ? `Mostly On could not work out how far behind ${pf.target.name} is.`
+                : n === 0
+                  ? `${pf.target.name} has restored every log backup taken so far.`
+                  : `${pf.target.name} restores ${n} more log backup${n === 1 ? '' : 's'} before it takes over.`,
+        ),
+    );
+    if (pf.chain.gap) items.push(h('li.error-text', `A log backup is missing, so ${pf.target.name} can only be brought up to an earlier point. ${pf.chain.gap}`));
     for (const o of pf.otherSecondaries) items.push(h('li', `${o.server}: ${o.note}.`));
     if (pf.oldPrimaryCanFollow) items.push(h('li.error-text', pf.oldPrimaryCanFollow));
     return h('ul', items);
@@ -182,14 +194,14 @@ function tailOutcome(pf, tailLog) {
     const old = pf.oldPrimary.name;
     const since = pf.dataLoss.since ? `${formatTime(pf.dataLoss.since)} (${formatDuration(pf.dataLoss.seconds)} ago)` : 'the last shipped log (time unknown)';
     if (tailLog && pf.plannedPossible) {
-        return h('p', `${old} disconnects all users of the database, takes the tail-log backup and continues as a secondary. Nothing is lost.`);
+        return h('p', `${old} disconnects all users of the database, takes the tail-log backup and becomes the secondary. Nothing is lost.`);
     }
     if (tailLog) {
         return h(
             'div.callout.warn',
             h('strong', 'Data may be lost. '),
             `A failover without data loss is not possible: ${pf.plannedBlocker}. Mostly On attempts a best-effort tail-log backup on ${old}; transactions committed after ${since} that it cannot capture are lost. `,
-            `${old} is then marked diverged and must be reseeded.`,
+            `${old} is then marked out of sync and must be reinitialized from the new primary (Reinitialize).`,
         );
     }
     return h(
@@ -219,7 +231,8 @@ async function failoverDialog(db, r) {
             field(
                 `Perform tail log backup on ${old}`,
                 tail,
-                `Captures the transactions not yet shipped. ${old} was ${pf.oldPrimary.reachable ? `reachable (${pf.oldPrimary.state ?? 'database state unknown'})` : 'unreachable'}${lastCheck}.`,
+                `A final log backup of ${old} that captures the transactions not yet copied to ${r.server_name}. ` +
+                    `${old} was ${pf.oldPrimary.reachable ? `reachable (${pf.oldPrimary.state ? stateText({ state: pf.oldPrimary.state, isInStandby: pf.oldPrimary.state === 'STANDBY' }, 'primary') : 'database state unknown'})` : 'unreachable'}${lastCheck}.`,
             ),
             outcome,
         ],
@@ -238,20 +251,25 @@ async function failoverDialog(db, r) {
 function reseedDialog(db, r) {
     const rm = restoreModeFields({ mode: r.restore_mode || 'norecovery' });
     return formDialog({
-        title: `Reseed ${db.name} on ${r.server_name}`,
+        title: `Reinitialize ${db.name} on ${r.server_name}`,
         fields: [
-            h('p', `The copy on ${r.server_name} is replaced by a fresh seed from the primary and becomes a secondary again.`),
-            field('Take a COPY_ONLY safety backup of the current copy first', h('input', { type: 'checkbox', name: 'safety_backup', checked: true }), 'Recommended: a diverged copy may hold the only record of transactions the new primary never received. Only possible while it is ONLINE or OFFLINE.'),
+            h('p', `The copy on ${r.server_name} is replaced with a fresh copy from the primary, and becomes a working secondary again.`),
+            field(
+                'Back up the current copy first (safety backup)',
+                h('input', { type: 'checkbox', name: 'safety_backup', checked: true }),
+                'Recommended. After a failover, the old copy may hold the only record of transactions the new primary never received. ' +
+                    'The backup goes to the DIVERGED folder of the backup share and is never deleted automatically. Skipped if the copy cannot be backed up (for example while it is receiving logs).',
+            ),
             h(
                 'fieldset.choices',
                 h('legend', 'Start from'),
-                radio('source', 'new_full', 'A fresh FULL backup taken now', true),
-                radio('source', 'latest', 'The latest FULL (and DIFF) already on disk'),
+                radio('source', 'new_full', 'A new FULL backup, taken now (recommended)', true),
+                radio('source', 'latest', 'The newest FULL (and DIFF) backup already taken: quicker, no extra load on the primary'),
             ),
             ...rm.fields,
             field(`Type ${db.name} to confirm`, confirmNameInput('confirm')),
         ],
-        submitLabel: 'Reseed',
+        submitLabel: 'Reinitialize',
         danger: true,
         onSubmit: (v) =>
             post(`/api/databases/${db.id}/replicas/${r.server_id}/reseed`, {
@@ -265,9 +283,9 @@ function reseedDialog(db, r) {
 
 function takeOfflineDialog(db, r) {
     return formDialog({
-        title: `Take the diverged copy on ${r.server_name} offline?`,
+        title: `Take the old copy on ${r.server_name} offline?`,
         fields: [
-            h('p', `Every session using ${db.name} on ${r.server_name} is disconnected and the database is set OFFLINE, so nothing can write to it. Reseeding it later still works.`),
+            h('p', `Everyone using ${db.name} on ${r.server_name} is disconnected and the database is set OFFLINE, so no application can keep writing to it. You can still reinitialize it later.`),
             field(`Type ${db.name} to confirm`, confirmNameInput('confirm')),
         ],
         submitLabel: 'Take offline',
@@ -308,7 +326,7 @@ function replicaActions(db, r, reload) {
     if (r.role === 'diverged') {
         return h(
             'div.actions',
-            dialogButton('Reseed', () => reseedDialog(db, r), 'button.primary'),
+            dialogButton('Reinitialize', () => reseedDialog(db, r), 'button.primary'),
             r.live && r.live.state !== 'OFFLINE' ? dialogButton('Take offline', () => takeOfflineDialog(db, r), 'button.danger') : null,
             h(
                 'button',
@@ -325,9 +343,9 @@ function replicaActions(db, r, reload) {
     return h(
         'div.actions',
         ['ok', 'broken'].includes(r.chain_state) ? dialogButton('Failover', () => failoverDialog(db, r), 'button.primary') : null,
-        r.chain_state === 'needs_reseed' ? dialogButton('Reseed', () => reseedDialog(db, r), 'button.primary') : null,
+        r.chain_state === 'needs_reseed' ? dialogButton('Reinitialize', () => reseedDialog(db, r), 'button.primary') : null,
         ['broken', 'needs_reseed'].includes(r.chain_state)
-            ? h('button', { type: 'button', onclick: () => replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/recheck`), `Rechecking ${r.server_name}`) }, 'Recheck')
+            ? h('button', { type: 'button', onclick: () => replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/recheck`), `Trying ${r.server_name} again`) }, 'Try again')
             : null,
         h(
             'button',
@@ -353,6 +371,9 @@ function replicaActions(db, r, reload) {
 }
 
 const OUTCOME_KIND = { success: 'ok', already_applied: 'ok', running: '', failed: 'err', interrupted: 'warn' };
+const OUTCOME_TEXT = { success: 'restored', already_applied: 'already restored', running: 'running', failed: 'failed', interrupted: 'interrupted' };
+const ROLE_TEXT = { primary: 'primary', secondary: 'secondary', diverged: 'out of sync' };
+const FILE_STATUS = { present: ['on disk', 'ok'], missing: ['missing', 'err'], deleted: ['removed (retention)', ''] };
 
 export function databaseView(id) {
     let root;
@@ -406,7 +427,7 @@ export function databaseView(id) {
                         type: 'button',
                         onclick: async () => {
                             const r = await seedDialog(db).catch((err) => toast(err.message, 'err'));
-                            if (r?.operation) toast(`Seeding started (operation #${r.operation.id})`, 'ok');
+                            if (r?.operation) toast(`Setting up the secondary (operation #${r.operation.id})`, 'ok');
                         },
                     },
                     'Add secondary',
@@ -416,7 +437,7 @@ export function databaseView(id) {
             stopped.length
                 ? h(
                       'div.callout.err',
-                      h('strong', 'Log shipping has stopped for some secondaries. '),
+                      h('strong', 'Shipping has stopped for some secondaries, so their copies are getting older. '),
                       h(
                           'ul',
                           stopped.map((r) =>
@@ -424,8 +445,8 @@ export function databaseView(id) {
                                   'li',
                                   h('strong', r.server_name),
                                   `: ${r.chain_reason || r.chain_state}`,
-                                  r.chain_state === 'broken' ? ' Put the missing file back and press Recheck, or reseed the secondary.' : '',
-                                  r.chain_state === 'needs_reseed' ? ' Reseed it.' : '',
+                                  r.chain_state === 'broken' ? ' If you can put the missing backup file back, do so and press Try again. Otherwise, reinitialize it (Reinitialize).' : '',
+                                  r.chain_state === 'needs_reseed' ? ' This copy cannot catch up any more: reinitialize it (Reinitialize).' : '',
                               ),
                           ),
                       ),
@@ -434,16 +455,19 @@ export function databaseView(id) {
             diverged.length
                 ? h(
                       'div.callout.err',
-                      h('strong', 'Diverged copies. '),
-                      'After a failover that could not move the old primary over cleanly (no tail-log backup, or the primary was down or damaged), the old primary may hold transactions the new primary never received. Mostly On never restores onto or backs up a diverged copy.',
+                      h('strong', 'Out-of-sync copies (diverged). '),
+                      'After a failover that could not move the old primary over cleanly (no tail-log backup, or the primary was down or damaged), the old primary may hold transactions the new primary never received. ' +
+                          'Mostly On leaves such a copy alone: it never restores onto it or backs it up. Reinitialize it to make it a secondary again; a safety backup of it is taken first.',
                       h(
                           'ul',
                           diverged.map((r) =>
                               h(
                                   'li',
                                   h('strong', r.server_name),
-                                  ` is ${r.live ? (r.live.isInStandby ? 'STANDBY' : r.live.state) : 'unreachable or missing'}`,
-                                  r.live?.state === 'ONLINE' && !r.live.isInStandby ? ': applications can still write to it (split-brain risk). Take it offline or reseed it.' : '. Reseed it to make it a secondary again.',
+                                  ` is ${r.live ? stateText(r.live, 'diverged') : 'unreachable or missing'}`,
+                                  r.live?.state === 'ONLINE' && !r.live.isInStandby
+                                      ? ': applications can still write to it, so two servers may be taking changes at once (split brain). Take it offline or reinitialize it.'
+                                      : '.',
                               ),
                           ),
                       ),
@@ -452,14 +476,16 @@ export function databaseView(id) {
             unacked.length
                 ? h(
                       'div.callout.err',
-                      h('strong', 'Backups not taken by Mostly On were found. '),
-                      'A foreign LOG backup breaks the chain for every secondary; a foreign FULL changes the differential base.',
+                      h('strong', 'Backups taken outside Mostly On were found. '),
+                      'Another tool (a maintenance plan, a backup agent, someone running BACKUP by hand) backed up this database. ' +
+                          'A LOG backup like that holds transactions the secondaries never receive, so shipping stops. A FULL backup changes what DIFF backups are based on. ' +
+                          'Stop the other tool, or make it use COPY_ONLY. Acknowledge each one once you have dealt with it.',
                       h(
                           'ul',
                           unacked.map((f) =>
                               h(
                                   'li',
-                                  `${f.type} on ${f.server_name} at ${formatTime(f.finish_at)} to `,
+                                  `${f.type} backup on ${f.server_name} at ${formatTime(f.finish_at)} to `,
                                   h('span.mono', f.device),
                                   ' ',
                                   h(
@@ -478,14 +504,18 @@ export function databaseView(id) {
                       ),
                   )
                 : null,
-            db.busy.length ? h('p', badge(`Running: ${db.busy.join(', ')}`)) : null,
+            db.busy.length ? h('p', badge(`Running now: ${busyText(db.busy, db.replicas)}`)) : null,
             h('h2', 'Replicas'),
+            h(
+                'p.muted',
+                'The primary is the copy your applications use. Secondaries receive its log backups and can take over if it fails (Failover). "Behind" is how old the newest data on a secondary is.',
+            ),
             dataTable({
                 caption: 'Replicas',
                 rows: db.replicas,
                 columns: [
                     { label: 'Server', header: true, cell: (r) => h('a', { href: `#/servers/${r.server_id}` }, r.server_name) },
-                    { label: 'Role', cell: (r) => r.role },
+                    { label: 'Role', cell: (r) => ROLE_TEXT[r.role] || r.role },
                     { label: 'State', cell: (r) => stateBadge(r.live, r.role) },
                     { label: 'Reachable', cell: (r) => (r.reachable ? badge('yes', 'ok') : badge('no', 'err')) },
                     {
@@ -502,7 +532,7 @@ export function databaseView(id) {
                         label: 'Copy',
                         cell: (r) => (r.role === 'secondary' ? modeText(r) : ''),
                     },
-                    { label: 'Lag', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagBadge(r.lag, threshold) : '') },
+                    { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagBadge(r.lag, threshold) : '') },
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },
                 ],
             }),
@@ -539,12 +569,11 @@ export function databaseView(id) {
                 limit: 10,
                 empty: 'No backups yet.',
                 columns: [
-                    { label: 'Type', header: true, cell: (f) => f.type + (f.is_tail ? ' (tail)' : '') },
+                    { label: 'Type', header: true, cell: (f) => f.type + (f.is_tail ? ' (tail-log, from a failover)' : '') },
                     { label: 'Finished', cell: (f) => formatTime(f.backup_finish) },
                     { label: 'File', cell: (f) => h('span.mono', f.rel_path.split('/').pop()) },
                     { label: 'Size', num: true, cell: (f) => formatBytes(f.size_bytes) },
-                    { label: 'LSN range', cell: (f) => h('span.mono', `${f.first_lsn} – ${f.last_lsn}`) },
-                    { label: 'On disk', cell: (f) => badge(f.file_status, f.file_status === 'present' ? 'ok' : f.file_status === 'missing' ? 'err' : '') },
+                    { label: 'Status', cell: (f) => badge(...(FILE_STATUS[f.file_status] || [f.file_status, ''])) },
                 ],
             }),
             h('h2', 'Restore history'),
@@ -557,7 +586,7 @@ export function databaseView(id) {
                     { label: 'Started', header: true, cell: (x) => formatTime(x.started_at) },
                     { label: 'Server', cell: (x) => x.server_name },
                     { label: 'Backup', cell: (x) => [`${x.backup_type} `, h('span.mono', x.rel_path.split('/').pop())] },
-                    { label: 'Outcome', cell: (x) => [badge(x.outcome, OUTCOME_KIND[x.outcome]), x.error ? h('div.small.error-text', x.error) : null] },
+                    { label: 'Outcome', cell: (x) => [badge(OUTCOME_TEXT[x.outcome] || x.outcome, OUTCOME_KIND[x.outcome]), x.error ? h('div.small.error-text', x.error) : null] },
                     {
                         label: 'Took',
                         num: true,

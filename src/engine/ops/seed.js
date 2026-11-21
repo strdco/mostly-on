@@ -61,9 +61,9 @@ export async function seedPreflight(databaseId, targetServerId, { reseed = false
     if (!target.enabled) throw fail(409, `Server ${target.name} is disabled`);
     const existing = databases.replica(db.id, target.id);
     if (existing?.role === 'diverged' && !reseed) {
-        throw fail(409, `${target.name} holds a diverged copy of ${db.name}. Use Reseed, which can keep a safety backup of the diverged copy first.`);
+        throw fail(409, `${target.name} holds an old, out-of-sync copy of ${db.name}. Use Reinitialize on it instead, which can keep a safety backup of that copy first.`);
     }
-    if (reseed && !existing) throw fail(409, `${target.name} is not a replica of ${db.name}; add it as a secondary instead`);
+    if (reseed && !existing) throw fail(409, `${target.name} has no copy of ${db.name} yet; use Add secondary instead`);
     const primaryServer = serversRepo.get(primary.server_id);
     const ph = health.getHealth(primaryServer.id);
     const th = health.getHealth(target.id);
@@ -114,12 +114,12 @@ export async function startSeed(
     }
     if (!pf.compat.ok) throw fail(409, pf.compat.reason);
     if (restoreMode === 'standby') {
-        if (!pf.compat.standby) throw fail(409, `STANDBY needs the same SQL Server version on both sides. ${pf.compat.reason}`);
-        if (!pf.standbyPath) throw fail(409, `Server ${target.name} has no standby path and no known default data path for the undo file`);
+        if (!pf.compat.standby) throw fail(409, `A read-only copy (STANDBY) needs the same SQL Server version on both servers. ${pf.compat.reason}`);
+        if (!pf.standbyPath) throw fail(409, `A read-only copy needs a folder for its undo file on ${target.name}: set "Folder for undo files of read-only copies" on the server`);
     }
     if (pf.existsOnTarget) {
         if (!overwrite) {
-            throw fail(409, `Database ${db.name} already exists on ${target.name} (${pf.existsOnTarget.standby ? 'STANDBY' : pf.existsOnTarget.state}). Tick "overwrite" and type the database name to replace it.`, {
+            throw fail(409, `${db.name} already exists on ${target.name}. Tick "Overwrite the existing database" and type the database name to replace it.`, {
                 code: 'exists',
             });
         }
@@ -162,12 +162,12 @@ export async function resumeSeed(op) {
     if (!db || db.status !== 'managed' || !target) throw fail(409, 'The database or the target server no longer exists');
     const rep = databases.replica(db.id, target.id);
     if (!rep || rep.role !== 'secondary' || rep.chain_state !== 'seeding') {
-        throw fail(409, `${target.name} is no longer a seeding secondary of ${db.name}; start a new seed instead`);
+        throw fail(409, `${target.name} is no longer being set up as a secondary of ${db.name}; use Add secondary again instead`);
     }
     const release = tryAcquire(db.id, `restore:${target.id}`);
     if (!release) throw new BusyError(db.id, `seed on ${target.name}`, holders(db.id));
     databases.updateReplica(db.id, target.id, { chain_reason: null });
-    events.add('info', 'seed', `Resuming seed operation #${op.id} of ${db.name} on ${target.name}`, { databaseId: db.id, serverId: target.id, operationId: op.id });
+    events.add('info', 'seed', `Resuming adding ${target.name} as a secondary of ${db.name} (operation #${op.id})`, { databaseId: db.id, serverId: target.id, operationId: op.id });
     const stepDefs = seedSteps({ db, target, params: op.params });
     return { operation: op, done: execute(op.id, stepDefs, release, db, target) };
 }
@@ -178,7 +178,7 @@ function execute(opId, stepDefs, release, db, target) {
         .then((op) => {
             ok = op.status === 'succeeded';
             if (ok) {
-                events.add('info', 'seed', `${db.name} is seeded on ${target.name}; log shipping takes over`, { databaseId: db.id, serverId: target.id, operationId: op.id });
+                events.add('info', 'seed', `${target.name} now has a full copy of ${db.name}; from here on it receives the log backups`, { databaseId: db.id, serverId: target.id, operationId: op.id });
             } else {
                 databases.updateReplica(db.id, target.id, { chain_reason: `Seed operation #${op.id} ${op.status}: ${op.error}` });
             }
@@ -203,7 +203,7 @@ export function seedSteps({ db, target, params }) {
     const steps = [
         {
             name: 'base',
-            label: params.source === 'new_full' ? 'Take a FULL backup on the primary' : 'Pick the latest FULL (and DIFF)',
+            label: params.source === 'new_full' ? 'Take a FULL backup on the primary' : 'Use the newest FULL (and DIFF) backup',
             check: (ctx) => {
                 if (ctx.state.fullFileId) return `Using FULL #${ctx.state.fullFileId}${ctx.state.diffFileId ? ` and DIFF #${ctx.state.diffFileId}` : ''}`;
                 // Crash while the child backup ran: reuse it if it completed (startup reconcile settles it).
@@ -226,7 +226,7 @@ export function seedSteps({ db, target, params }) {
                 let note = '';
                 if (live) {
                     if (!params.overwrite) {
-                        throw new Error(`Database ${db.name} now exists on ${target.name} (${live.state}); it did not when the seed started. Start a new seed and confirm the overwrite.`);
+                        throw new Error(`Database ${db.name} now exists on ${target.name} (${live.state}); it did not when this started. Use Add secondary again and confirm the overwrite.`);
                     }
                     if (live.state === 'ONLINE') {
                         await query(target.id, Q.SET_OFFLINE, { db: T.sysname(db.name) }, { timeoutMs: 120_000 });
@@ -246,7 +246,7 @@ export function seedSteps({ db, target, params }) {
             check: async (ctx) => {
                 const full = fileOf(ctx.state.fullFileId);
                 const live = await liveState();
-                if (live?.restoring && live.lastRestoreUuid === full.backup_set_uuid) return `Already restored; ${db.name} is at LSN ${live.position}`;
+                if (live?.restoring && live.lastRestoreUuid === full.backup_set_uuid) return `Already restored on ${target.name}`;
                 return false;
             },
             run: async (ctx) => {
@@ -271,7 +271,7 @@ export function seedSteps({ db, target, params }) {
                 if (!ctx.state.diffFileId) return 'No DIFF to restore';
                 const diff = fileOf(ctx.state.diffFileId);
                 const live = await liveState();
-                if (live?.restoring && live.lastRestoreUuid === diff.backup_set_uuid) return `Already restored; ${db.name} is at LSN ${live.position}`;
+                if (live?.restoring && live.lastRestoreUuid === diff.backup_set_uuid) return `Already restored on ${target.name}`;
                 return false;
             },
             run: async (ctx) => {
@@ -283,7 +283,7 @@ export function seedSteps({ db, target, params }) {
         },
         {
             name: 'hand_over',
-            label: 'Hand over to log shipping',
+            label: 'Start receiving log backups',
             check: () => (databases.replica(db.id, target.id)?.chain_state === 'ok' ? 'Already shipping' : false),
             run: async () => {
                 const rep = databases.replica(db.id, target.id);
@@ -297,7 +297,7 @@ export function seedSteps({ db, target, params }) {
                     position_lsn: live.position,
                     position_fork_guid: live.forkGuid,
                 });
-                return `${db.name} on ${target.name} is RESTORING at LSN ${live.position}; the restore loop applies the logs from here`;
+                return `${target.name} is ready; Mostly On restores the log backups there from now on`;
             },
         },
     ];
@@ -314,8 +314,8 @@ function safetyBackupStep({ db, target, params }) {
     const sqlPathOf = (relPath) => translatePath(relPath, target, pathOpts('rel', 'sql'));
     return {
         name: 'safety_backup',
-        label: `COPY_ONLY safety backup of the copy on ${target.name}`,
-        guidance: 'Nothing has been replaced yet. Resume to try again, or start the reseed again without the safety backup.',
+        label: `Safety backup of the current copy on ${target.name}`,
+        guidance: 'Nothing has been replaced yet. Resume to try again, or start Reinitialize again without the safety backup.',
         check: async (ctx) => {
             if (!params.safetyBackup) return 'Not requested';
             if (ctx.state.safetyFileId) return `Safety backup #${ctx.state.safetyFileId} already taken`;
@@ -324,13 +324,13 @@ function safetyBackupStep({ db, target, params }) {
             if (!bs) return false;
             const file = backups.byRelPath(ctx.state.safetyRelPath) || recordBackupFile({ db, server: target, bs, relPath: ctx.state.safetyRelPath, operationId: ctx.op.id, type: 'DIVERGED' });
             ctx.save({ safetyFileId: file.id });
-            return `The safety backup was taken before the interruption; cataloged as #${file.id}`;
+            return `The safety backup was taken before the interruption; recorded as #${file.id}`;
         },
         run: async (ctx) => {
             const live = await inspect.dbRestoreState(target.id, db.name);
             if (!live) return `Nothing to back up: ${db.name} does not exist on ${target.name}`;
             if (live.restoring) {
-                return `Skipped: ${db.name} is ${live.standby ? 'STANDBY' : 'RESTORING'} on ${target.name}. A database in a restore sequence cannot be backed up, and it holds no transactions of its own.`;
+                return `Skipped: the copy on ${target.name} was still receiving logs, so it cannot be backed up, and it holds nothing the primary does not have.`;
             }
             let note = '';
             if (live.state === 'OFFLINE') {
@@ -352,11 +352,11 @@ function safetyBackupStep({ db, target, params }) {
                 await query(target.id, Q.safetyBackup(), p, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
             } catch (err) {
                 if (!err.number) throw err;
-                ctx.progress(`Backup failed (${sqlErrorText(err)}); retrying WITH CONTINUE_AFTER_ERROR`);
+                ctx.progress(`Backup failed (${sqlErrorText(err)}); retrying and skipping damaged pages (CONTINUE_AFTER_ERROR)`);
                 await query(target.id, Q.safetyBackup({ continueAfterError: true }), p, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
             }
             const bs = await inspect.backupsetByPath(target.id, db.name, sqlPathOf(relPath));
-            if (!bs) throw new Error(`The safety backup to ${relPath} is not in msdb on ${target.name}`);
+            if (!bs) throw new Error(`SQL Server on ${target.name} has no record of the safety backup to ${relPath}`);
             const file = recordBackupFile({ db, server: target, bs, relPath, operationId: ctx.op.id, type: 'DIVERGED' });
             ctx.save({ safetyFileId: file.id });
             return `#${file.id} ${relPath}${note}`;
@@ -373,7 +373,7 @@ async function recordPosition(db, target, file) {
         last_restored_at: nowIso(),
     });
     publish('replica.changed', { databaseId: db.id, serverId: target.id });
-    return `${file.rel_path} restored; ${db.name} is ${live?.standby ? 'STANDBY' : live?.state} at LSN ${live?.position}`;
+    return `${file.rel_path} restored`;
 }
 
 async function takeFull(ctx, db) {
@@ -406,9 +406,9 @@ function pickLatest(ctx, db) {
     const files = backups.all(db.id).filter(inFamily);
     const lineage = forks.lineage(db.id);
     const base = newestBaseOnLineage(files, lineage);
-    if (!base) throw new Error(`There is no FULL backup of ${db.name} on disk. Seed from a fresh FULL instead.`);
+    if (!base) throw new Error(`There is no FULL backup of ${db.name} on the backup share. Choose "A new FULL backup, taken now" instead.`);
     const gap = chainGap(files, base.position, lineage);
-    if (gap) throw new Error(`The log chain after ${base.diff ? base.diff.rel_path : base.full.rel_path} is incomplete: ${gap} Seed from a fresh FULL instead.`);
+    if (gap) throw new Error(`Some log backups after ${base.diff ? base.diff.rel_path : base.full.rel_path} are missing: ${gap} Choose "A new FULL backup, taken now" instead.`);
     ctx.save({ fullFileId: base.full.id, diffFileId: base.diff?.id ?? null });
     return `FULL #${base.full.id} ${base.full.rel_path}${base.diff ? `, DIFF #${base.diff.id} ${base.diff.rel_path}` : ''}`;
 }

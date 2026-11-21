@@ -143,7 +143,7 @@ export async function failoverPreview(databaseId, targetServerId) {
             server: r.server_name,
             position: r.position_lsn,
             continues: !after,
-            note: after ? `has restored past LSN ${reach.position} and would need a reseed after a forced failover` : 'continues shipping from the new primary',
+            note: after ? `has more of the primary's changes than ${target.name}; if the failover loses data, it will need reinitializing` : 'keeps receiving log backups, from the new primary',
         });
     }
     const back = restoreCompatibility(th?.info?.majorVersion, ph?.info?.majorVersion ?? th?.info?.majorVersion);
@@ -152,9 +152,9 @@ export async function failoverPreview(databaseId, targetServerId) {
     // Why a lossless (planned) failover is not possible, or null when it is.
     let plannedBlocker = null;
     if (!ph?.ok) plannedBlocker = `${oldServer.name} was unreachable at the last check${ph?.error ? ` (${ph.error})` : ''}`;
-    else if (primaryState !== 'ONLINE') plannedBlocker = `${db.name} is ${primaryState ?? 'missing'} on ${oldServer.name}`;
-    else if (rep.chain_state !== 'ok') plannedBlocker = `shipping to ${target.name} is ${rep.chain_state}`;
-    else if (reach?.gap) plannedBlocker = `the log chain to ${target.name} has a gap`;
+    else if (primaryState !== 'ONLINE') plannedBlocker = `${db.name} is not online on ${oldServer.name} (${primaryState ?? 'missing'})`;
+    else if (rep.chain_state !== 'ok') plannedBlocker = `shipping to ${target.name} has stopped`;
+    else if (reach?.gap) plannedBlocker = `a log backup that ${target.name} needs is missing`;
     else if (problem) plannedBlocker = problem.reseed || problem.retry;
     else if (targetError) plannedBlocker = targetError;
     return {
@@ -212,7 +212,7 @@ function lockStep(holder, db) {
     return {
         name: 'lock',
         label: `Wait until no backup or restore of ${db.name} is running`,
-        guidance: 'Something kept the database busy for 30 minutes (a long backup or seed?). Check Operations, then resume.',
+        guidance: 'Something kept the database busy for 30 minutes (a long backup, or a secondary being added?). Check Operations, then resume.',
         run: async (ctx) => {
             await holder.acquire(ctx);
             return 'Backups, restores and retention of this database are paused until the roles are swapped';
@@ -226,15 +226,15 @@ async function recordFork(db, server, ctx) {
     if (!live?.recoveryForkGuid) throw new Error(`${server.name} reports no recovery fork for ${db.name}`);
     if (ctx.state.oldForkGuid) forks.ensureRoot(db.id, ctx.state.oldForkGuid);
     const tip = forks.tip(db.id);
-    if (tip === live.recoveryForkGuid) return `Recovery fork ${live.recoveryForkGuid} is already recorded`;
+    if (tip === live.recoveryForkGuid) return 'The new branch of the database history is already recorded';
     forks.addChild(db.id, { forkGuid: live.recoveryForkGuid, parentForkGuid: tip, forkPointLsn: live.forkPointLsn, operationId: ctx.op.id });
-    return `New recovery fork ${live.recoveryForkGuid} branches off ${tip} at LSN ${live.forkPointLsn}`;
+    return `${db.name} continues on a new branch of its history (recovery fork ${live.recoveryForkGuid}, from LSN ${live.forkPointLsn})`;
 }
 
 function recoverStep(db, target) {
     return {
         name: 'recover',
-        label: `RESTORE DATABASE ... WITH RECOVERY on ${target.name}, then MULTI_USER`,
+        label: `Bring ${db.name} online on ${target.name} and let users in`,
         guidance: `${db.name} on ${target.name} could not be recovered. Read the error; once it is fixed, resume. Until then no server accepts writes for ${db.name}.`,
         check: async () => {
             const live = await inspect.dbRestoreState(target.id, db.name);
@@ -299,16 +299,16 @@ async function verifyForkCrossing(db, server, file) {
     try {
         const [h] = await inspect.headerOnly(server.id, translatePath(file.rel_path, server, pathOpts('rel', 'sql')));
         if (h && h.firstRecoveryForkGuid === file.first_recovery_fork_guid && h.recoveryForkGuid === file.recovery_fork_guid) {
-            return ' (crosses the fork; fork GUIDs confirmed with RESTORE HEADERONLY)';
+            return ' (checked: the secondaries can continue from it)';
         }
-        events.add('error', 'failover', `RESTORE HEADERONLY of ${file.rel_path} reports different recovery forks than msdb. Secondaries may not be able to cross the fork.`, {
+        events.add('error', 'failover', `The first log backup after the failover (${file.rel_path}) may not be usable by the secondaries: RESTORE HEADERONLY and msdb disagree about which branch of history it belongs to.`, {
             databaseId: db.id,
             serverId: server.id,
             data: { msdb: { first: file.first_recovery_fork_guid, last: file.recovery_fork_guid }, header: h },
         });
         return ' (WARNING: RESTORE HEADERONLY disagrees with msdb about the recovery forks)';
     } catch (err) {
-        return ` (could not verify the fork GUIDs with RESTORE HEADERONLY: ${errText(err)})`;
+        return ` (could not double-check it with RESTORE HEADERONLY: ${errText(err)})`;
     }
 }
 
@@ -340,32 +340,33 @@ function plannedSteps({ db, oldServer, target, holder }) {
                 if (off) throw new Error(`${target.name} cannot become the primary: ${off}`);
                 forks.ensureRoot(db.id, p.recoveryForkGuid);
                 ctx.save({ oldForkGuid: p.recoveryForkGuid });
-                return `${db.name} is ONLINE on ${oldServer.name} and ${t.standby ? 'STANDBY' : 'RESTORING'} on ${target.name} at LSN ${t.position}`;
+                return `${db.name} is online on ${oldServer.name}, and ${target.name} is ready to take over`;
             },
         },
         {
             name: 'catch_up',
             label: `Restore every available log on ${target.name}`,
-            guidance: `Nothing has changed on ${oldServer.name}; it is still the primary. Fix the cause (a missing log file puts the chain back with Recheck), then resume.`,
+            guidance: `Nothing has changed on ${oldServer.name}; it is still the primary. Fix the cause (if a log backup file is missing, put it back and press Try again on the database page), then resume.`,
             run: async (ctx) => {
                 const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
                 if (r.status !== 'caught_up') throw new Error(r.reason || `Restore stopped (${r.status})`);
-                return `${r.restored} log(s) restored; ${target.name} is at LSN ${r.position}`;
+                return `${r.restored} log backup(s) restored on ${target.name}`;
             },
         },
         {
             name: 'tail_log',
-            label: `Tail-log backup on ${oldServer.name} (SINGLE_USER, then BACKUP LOG WITH NORECOVERY)`,
+            label: `Disconnect users and take the tail-log backup on ${oldServer.name}`,
             guidance:
-                `${db.name} on ${oldServer.name} may now be in SINGLE_USER mode. To keep ${oldServer.name} as the primary instead, run ALTER DATABASE … SET MULTI_USER there and mark this operation resolved. ` +
-                `If the error says the database is in use, another session took the single-user connection: resume to try again.`,
+                `Users may now be locked out of ${db.name} on ${oldServer.name} (SINGLE_USER). To keep ${oldServer.name} as the primary instead, let them back in by running ` +
+                `ALTER DATABASE [${db.name}] SET MULTI_USER; on ${oldServer.name}, then mark this operation resolved. ` +
+                `If the error says the database is in use, another program grabbed the one allowed connection: resume to try again.`,
             check: async (ctx) => {
                 if (ctx.state.tailFileId && backups.get(ctx.state.tailFileId)) return `Tail log #${ctx.state.tailFileId} already taken`;
                 if (!ctx.state.tailRelPath) return false;
                 const file = await catalogTail(db, oldServer, ctx.state.tailRelPath, ctx.op.id);
                 if (!file) return false;
                 ctx.save({ tailFileId: file.id });
-                return `The tail log was taken before the interruption; cataloged as #${file.id}`;
+                return `The tail-log backup was taken before the interruption; recorded as #${file.id}`;
             },
             run: async (ctx) => {
                 ensureDir(oldServer, backupRelDir(db.name, 'LOG'));
@@ -379,17 +380,17 @@ function plannedSteps({ db, oldServer, target, holder }) {
                 };
                 await withDedicated(oldServer.id, (q) => q(Q.TAIL_LOG_PLANNED, params, { timeoutMs: 0, onInfo: (m) => ctx.progress(m) }));
                 const file = await catalogTail(db, oldServer, relPath, ctx.op.id);
-                if (!file) throw new Error(`The tail-log backup to ${relPath} is not in msdb on ${oldServer.name}`);
+                if (!file) throw new Error(`SQL Server on ${oldServer.name} has no record of the tail-log backup to ${relPath}`);
                 ctx.save({ tailFileId: file.id });
-                return `#${file.id} ${relPath} (up to LSN ${file.last_lsn}); ${db.name} on ${oldServer.name} is RESTORING`;
+                return `#${file.id} ${relPath}. ${db.name} on ${oldServer.name} no longer accepts changes`;
             },
         },
         {
             name: 'restore_tail',
-            label: `Restore the tail log on ${target.name}`,
+            label: `Restore the tail-log backup on ${target.name}`,
             guidance:
-                `${db.name} is RESTORING on ${oldServer.name} and on ${target.name}: no server accepts writes right now. Fix the cause and resume. ` +
-                `To go back to ${oldServer.name} instead, run RESTORE DATABASE … WITH RECOVERY and SET MULTI_USER there, then mark this operation resolved.`,
+                `Right now neither ${oldServer.name} nor ${target.name} accepts changes to ${db.name}. Fix the cause and resume. ` +
+                `To go back to ${oldServer.name} instead, run RESTORE DATABASE [${db.name}] WITH RECOVERY; and then ALTER DATABASE [${db.name}] SET MULTI_USER; on ${oldServer.name}, and mark this operation resolved.`,
             check: async (ctx) => {
                 const tail = backups.get(ctx.state.tailFileId);
                 const t = await live(target);
@@ -399,9 +400,9 @@ function plannedSteps({ db, oldServer, target, holder }) {
                 const tail = backups.get(ctx.state.tailFileId);
                 const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
                 if (!r.position || L.lt(r.position, tail.last_lsn)) {
-                    throw new Error(`${target.name} stopped at LSN ${r.position}, before the end of the tail log (${tail.last_lsn}): ${r.reason || r.status}`);
+                    throw new Error(`${target.name} could not restore all of the tail-log backup: ${r.reason || r.status} (at LSN ${r.position}, needs ${tail.last_lsn})`);
                 }
-                return `${target.name} is at LSN ${r.position}, the end of the tail log`;
+                return `${target.name} has every transaction from ${oldServer.name}`;
             },
         },
         recoverStep(db, target),
@@ -419,7 +420,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
                 databases.swapPrimary(db.id, { newPrimaryId: target.id, oldPrimaryId: oldServer.id, oldPrimaryRole: 'secondary', oldPrimaryPatch: patch });
                 events.add('warn', 'failover', `${target.name} is now the primary of ${db.name}; ${oldServer.name} is a secondary`, { databaseId: db.id, serverId: target.id, operationId: ctx.op.id });
                 publish('database.changed', { databaseId: db.id });
-                return `${forkNote}. ${oldServer.name} continues as a secondary from LSN ${o?.position ?? '?'}`;
+                return `${forkNote}. ${oldServer.name} is now a secondary`;
             },
         },
         firstLogStep(db, target, holder),
@@ -432,7 +433,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
  */
 export async function startPlannedFailover(databaseId, { serverId, parentId = null }) {
     const { db, oldServer, target, rep } = loadTopology(databaseId, serverId);
-    if (rep.chain_state !== 'ok') throw fail(409, `Shipping to ${target.name} is ${rep.chain_state}; a planned failover needs a healthy secondary`);
+    if (rep.chain_state !== 'ok') throw fail(409, `Shipping to ${target.name} has stopped, so a failover without data loss is not possible`);
     if (!health.getHealth(oldServer.id)?.ok) throw fail(409, `The primary ${oldServer.name} is unreachable; fail over without a tail-log backup instead`);
     if (!health.getHealth(target.id)?.ok) throw fail(503, `${target.name} is unreachable`);
     const holder = lockHolder(db);
@@ -445,7 +446,7 @@ export async function startPlannedFailover(databaseId, { serverId, parentId = nu
         params: { targetServerId: target.id, oldPrimaryServerId: oldServer.id },
         stepDefs,
     });
-    events.add('warn', 'failover', `Planned failover of ${db.name} from ${oldServer.name} to ${target.name} started`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
+    events.add('warn', 'failover', `Failover of ${db.name} from ${oldServer.name} to ${target.name} started (with a tail-log backup: no data loss)`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
     return { operation, done: execute(operation.id, stepDefs, holder, db) };
 }
 
@@ -455,7 +456,7 @@ export async function startPlannedFailover(databaseId, { serverId, parentId = nu
 function offlineOldStep(db, oldServer) {
     return {
         name: 'offline_old',
-        label: `Set ${db.name} OFFLINE on ${oldServer.name} if it is reachable (no tail-log backup)`,
+        label: `Take ${db.name} offline on ${oldServer.name}, if it can be reached, so nothing keeps writing to it`,
         check: (ctx) => (ctx.state.offlineAttempted ? `Already attempted: ${ctx.state.offlineResult}` : false),
         run: async (ctx) => {
             let result;
@@ -487,12 +488,12 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
                 if (off) throw new Error(`${target.name} cannot become the primary: ${off}`);
                 forks.ensureRoot(db.id, t.forkGuid);
                 ctx.save({ oldForkGuid: t.forkGuid });
-                return `${db.name} is ${t.standby ? 'STANDBY' : 'RESTORING'} on ${target.name} at LSN ${t.position}`;
+                return `${target.name} is ready to take over`;
             },
         },
         tailLog === 'none' ? offlineOldStep(db, oldServer) : {
             name: 'tail_log',
-            label: `Best-effort tail-log backup on ${oldServer.name} (NO_TRUNCATE, NORECOVERY)`,
+            label: `Try a tail-log backup on ${oldServer.name} (best effort)`,
             check: (ctx) => {
                 if (!ctx.state.tailAttempted) return false;
                 return ctx.state.tailFileId ? `Tail log #${ctx.state.tailFileId} already taken` : `Already attempted: ${ctx.state.tailError}`;
@@ -516,13 +517,13 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
                         await attempt(false);
                     } catch (err) {
                         if (!err.number) throw err; // could not connect: no point retrying
-                        ctx.progress(`Tail-log backup failed (${errText(err)}); retrying WITH CONTINUE_AFTER_ERROR`);
+                        ctx.progress(`Tail-log backup failed (${errText(err)}); retrying and skipping damaged pages (CONTINUE_AFTER_ERROR)`);
                         await attempt(true);
                     }
                     const file = await catalogTail(db, oldServer, relPath, ctx.op.id);
-                    if (!file) throw new Error(`the backup to ${relPath} is not in msdb on ${oldServer.name}`);
+                    if (!file) throw new Error(`SQL Server on ${oldServer.name} has no record of the backup to ${relPath}`);
                     ctx.save({ tailAttempted: true, tailFileId: file.id });
-                    return `Tail log #${file.id} taken (up to LSN ${file.last_lsn}); ${db.name} on ${oldServer.name} is now RESTORING`;
+                    return `Tail-log backup #${file.id} taken; ${db.name} on ${oldServer.name} no longer accepts changes`;
                 } catch (err) {
                     const message = errText(err);
                     ctx.save({ tailAttempted: true, tailError: message });
@@ -540,14 +541,14 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
                 const files = backups.all(db.id);
                 const landed = lag({ files, position: r.position, lineage: forks.lineage(db.id) }).lastRestored;
                 ctx.save({ gap: r.status === 'broken' ? r.reason : null, recoveredAt: r.position, dataUpTo: landed?.backup_finish ?? null });
-                const upTo = landed?.backup_finish ? `; data up to the backup finished at ${landed.backup_finish}` : '';
-                return `${r.restored} log(s) restored; ${target.name} is at LSN ${r.position}${upTo}${r.status === 'broken' ? `. Stopped at a gap: ${r.reason}` : ''}`;
+                const upTo = landed?.backup_finish ? `; it has the data up to ${landed.backup_finish}` : '';
+                return `${r.restored} log backup(s) restored on ${target.name}${upTo}${r.status === 'broken' ? `. A log backup is missing, so it stops there: ${r.reason}` : ''}`;
             },
         },
         recoverStep(db, target),
         {
             name: 'swap_roles',
-            label: `Make ${target.name} the primary and mark ${oldServer.name} as diverged`,
+            label: `Make ${target.name} the primary; mark ${oldServer.name} as out of sync`,
             guidance: `${db.name} is live on ${target.name}. Resume to record the new roles; until then the catalog still names ${oldServer.name} as primary and no backups run.`,
             check: () => (databases.primaryOf(db.id)?.server_id === target.id ? `${target.name} is already the primary` : false),
             run: async (ctx) => {
@@ -556,20 +557,20 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
                     newPrimaryId: target.id,
                     oldPrimaryId: oldServer.id,
                     oldPrimaryRole: 'diverged',
-                    oldPrimaryPatch: { chain_reason: `Forced failover #${ctx.op.id} to ${target.name}: this copy may hold transactions that ${target.name} does not have` },
+                    oldPrimaryPatch: { chain_reason: `After failover #${ctx.op.id} to ${target.name}, this copy may hold transactions that ${target.name} does not have` },
                 });
-                events.add('warn', 'failover', `${target.name} is now the primary of ${db.name}; ${oldServer.name} holds a diverged copy and must be reseeded`, {
+                events.add('warn', 'failover', `${target.name} is now the primary of ${db.name}; the copy on ${oldServer.name} is out of sync and must be reinitialized (Reinitialize)`, {
                     databaseId: db.id,
                     serverId: target.id,
                     operationId: ctx.op.id,
                 });
                 publish('database.changed', { databaseId: db.id });
-                return `${forkNote}. ${oldServer.name} is marked diverged`;
+                return `${forkNote}. ${oldServer.name} is marked out of sync`;
             },
         },
         {
             name: 'other_secondaries',
-            label: 'Check the other secondaries against the new recovery path',
+            label: 'Check that the other secondaries can follow the new primary',
             run: async () => {
                 const lineage = forks.lineage(db.id);
                 const lines = [];
@@ -585,9 +586,9 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
                     }
                     const problem = lineageProblem({ position: pos, forkGuid: fork, lineage });
                     if (problem) {
-                        databases.updateReplica(db.id, r.server_id, { chain_state: 'needs_reseed', chain_reason: `After forced failover: ${problem}` });
-                        events.add('error', 'failover', `${r.server_name} cannot follow the new primary of ${db.name}: ${problem}. Reseed it.`, { databaseId: db.id, serverId: r.server_id });
-                        lines.push(`${r.server_name}: needs a reseed`);
+                        databases.updateReplica(db.id, r.server_id, { chain_state: 'needs_reseed', chain_reason: `After the failover, ${problem}` });
+                        events.add('error', 'failover', `${r.server_name} cannot follow the new primary of ${db.name}: ${problem}. Reinitialize it (Reinitialize).`, { databaseId: db.id, serverId: r.server_id });
+                        lines.push(`${r.server_name}: needs reinitializing`);
                     } else {
                         lines.push(`${r.server_name}: continues from LSN ${pos}`);
                     }
@@ -603,7 +604,7 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
 export async function startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog = 'best_effort' }) {
     const { db, oldServer, target, rep } = loadTopology(databaseId, serverId);
     if (acceptDataLoss !== true) throw fail(400, 'Confirm that transactions not yet shipped to the target may be lost');
-    if (!['ok', 'broken'].includes(rep.chain_state)) throw fail(409, `${target.name} is ${rep.chain_state} and cannot become the primary`);
+    if (!['ok', 'broken'].includes(rep.chain_state)) throw fail(409, `${target.name} cannot become the primary: ${rep.chain_state === 'seeding' ? 'it is still being set up' : 'its copy needs reinitializing'}`);
     if (!health.getHealth(target.id)?.ok) throw fail(503, `${target.name} is unreachable`);
     const holder = lockHolder(db);
     const stepDefs = forcedSteps({ db, oldServer, target, holder, tailLog });
@@ -615,7 +616,7 @@ export async function startForcedFailover(databaseId, { serverId, acceptDataLoss
         stepDefs,
     });
     const how = tailLog === 'none' ? 'without a tail-log backup' : 'with a best-effort tail-log backup';
-    events.add('warn', 'failover', `Forced failover of ${db.name} from ${oldServer.name} to ${target.name} ${how} started`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
+    events.add('warn', 'failover', `Failover of ${db.name} from ${oldServer.name} to ${target.name} ${how} started (data may be lost)`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
     return { operation, done: execute(operation.id, stepDefs, holder, db) };
 }
 
@@ -626,7 +627,7 @@ function execute(opId, stepDefs, holder, db) {
         .then((op) => {
             if (op.status === 'succeeded') {
                 const p = databases.primaryOf(db.id);
-                events.add('info', 'failover', `${op.type === 'forced_failover' ? 'Forced' : 'Planned'} failover of ${db.name} completed; ${p?.server_name} is the primary`, {
+                events.add('info', 'failover', `Failover of ${db.name} completed; ${p?.server_name} is the primary`, {
                     databaseId: db.id,
                     serverId: p?.server_id,
                     operationId: op.id,

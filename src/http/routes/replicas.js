@@ -91,13 +91,13 @@ export function replicaRoutes(router) {
     router.post('/api/databases/:id/replicas/:serverId/recheck', async (ctx) => {
         const db = mustGetDb(idParam(ctx.params.id));
         const rep = mustGetSecondary(db, idParam(ctx.params.serverId, 'serverId'));
-        if (!['broken', 'needs_reseed'].includes(rep.chain_state)) throw new HttpError(409, `Shipping to ${rep.server_name} is ${rep.chain_state}, not broken`);
+        if (!['broken', 'needs_reseed'].includes(rep.chain_state)) throw new HttpError(409, `Shipping to ${rep.server_name} has not stopped, so there is nothing to try again`);
         let found = 0;
         for (const f of backups.all(db.id)) {
             if (f.file_status === 'missing' && fileOnDisk(f)) found++;
         }
         databases.updateReplica(db.id, rep.server_id, { chain_state: 'ok', chain_reason: null });
-        events.add('info', 'restore', `Rechecking log shipping of ${db.name} to ${rep.server_name}${found ? ` (${found} missing file(s) are back on disk)` : ''}`, {
+        events.add('info', 'restore', `Trying shipping of ${db.name} to ${rep.server_name} again${found ? ` (${found} missing backup file(s) are back)` : ''}`, {
             databaseId: db.id,
             serverId: rep.server_id,
             data: { previous: rep.chain_state, reason: rep.chain_reason },

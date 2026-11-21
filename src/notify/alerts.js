@@ -34,7 +34,7 @@ import { publish } from '../bus.js';
 import { log } from '../log.js';
 import { createMemo, decide, formatBatch, formatDuration } from './alert-state.js';
 
-const OP_TITLES = { seed: 'Seeding', reseed: 'Reseed', planned_failover: 'Planned failover', forced_failover: 'Forced failover', switchover_all: 'Switch-over of all databases' };
+const OP_TITLES = { seed: 'Adding a secondary', reseed: 'Reinitialize', planned_failover: 'Failover', forced_failover: 'Forced failover', switchover_all: 'Fail over all databases' };
 const RESOLVED_KEEP_DAYS = 90;
 
 let memo = createMemo();
@@ -89,9 +89,9 @@ export function collectConditions() {
             }
 
             if (r.role === 'diverged') {
-                add(ref(r, { key: `diverged:${db.id}:${r.server_id}`, kind: 'diverged', severity: 'warn', message: `${r.server_name} holds a diverged copy of ${db.name} after a failover; reseed it to make it a secondary again` }));
+                add(ref(r, { key: `diverged:${db.id}:${r.server_id}`, kind: 'diverged', severity: 'warn', message: `${r.server_name} holds an old, out-of-sync copy of ${db.name} after a failover; reinitialize it (Reinitialize) to make it a secondary again` }));
                 if (live?.state === 'ONLINE' && !live.isInStandby) {
-                    add(ref(r, { key: `split:${db.id}:${r.server_id}`, kind: 'split_brain', severity: 'error', message: `The diverged copy of ${db.name} on ${r.server_name} is ONLINE and writable (split-brain risk); take it offline or reseed it` }));
+                    add(ref(r, { key: `split:${db.id}:${r.server_id}`, kind: 'split_brain', severity: 'error', message: `The old copy of ${db.name} on ${r.server_name} is online and accepts changes, so two servers may be taking changes at once (split brain); take it offline or reinitialize it` }));
                 }
                 continue;
             }
@@ -99,12 +99,12 @@ export function collectConditions() {
             // secondary
             if (r.chain_state === 'seeding') continue;
             if (r.chain_state === 'broken' || r.chain_state === 'needs_reseed') {
-                const what = r.chain_state === 'broken' ? 'the log chain is broken' : 'it needs a reseed';
-                add(ref(r, { key: `chain:${db.id}:${r.server_id}`, kind: 'chain', severity: 'error', message: `Log shipping of ${db.name} to ${r.server_name} has stopped: ${what}${r.chain_reason ? ` (${r.chain_reason})` : ''}` }));
+                const what = r.chain_state === 'broken' ? 'has stopped' : 'has stopped, and the copy needs reinitializing';
+                add(ref(r, { key: `chain:${db.id}:${r.server_id}`, kind: 'chain', severity: 'error', message: `Shipping of ${db.name} to ${r.server_name} ${what}${r.chain_reason ? `: ${r.chain_reason}` : ''}` }));
             }
             if (busy || !up || r.chain_state !== 'ok') continue;
             if (!live || !(live.state === 'RESTORING' || (live.state === 'ONLINE' && live.isInStandby))) {
-                add(ref(r, { key: `dbstate:${db.id}:${r.server_id}`, kind: 'db_state', severity: 'error', message: `${db.name} on the secondary ${r.server_name} is ${stateText} instead of RESTORING` }));
+                add(ref(r, { key: `dbstate:${db.id}:${r.server_id}`, kind: 'db_state', severity: 'error', message: `${db.name} on the secondary ${r.server_name} is ${stateText} instead of receiving (RESTORING)` }));
             }
             const l = lags.get(r.server_id);
             if (primary && reachable.has(primary.server_id) && l?.seconds != null && l.seconds > thresholdSeconds) {
@@ -140,7 +140,7 @@ export function collectConditions() {
             key: `foreign:${f.backup_set_uuid}`,
             kind: 'foreign_backup',
             severity: f.type === 'LOG' ? 'error' : 'warn',
-            message: `A ${f.type} backup of ${f.database_name} not taken by Mostly On was found on ${f.server_name} (${f.device})${f.type === 'LOG' ? '; it breaks the log chain for the secondaries' : ''}`,
+            message: `A ${f.type} backup of ${f.database_name} was taken outside Mostly On, on ${f.server_name} (${f.device})${f.type === 'LOG' ? '. The secondaries never get the changes in it, so shipping stops' : ''}`,
             databaseId: f.database_id,
             serverId: f.server_id,
             link: link.db(f.database_id),

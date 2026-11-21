@@ -66,7 +66,7 @@ export function lineageProblem({ position, forkGuid, lineage }) {
     if (idx < lineage.length - 1) {
         const branch = lineage[idx + 1].fork_point_lsn;
         if (branch && L.gt(position, branch)) {
-            return `it has restored past LSN ${branch}, where the current primary's recovery path branched off (it holds log records the primary does not have)`;
+            return `it already holds changes the current primary never had: it kept going past the point where the current primary took over (LSN ${branch})`;
         }
     }
     return null;
@@ -98,7 +98,7 @@ export function nextLog({ files, position, forkGuid = null, lineage = null }) {
         if (usable.length === 1) candidates = usable;
     }
     if (candidates.length > 1) {
-        return { status: 'broken', reason: `${candidates.length} log backups cover LSN ${position} (${candidates.map((f) => f.rel_path).join(', ')}); refusing to guess` };
+        return { status: 'broken', reason: `${candidates.length} different log backups could each be the next one to restore (${candidates.map((f) => f.rel_path).join(', ')}), so Mostly On does not guess (LSN ${position})` };
     }
     if (candidates.length === 1) {
         const file = candidates[0];
@@ -112,7 +112,7 @@ export function nextLog({ files, position, forkGuid = null, lineage = null }) {
     const next = later.reduce((a, b) => (L.lt(b.first_lsn, a.first_lsn) ? b : a));
     return {
         status: 'broken',
-        reason: `No log backup covers LSN ${position}; the next one in the catalog (${next.rel_path}) starts at LSN ${next.first_lsn}. A log backup is missing from the chain (taken by another tool?)`,
+        reason: `A log backup is missing: the next one Mostly On knows about (${next.rel_path}) starts later than where this copy stopped. Was a log backup taken by another tool? (stopped at LSN ${position}, next starts at LSN ${next.first_lsn})`,
     };
 }
 
@@ -162,7 +162,7 @@ export function reachable({ files, position, forkGuid = null, lineage = null }) 
         fork = next.file.recovery_fork_guid || fork;
         count++;
     }
-    return { position: pos, lastFile, files: count, gap: 'Log chain is too long to follow' };
+    return { position: pos, lastFile, files: count, gap: 'Too many log backups to check' };
 }
 
 /**

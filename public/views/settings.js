@@ -33,7 +33,7 @@ const SECTIONS = [
     {
         id: 'retention',
         title: 'Backup retention',
-        intro: 'Files a secondary still needs, and the newest restorable chain, are always kept, whatever their age.',
+        intro: 'Backup files a secondary still needs, and the newest complete set needed to restore each database, are always kept, whatever their age.',
         fields: [
             { key: 'retention.enabled', label: 'Delete old backup files', type: 'checkbox' },
             { key: 'retention.full_days', label: 'Keep FULL backups (days)', min: 1 },
@@ -44,8 +44,8 @@ const SECTIONS = [
     },
     {
         id: 'msdb',
-        title: 'msdb history',
-        intro: 'SQL Server keeps a row in msdb for every backup and restore. On a busy log schedule that history grows without limit.',
+        title: 'Backup history in SQL Server',
+        intro: 'SQL Server records every backup and restore in its msdb database. With a log backup every few minutes, that history grows without limit and slows msdb down.',
         fields: [
             { key: 'msdb_history.purge_enabled', label: 'Purge old backup and restore history on every server (daily)', type: 'checkbox' },
             { key: 'msdb_history.keep_days', label: 'Keep history (days)', min: 1, hint: 'Keep at least as long as your longest backup retention.' },

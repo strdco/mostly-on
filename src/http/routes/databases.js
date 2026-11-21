@@ -153,7 +153,7 @@ export function databaseRoutes(router) {
 
     router.post('/api/foreign-backups/:uuid/acknowledge', async (ctx) => {
         if (!foreign.acknowledge(String(ctx.params.uuid).toLowerCase())) throw new HttpError(404, 'Unknown or already acknowledged');
-        events.add('info', 'foreign-backup', `Foreign backup ${ctx.params.uuid} acknowledged`);
+        events.add('info', 'foreign-backup', `Backup taken outside Mostly On acknowledged (backup set ${ctx.params.uuid})`);
         return { ok: true };
     });
 

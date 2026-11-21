@@ -108,8 +108,8 @@ function changed(db, server) {
 
 function stopShipping(db, server, chainState, reason) {
     databases.updateReplica(db.id, server.id, { chain_state: chainState, chain_reason: reason });
-    const what = chainState === 'needs_reseed' ? 'needs a reseed' : 'stopped: the log chain is broken';
-    events.add('error', 'restore', `Log shipping of ${db.name} to ${server.name} ${what}. ${reason}`, { databaseId: db.id, serverId: server.id, data: { chainState } });
+    const what = chainState === 'needs_reseed' ? 'has stopped, and the copy there needs reinitializing (Reinitialize)' : 'has stopped';
+    events.add('error', 'restore', `Shipping of ${db.name} to ${server.name} ${what}: ${reason}`, { databaseId: db.id, serverId: server.id, data: { chainState } });
     changed(db, server);
 }
 
@@ -122,11 +122,11 @@ function stopShipping(db, server, chainState, reason) {
 export function checkLive(db, server, live) {
     if (!live) return { reseed: `Database ${db.name} does not exist on ${server.name}.` };
     if (db.family_guid && live.familyGuid && live.familyGuid !== db.family_guid) {
-        return { reseed: `Database ${db.name} on ${server.name} is a different database (family_guid ${live.familyGuid}, expected ${db.family_guid}).` };
+        return { reseed: `${db.name} on ${server.name} is a different database with the same name, not a copy of the primary (family_guid ${live.familyGuid}, expected ${db.family_guid}).` };
     }
     if (!live.restoring) {
-        if (live.state === 'ONLINE') return { reseed: `Database ${db.name} on ${server.name} was recovered (it is ONLINE and read-write) and cannot restore logs any more.` };
-        return { retry: `Database ${db.name} on ${server.name} is ${live.state}` };
+        if (live.state === 'ONLINE') return { reseed: `${db.name} on ${server.name} was brought online (someone ran RESTORE ... WITH RECOVERY), so it can no longer receive log backups.` };
+        return { retry: `${db.name} on ${server.name} is ${live.state}, not receiving logs` };
     }
     if (!live.position) return { retry: `SQL Server on ${server.name} reports no restore position for ${db.name}` };
     return null;
@@ -164,8 +164,8 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
                 events.add(
                     'warn',
                     'restore',
-                    `${db.name} on ${server.name} is at LSN ${live.position} according to SQL Server, but the catalog expected ${rep.position_lsn}. Using SQL Server's position (was something restored outside Mostly On?).`,
-                    { databaseId: db.id, serverId: server.id },
+                    `${db.name} on ${server.name} is not where Mostly On expected it to be (was something restored there by hand?). Mostly On continues from where SQL Server says it is.`,
+                    { databaseId: db.id, serverId: server.id, data: { sqlServerLsn: live.position, expectedLsn: rep.position_lsn } },
                 );
             }
             rep = databases.updateReplica(db.id, server.id, { position_lsn: live.position, position_fork_guid: live.forkGuid });
@@ -295,7 +295,7 @@ function watchDiverged(db, r) {
         events.add(
             'error',
             'failover',
-            `The diverged copy of ${db.name} on ${r.server_name} is ONLINE and writable. Applications connecting to it write to a database that is no longer the primary (split-brain risk). Take it offline or reseed it.`,
+            `The old copy of ${db.name} on ${r.server_name}, out of sync since a failover, is online and accepts changes. Applications connected to it write to a database that is no longer the primary (split brain). Take it offline or reinitialize it.`,
             { databaseId: db.id, serverId: r.server_id },
         );
         publish('replica.changed', { databaseId: db.id, serverId: r.server_id });

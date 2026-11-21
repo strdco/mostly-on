@@ -36,7 +36,7 @@ export function switchoverPlan(fromId, toId) {
 function childSteps(plan, toId) {
     return plan.map(({ databaseId, name }) => ({
         name: `db_${databaseId}`,
-        label: `Planned failover of ${name}`,
+        label: `Fail over ${name} (with a tail-log backup)`,
         guidance: `The failover of ${name} stopped; its own operation shows the step and what to do. Resume this batch to resume that failover and continue with the rest.`,
         check: () => (databases.primaryOf(databaseId)?.server_id === toId ? `${name} is already on the target` : false),
         run: async (ctx) => {
@@ -63,8 +63,8 @@ export async function startSwitchoverAll({ fromServerId, toServerId, confirm }) 
     if (confirm !== from.name) throw fail(400, `Type ${from.name} to confirm`);
     if (!items.length) throw fail(409, `${from.name} is not the primary of any managed database`);
     const blocked = items.filter((i) => i.problem);
-    if (blocked.length) throw fail(409, `Cannot switch over: ${blocked.map((b) => `${b.name}: ${b.problem}`).join('; ')}`, { blocked });
-    if (!health.getHealth(from.id)?.ok) throw fail(409, `${from.name} is unreachable; switch over needs it (fail each database over from its own page instead)`);
+    if (blocked.length) throw fail(409, `Cannot fail over all databases: ${blocked.map((b) => `${b.name}: ${b.problem}`).join('; ')}`, { blocked });
+    if (!health.getHealth(from.id)?.ok) throw fail(409, `${from.name} is unreachable; failing over all databases needs it (fail each database over from its own page instead)`);
     if (!health.getHealth(to.id)?.ok) throw fail(503, `${to.name} is unreachable`);
 
     const plan = items.map(({ databaseId, name }) => ({ databaseId, name }));

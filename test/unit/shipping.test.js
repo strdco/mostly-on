@@ -40,7 +40,7 @@ test('a gap marks the chain broken instead of skipping ahead', () => {
     const files = [c.full, c.l1, c.l3]; // l2 never cataloged (foreign log backup)
     const r = nextLog({ files, position: '200' });
     assert.equal(r.status, 'broken');
-    assert.match(r.reason, /No log backup covers LSN 200/);
+    assert.match(r.reason, /A log backup is missing.*stopped at LSN 200/);
     assert.match(r.reason, /starts at LSN 300/);
 });
 
@@ -78,7 +78,7 @@ test('LSNs beyond 2^53 are compared exactly', () => {
 test('chainGap walks the whole chain from a base position', () => {
     const c = chain();
     assert.equal(chainGap(c.files, '150'), null);
-    assert.match(chainGap([c.full, c.l1, c.l3], '150'), /covers LSN 200/);
+    assert.match(chainGap([c.full, c.l1, c.l3], '150'), /stopped at LSN 200/);
 });
 
 test('lag counts unrestored logs and ages the last restored backup', () => {
@@ -174,7 +174,7 @@ test('live-state check: recovered, missing or replaced copies need a reseed; OFF
     const ok = { restoring: true, state: 'RESTORING', familyGuid: 'fam', position: '100' };
     assert.equal(checkLive(db, server, ok), null);
     assert.match(checkLive(db, server, null).reseed, /does not exist/);
-    assert.match(checkLive(db, server, { ...ok, restoring: false, state: 'ONLINE' }).reseed, /recovered/);
+    assert.match(checkLive(db, server, { ...ok, restoring: false, state: 'ONLINE' }).reseed, /brought online/);
     assert.match(checkLive(db, server, { ...ok, familyGuid: 'other' }).reseed, /different database/);
     assert.match(checkLive(db, server, { ...ok, restoring: false, state: 'OFFLINE' }).retry, /OFFLINE/);
     assert.equal(checkLive(db, server, { ...ok, restoring: true, state: 'ONLINE', standby: true }), null, 'STANDBY counts as restoring');

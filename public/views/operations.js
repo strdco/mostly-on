@@ -6,8 +6,13 @@ const STEP_KIND = { done: 'ok', skipped: 'ok', running: '', pending: '', failed:
 
 export function opTitle(op) {
     if (op.type === 'backup') return `${op.params.type} backup${op.params.trigger ? ` (${op.params.trigger})` : ''}`;
-    if (op.type === 'seed') return `Seed secondary${op.params.overwrite ? ' (overwrite)' : ''}`;
-    const titles = { reseed: 'Reseed', planned_failover: 'Planned failover', forced_failover: 'Forced failover', switchover_all: 'Switch over all databases' };
+    if (op.type === 'seed') return `Add secondary${op.params.overwrite ? ' (replacing an existing copy)' : ''}`;
+    const titles = {
+        reseed: 'Reinitialize',
+        planned_failover: 'Failover',
+        forced_failover: 'Failover (forced: data may be lost)',
+        switchover_all: 'Fail over all databases',
+    };
     return titles[op.type] || op.type;
 }
 

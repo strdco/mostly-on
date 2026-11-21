@@ -58,7 +58,7 @@ export function applyToDatabase(db, { dryRun = false } = {}) {
     const result = { database: db.name, databaseId: db.id, deleted: [], kept: 0, blocked: null, errors: [], protected: [] };
     const release = tryAcquire(db.id, 'retention');
     if (!release) {
-        result.blocked = 'database busy (seed or failover running)';
+        result.blocked = 'skipped: a failover, reinitialization or new secondary is in progress';
         return result;
     }
     try {
@@ -105,9 +105,9 @@ async function purgeMsdbHistory() {
     for (const s of serversRepo.list().filter((x) => x.enabled && health.getHealth(x.id)?.ok)) {
         try {
             await query(s.id, Q.PURGE_BACKUP_HISTORY, { keep_days: T.int(keep) }, { timeoutMs: 600_000 });
-            events.add('info', 'retention', `Purged msdb backup history older than ${keep} days on ${s.name}`, { serverId: s.id });
+            events.add('info', 'retention', `Removed backup history older than ${keep} days from msdb on ${s.name}`, { serverId: s.id });
         } catch (err) {
-            events.add('warn', 'retention', `Could not purge msdb backup history on ${s.name}: ${sqlErrorText(err)}`, { serverId: s.id });
+            events.add('warn', 'retention', `Could not remove old backup history from msdb on ${s.name}: ${sqlErrorText(err)}`, { serverId: s.id });
         }
     }
 }

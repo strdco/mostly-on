@@ -10,8 +10,8 @@ const KIND_LABEL = {
     lag: 'Lag',
     restore_failed: 'Restore failed',
     backup_failed: 'Backup failed',
-    foreign_backup: 'Foreign backup',
-    diverged: 'Diverged copy',
+    foreign_backup: 'Backup taken outside Mostly On',
+    diverged: 'Out-of-sync copy',
     split_brain: 'Split-brain risk',
     operation: 'Operation',
 };
