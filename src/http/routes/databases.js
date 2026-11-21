@@ -19,6 +19,7 @@ import { lagOf } from '../../engine/restore-loop.js';
 import { canResume, canResolve } from '../../engine/ops/index.js';
 import { sqlErrorText } from '../../sql/pool.js';
 import { evaluateSoon } from '../../notify/alerts.js';
+import { syncFromHealth } from '../../engine/discovery.js';
 import { publish } from '../../bus.js';
 
 function mustGet(id) {
@@ -122,10 +123,15 @@ export function databaseRoutes(router) {
 
     router.post('/api/databases/:id/unmanage', async (ctx) => {
         const db = mustGet(idParam(ctx.params.id));
+        const blocker = databases.unmanageBlocker(db.id);
+        if (blocker) throw new HttpError(409, `${db.name} cannot stop being managed yet. ${blocker}`);
         if (ctx.body?.confirm !== db.name) throw new HttpError(400, 'Type the database name to confirm');
         if (holders(db.id).length) throw new HttpError(409, `${db.name} is busy (${holders(db.id).join(', ')})`);
+        const primary = databases.primaryOf(db.id);
         databases.unmanage(db.id);
         events.add('warn', 'database', `Stopped managing ${db.name}. Backups and schedules for it have stopped; files on disk are kept.`, { databaseId: db.id });
+        // List it as unmanaged right away rather than at the next health check.
+        if (primary) syncFromHealth(primary.server_id);
         publish('database.changed', { databaseId: db.id });
         return { ok: true };
     });

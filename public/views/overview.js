@@ -1,6 +1,7 @@
-import { h, clear, dataTable, badge, formDialog, toast, ago } from '../dom.js';
+import { h, clear, dataTable, badge, formDialog, toast, ago, tooltip } from '../dom.js';
 import { get, post } from '../api.js';
 import { activeAlertsCallout } from './alerts.js';
+import { stopManagingBlocker, stopManagingDialog } from './database.js';
 
 // Database states in words; the SQL Server name stays in brackets where it is a problem.
 const STATE_TEXT = {
@@ -131,36 +132,75 @@ export function dbHealth(d, alerts, thresholdMinutes) {
     return { kind: ['ok', 'warn', 'err'][level], label: ['healthy', 'warning', 'error'][level], reasons };
 }
 
+/**
+ * The manage on/off switch: a checkbox styled as a switch (role=switch; the
+ * native `switch` attribute is used where the browser has it). It never flips
+ * by itself: activating it opens a dialog, and the list reloads afterwards.
+ * A switch that cannot be used stays focusable; its reason is a tooltip (on
+ * hover, focus, or a tap on the switch) and its accessible description.
+ */
+function manageSwitch({ on, label, reason, onActivate }) {
+    const input = h('input.switch', {
+        type: 'checkbox',
+        switch: true,
+        role: 'switch',
+        checked: on,
+        'aria-label': label,
+        'aria-disabled': reason ? 'true' : null,
+    });
+    const tip = reason ? tooltip(input, reason) : null;
+    input.addEventListener('click', (e) => {
+        e.preventDefault(); // the state changes only once the dialog succeeds
+        if (tip) tip.show();
+        else onActivate();
+    });
+    return [input, tip?.tip];
+}
+
 export function overviewView() {
-    let managedBox;
+    let listBox;
     let alertsBox;
-    let discoveredBox;
     let timer;
 
     async function load() {
-        const [dbs, discovered, settings, alerts] = await Promise.all([get('/api/databases'), get('/api/discovered'), get('/api/settings'), get('/api/alerts?status=active')]);
+        const [dbs, discovered, settings, alerts] = await Promise.all([
+            get('/api/databases'),
+            get('/api/discovered?include_dismissed=1'),
+            get('/api/settings'),
+            get('/api/alerts?status=active'),
+        ]);
         clear(alertsBox).append(...[activeAlertsCallout(alerts)].filter((x) => x !== null));
         const threshold = settings['alerts.lag_threshold_minutes'];
         const health = new Map(dbs.map((d) => [d.id, dbHealth(d, alerts, threshold)]));
-        clear(managedBox).append(
+        const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        // Managed databases first, then the ones found on the servers.
+        const rows = [
+            ...[...dbs].sort(byName).map((d) => ({ managed: true, ...d })),
+            ...[...discovered].sort((a, b) => byName(a, b) || a.server_name.localeCompare(b.server_name)).map((d) => ({ managed: false, ...d })),
+        ];
+        const ifManaged = (fn) => (d) => (d.managed ? fn(d) : '');
+        clear(listBox).append(
             dataTable({
-                caption: 'Managed databases',
-                rows: dbs,
-                empty: 'No managed databases yet. Pick one from the list below.',
-                rowClass: (d) => (health.get(d.id).kind === 'ok' ? null : `row-${health.get(d.id).kind}`),
+                caption: 'Databases',
+                rows,
+                empty: 'No user databases found on your servers yet. Register a server (Servers page).',
+                rowClass: (d) => (d.managed && health.get(d.id).kind !== 'ok' ? `row-${health.get(d.id).kind}` : null),
                 columns: [
-                    { label: 'Database', header: true, cell: (d) => h('a', { href: `#/databases/${d.id}` }, d.name) },
+                    { label: 'Database', header: true, cell: nameCell },
                     {
                         label: 'Health',
-                        cell: (d) => {
+                        cell: ifManaged((d) => {
                             const x = health.get(d.id);
                             return [badge(x.label, x.kind), x.reasons.length ? h('ul.health-reasons', x.reasons.map((r) => h('li', r))) : null];
-                        },
+                        }),
                     },
-                    { label: 'Primary', cell: (d) => (d.primary ? [d.primary.server_name, ' ', stateBadge(d.primary.live, 'primary')] : badge('none', 'err')) },
+                    {
+                        label: 'Primary',
+                        cell: (d) => (!d.managed ? d.server_name : d.primary ? [d.primary.server_name, ' ', stateBadge(d.primary.live, 'primary')] : badge('none', 'err')),
+                    },
                     {
                         label: 'Secondaries',
-                        cell: (d) => {
+                        cell: ifManaged((d) => {
                             const sec = d.replicas.filter((r) => r.role !== 'primary');
                             return sec.length
                                 ? sec.map((r) =>
@@ -174,15 +214,15 @@ export function overviewView() {
                                       ),
                                   )
                                 : h('span.muted', 'none');
-                        },
+                        }),
                     },
                     ...['FULL', 'DIFF', 'LOG'].map((t) => ({
                         label: `Last ${t}`,
-                        cell: (d) => ageBadge(d.latest[t]?.backup_finish, expectedMinutes(d.schedules.find((s) => s.backup_type === t))),
+                        cell: ifManaged((d) => ageBadge(d.latest[t]?.backup_finish, expectedMinutes(d.schedules.find((s) => s.backup_type === t)))),
                     })),
                     {
                         label: 'Shipping',
-                        cell: (d) => {
+                        cell: ifManaged((d) => {
                             const stopped = d.replicas.filter((r) => ['broken', 'needs_reseed'].includes(r.chain_state));
                             const out = [];
                             if (d.foreignLogBackups) {
@@ -190,36 +230,32 @@ export function overviewView() {
                             }
                             if (stopped.length) out.push(badge(`shipping stopped to ${stopped.map((r) => r.server_name).join(', ')}`, 'err'));
                             return out.length ? out : badge('ok', 'ok');
-                        },
+                        }),
                     },
-                    { label: 'Running now', cell: (d) => (d.busy.length ? badge(busyText(d.busy, d.replicas)) : '') },
+                    { label: 'Running now', cell: ifManaged((d) => (d.busy.length ? badge(busyText(d.busy, d.replicas)) : '')) },
                 ],
             }),
         );
-        clear(discoveredBox).append(
-            dataTable({
-                caption: 'Databases found on servers',
-                rows: discovered,
-                empty: 'No unmanaged user databases found.',
-                columns: [
-                    { label: 'Database', header: true, cell: (d) => d.name },
-                    { label: 'Server', cell: (d) => d.server_name },
-                    { label: 'Recovery model', cell: (d) => (d.shippable ? d.recovery_model : badge(`${d.recovery_model}: cannot be shipped`, 'warn')) },
-                    { label: 'State', cell: (d) => STATE_TEXT[d.state] || d.state.toLowerCase() },
-                    {
-                        label: 'Actions',
-                        cell: (d) =>
-                            h(
-                                'div.actions',
-                                d.shippable
-                                    ? h('button.primary', { type: 'button', onclick: () => manage(d) }, 'Manage')
-                                    : null,
-                                h('button', { type: 'button', onclick: () => dismiss(d) }, 'Dismiss'),
-                            ),
-                    },
-                ],
-            }),
-        );
+    }
+
+    /** Switch, name (a link for managed databases) and, if the switch cannot be used, why. */
+    function nameCell(d) {
+        const sw = d.managed
+            ? manageSwitch({
+                  on: true,
+                  label: `Manage ${d.name}`,
+                  reason: stopManagingBlocker(d) ? `To stop managing this database, first remove its secondaries (${d.replicas.filter((r) => r.role !== 'primary').map((r) => r.server_name).join(', ')}) on its page.` : null,
+                  onActivate: () => stopManaging(d),
+              })
+            : manageSwitch({
+                  on: false,
+                  label: `Manage ${d.name} on ${d.server_name}`,
+                  reason: d.shippable
+                      ? null
+                      : `${d.recovery_model} recovery: Mostly On can only manage databases in FULL recovery. To manage it, run ALTER DATABASE [${d.name}] SET RECOVERY FULL; on ${d.server_name}.`,
+                  onActivate: () => manage(d),
+              });
+        return h('div.db-name', sw, d.managed ? h('a', { href: `#/databases/${d.id}` }, d.name) : h('span', d.name));
     }
 
     async function manage(d) {
@@ -238,35 +274,30 @@ export function overviewView() {
         });
         if (res) {
             toast(res.warning || `Managing ${d.name}; initial FULL backup started`, res.warning ? 'err' : 'ok');
-            location.hash = `#/databases/${res.database.id}`;
+            load().catch(() => {});
         }
     }
 
-    async function dismiss(d) {
-        try {
-            await post('/api/discovered/dismiss', { server_id: d.server_id, name: d.name });
-            load();
-        } catch (err) {
-            toast(err.message, 'err');
+    async function stopManaging(d) {
+        if (await stopManagingDialog(d)) {
+            toast(`Mostly On no longer manages ${d.name}`, 'ok');
+            load().catch(() => {});
         }
     }
 
     return {
         async render(el) {
-            managedBox = h('div');
+            listBox = h('div');
             alertsBox = h('div');
-            discoveredBox = h('div');
             el.append(
                 h('h1', 'Overview'),
                 alertsBox,
-                managedBox,
-                h('h2', 'Available to manage'),
                 h(
                     'p.muted',
-                    'User databases found on your servers that Mostly On does not manage yet. Only databases in the FULL recovery model can be shipped; ' +
-                        'to ship one that uses SIMPLE, run ALTER DATABASE [name] SET RECOVERY FULL; on its server first.',
+                    'Every user database on your servers. The switch before a name turns management by Mostly On on or off. ' +
+                        'Only databases in the FULL recovery model can be managed (log shipping needs it).',
                 ),
-                discoveredBox,
+                listBox,
             );
             await load();
         },

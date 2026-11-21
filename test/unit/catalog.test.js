@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { openDb, closeDb, getDb, migrate } from '../../src/store/db.js';
 import * as servers from '../../src/store/repos/servers.js';
 import * as settings from '../../src/store/repos/settings.js';
+import * as databases from '../../src/store/repos/databases.js';
 import { setLogLevel } from '../../src/log.js';
 
 setLogLevel('error');
@@ -53,6 +54,24 @@ test('only one primary per database', () => {
     db.prepare("INSERT INTO database_replicas (database_id, server_id, role, updated_at) VALUES (1, ?, 'primary', ?)").run(a.id, now);
     assert.throws(() => db.prepare("INSERT INTO database_replicas (database_id, server_id, role, updated_at) VALUES (1, ?, 'primary', ?)").run(b.id, now), /UNIQUE/);
     db.prepare("INSERT INTO database_replicas (database_id, server_id, role, updated_at) VALUES (1, ?, 'secondary', ?)").run(b.id, now);
+    closeDb();
+});
+
+test('a database with other copies cannot stop being managed until they are removed', () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const a = servers.create(servers.validate({ name: 'a', host: 'a', username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const b = servers.create(servers.validate({ name: 'b', host: 'b', username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const db = databases.manage({ name: 'Sales', familyGuid: null, primaryServerId: a.id });
+    databases.addSecondary({ databaseId: db.id, serverId: b.id, restoreMode: 'norecovery' });
+    assert.match(databases.unmanageBlocker(db.id), /Remove its secondaries first \(b:/);
+    assert.throws(() => databases.unmanage(db.id), /secondaries first/);
+    getDb().prepare("UPDATE database_replicas SET role='diverged' WHERE server_id=?").run(b.id);
+    assert.throws(() => databases.unmanage(db.id), /secondaries first/, 'an out-of-sync copy counts too');
+    databases.removeReplica(db.id, b.id);
+    assert.equal(databases.unmanageBlocker(db.id), null);
+    databases.unmanage(db.id);
+    assert.equal(databases.get(db.id).status, 'unmanaged');
     closeDb();
 });
 

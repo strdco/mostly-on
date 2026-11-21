@@ -116,6 +116,11 @@ test('1. register servers, manage a database, add a secondary', async () => {
     assert.equal(await dbState('sql2'), 'RESTORING');
 });
 
+test('1a. a database with a secondary cannot stop being managed', async () => {
+    await assert.rejects(api.post(`/api/databases/${dbId}/unmanage`, { confirm: DB }), (err) => err.status === 409 && /Remove its secondaries first \(sql2/.test(err.message));
+    assert.ok((await api.get('/api/databases')).some((d) => d.id === dbId), 'still managed');
+});
+
 test('1b. the restricted login can only act through the helper procedures', async () => {
     await assert.rejects(asMostlyOn('sql1', `BACKUP DATABASE ${DB} TO DISK=N'/var/opt/mssql/backup/x.bak';`), /not able to access|permission|terminating abnormally/i, 'no direct BACKUP');
     await assert.rejects(asMostlyOn('sql1', `SELECT COUNT(*) AS n FROM ${DB}.dbo.orders;`), /not able to access/i, 'no access to the data');

@@ -184,3 +184,56 @@ export function field(label, input, hint) {
     }
     return h('div.field', h('label', { for: id }, label), input, hintEl);
 }
+
+let tipSeq = 0;
+
+/**
+ * A tooltip on `trigger`: shown on hover and keyboard focus (and by calling
+ * show(), e.g. when a disabled control is tapped), hidden on leaving, blur or
+ * Escape; the pointer can move onto it without it closing. It is a manual
+ * popover (top layer, so table wrappers never clip it) positioned by script,
+ * and is the trigger's accessible description even while hidden.
+ * Returns { tip, show }: put `tip` right after the trigger in the DOM.
+ */
+export function tooltip(trigger, text) {
+    const tip = h('div.tooltip', { id: `tip-${++tipSeq}`, role: 'tooltip', popover: 'manual' }, text);
+    trigger.setAttribute('aria-describedby', [trigger.getAttribute('aria-describedby'), tip.id].filter(Boolean).join(' '));
+    const popover = typeof tip.showPopover === 'function';
+    let hideTimer = null;
+
+    const place = () => {
+        const r = trigger.getBoundingClientRect();
+        const t = tip.getBoundingClientRect();
+        const gap = 8;
+        const top = r.top - t.height - gap >= gap ? r.top - t.height - gap : r.bottom + gap;
+        const left = Math.min(Math.max(gap, r.left), window.innerWidth - t.width - gap);
+        tip.style.top = `${Math.round(top)}px`;
+        tip.style.left = `${Math.round(Math.max(gap, left))}px`;
+    };
+    const onKey = (e) => {
+        if (e.key === 'Escape') hide(0);
+    };
+    function show() {
+        clearTimeout(hideTimer);
+        if (!tip.isConnected) return;
+        tip.classList.add('open');
+        if (popover && !tip.matches(':popover-open')) tip.showPopover();
+        place();
+        document.addEventListener('keydown', onKey);
+    }
+    function hide(delay = 150) {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+            tip.classList.remove('open');
+            if (popover && tip.matches(':popover-open')) tip.hidePopover();
+            document.removeEventListener('keydown', onKey);
+        }, delay);
+    }
+    trigger.addEventListener('mouseenter', show);
+    trigger.addEventListener('mouseleave', () => hide());
+    trigger.addEventListener('focus', show);
+    trigger.addEventListener('blur', () => hide(0));
+    tip.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+    tip.addEventListener('mouseleave', () => hide());
+    return { tip, show };
+}

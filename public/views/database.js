@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, formatTime } from '../dom.js';
+import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, formatTime, tooltip } from '../dom.js';
 import { get, post, put } from '../api.js';
 import { stateBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagBadge, formatDuration, busyText } from './overview.js';
 import { operationsTable } from './operations.js';
@@ -564,6 +564,27 @@ const OUTCOME_TEXT = { success: 'restored', already_applied: 'already restored',
 const ROLE_TEXT = { primary: 'primary', secondary: 'secondary', diverged: 'out of sync' };
 const FILE_STATUS = { present: ['on disk', 'ok'], missing: ['missing', 'err'], deleted: ['removed (retention)', ''] };
 
+/** Why a managed database cannot stop being managed right now (null if it can). */
+export function stopManagingBlocker(db) {
+    const others = db.replicas.filter((r) => r.role !== 'primary');
+    if (!others.length) return null;
+    return `Remove its secondaries first (${others.map((r) => r.server_name).join(', ')}: Replicas table, Remove).`;
+}
+
+/** "Stop managing": typed-name confirmation; resolves to the API result, or null if cancelled. */
+export function stopManagingDialog(db) {
+    return formDialog({
+        title: `Stop managing ${db.name}?`,
+        fields: [
+            h('p', 'Schedules stop and no more backups or restores run. Nothing is changed on the servers and backup files stay on disk.'),
+            field(`Type ${db.name} to confirm`, h('input', { type: 'text', name: 'confirm', required: true, autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false' })),
+        ],
+        submitLabel: 'Stop managing',
+        danger: true,
+        onSubmit: (v) => post(`/api/databases/${db.id}/unmanage`, { confirm: v.confirm }),
+    });
+}
+
 export function databaseView(id) {
     let root;
     let timer;
@@ -577,18 +598,16 @@ export function databaseView(id) {
         }
     }
 
-    async function unmanage(db) {
-        const ok = await formDialog({
-            title: `Stop managing ${db.name}?`,
-            fields: [
-                h('p', 'Schedules stop and no more backups or restores run. Nothing is changed on the servers and backup files stay on disk.'),
-                field(`Type ${db.name} to confirm`, h('input', { type: 'text', name: 'confirm', required: true, autocomplete: 'off', spellcheck: 'false' })),
-            ],
-            submitLabel: 'Stop managing',
-            danger: true,
-            onSubmit: (v) => post(`/api/databases/${id}/unmanage`, { confirm: v.confirm }),
+    // Disabled (but focusable, with its reason as a tooltip) while other copies exist.
+    function stopButton(db) {
+        const blocker = stopManagingBlocker(db);
+        const button = h('button.danger', { type: 'button', 'aria-disabled': blocker ? 'true' : null }, 'Stop managing');
+        const tip = blocker ? tooltip(button, `To stop managing ${db.name}, first remove its secondaries (${db.replicas.filter((r) => r.role !== 'primary').map((r) => r.server_name).join(', ')}) in the Replicas table below.`) : null;
+        button.addEventListener('click', async () => {
+            if (tip) return tip.show();
+            if (await stopManagingDialog(db)) location.hash = '#/';
         });
-        if (ok) location.hash = '#/';
+        return [button, tip?.tip];
     }
 
     async function load() {
@@ -622,7 +641,7 @@ export function databaseView(id) {
                     'Add secondary',
                 ),
                 dialogButton('Restore to a point in time…', () => pointInTimeDialog(db)),
-                h('button.danger', { type: 'button', onclick: () => unmanage(db) }, 'Stop managing'),
+                stopButton(db),
             ),
             stopped.length
                 ? h(

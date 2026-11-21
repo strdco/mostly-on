@@ -204,7 +204,20 @@ export function manage({ name, familyGuid, primaryServerId }) {
     });
 }
 
+/**
+ * Why a database cannot stop being managed (null if it can): every other copy
+ * (secondary or out-of-sync) has to be removed first, so no copy is left
+ * waiting for log backups that will never come.
+ */
+export function unmanageBlocker(id) {
+    const others = replicas(id).filter((r) => r.role !== 'primary');
+    if (!others.length) return null;
+    return `Remove its secondaries first (${others.map((r) => r.server_name).join(', ')}: Replicas table on the database page, Remove).`;
+}
+
 export function unmanage(id) {
+    const blocker = unmanageBlocker(id);
+    if (blocker) throw Object.assign(new Error(blocker), { status: 409, expose: true });
     tx(() => {
         getDb().prepare("UPDATE databases SET status='unmanaged', updated_at=? WHERE id=?").run(nowIso(), id);
         getDb().prepare('UPDATE schedules SET enabled=0 WHERE database_id=?').run(id);
@@ -262,6 +275,8 @@ export function getDiscovered(serverId, name) {
     return getDb().prepare('SELECT server_id, name, recovery_model, state, has_log_chain, dismissed_at FROM discovered_databases WHERE server_id=? AND name=?').get(serverId, name);
 }
 
+// No longer offered by the dashboard (the overview lists every unmanaged
+// database); kept so existing API clients keep working.
 export function dismissDiscovered(serverId, name, dismissed = true) {
     return getDb()
         .prepare('UPDATE discovered_databases SET dismissed_at=? WHERE server_id=? AND name=?')

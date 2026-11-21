@@ -63,7 +63,9 @@ The included `docker-compose.yml` starts two SQL Server Express containers (`sql
    | SQL login / Password | `mostly_on` / your `MOSTLY_ON_SQL_PASSWORD` | same |
    | Shared backup folder, as this SQL Server sees it | `/var/opt/mssql/backup` | same |
 
-6. Create a database on `sql1` (any tool; it must use the FULL recovery model). It appears on the **Overview** under *Available to manage*. Press **Manage**, then on the database's page **Add secondary** and pick `sql2`.
+6. Create a database on `sql1` (any tool; it must use the FULL recovery model). It appears in the **Databases** list on the **Overview** with its switch off. Turn the switch on (**Manage**), then on the database's page press **Add secondary** and pick `sql2`.
+
+   To stop managing a database, turn its switch off. That needs its secondaries removed first (database page, Replicas table, **Remove**), so no copy is left waiting for log backups that never come. Databases in the SIMPLE or BULK_LOGGED recovery model show a greyed-out switch with the command to switch them to FULL.
 
 From then on Mostly On backs the database up on schedule and keeps `sql2` up to date. Try **Failover** on the secondary's row.
 
@@ -345,7 +347,7 @@ npm run test:integration  # the whole scenario against real SQL Server container
 
 The integration suite starts its own isolated compose project (`mostly-on-it`) with fresh secrets, separate volumes and its own ports (controller on 18080), so it does not touch a running demo stack. It walks through the brief end to end:
 
-1. Register both servers with the restricted `mostly_on` login, manage a database, add a secondary. Then check that the login can't do anything outside the helper procedures and their guard rails.
+1. Register both servers with the restricted `mostly_on` login, manage a database, add a secondary, and check that it can't stop being managed while it has a secondary. Then check that the login can't do anything outside the helper procedures and their guard rails.
 2. Fail over with a tail-log backup and check that the last row arrived, and that the owner fell back to `sa` because the owner's login is missing on the target.
 3. Fail back, and get the original owner back.
 4. Stop the primary, fail over without it, and check that shipped rows survived and the unshipped row is lost.
