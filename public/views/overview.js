@@ -2,6 +2,7 @@ import { h, clear, dataTable, badge, formDialog, toast, ago, tooltip } from '../
 import { get, post } from '../api.js';
 import { activeAlertsCallout } from './alerts.js';
 import { stopManagingBlocker, stopManagingDialog } from './database.js';
+import { lagLimits } from './lag.js';
 
 // Database states in words; the SQL Server name stays in brackets where it is a problem.
 const STATE_TEXT = {
@@ -74,12 +75,12 @@ export function chainBadge(r) {
 
 /**
  * How far behind the primary a secondary's data is (age of the newest restored
- * log backup), plus log backups still waiting, coloured against the lag alert threshold.
+ * log backup), plus log backups still waiting, coloured against the database's
+ * lag limits (lag.js: its LOG interval plus the alert threshold).
  */
-export function lagBadge(lag, thresholdMinutes = 30) {
+export function lagBadge(lag, limits) {
     if (!lag || lag.seconds === null) return badge('behind: unknown');
-    const t = thresholdMinutes * 60;
-    const kind = lag.seconds > t ? 'err' : lag.seconds > t / 2 ? 'warn' : 'ok';
+    const kind = lag.seconds > limits.alert ? 'err' : lag.seconds > limits.warn ? 'warn' : 'ok';
     const waiting = lag.files ? ` · ${lag.files} log backup${lag.files === 1 ? '' : 's'} to restore` : '';
     return badge(`${formatDuration(lag.seconds)} behind${waiting}`, kind);
 }
@@ -109,9 +110,9 @@ export function dbHealth(d, alerts, thresholdMinutes) {
         if (r.role !== 'secondary') continue;
         if (['broken', 'needs_reseed'].includes(r.chain_state)) flag(2, `shipping to ${r.server_name} stopped`);
         else if (r.chain_state === 'ok' && r.lag?.seconds != null) {
-            const t = thresholdMinutes * 60;
-            if (r.lag.seconds > t) flag(2, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
-            else if (r.lag.seconds > t / 2) flag(1, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
+            const limits = lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), thresholdMinutes);
+            if (r.lag.seconds > limits.alert) flag(2, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
+            else if (r.lag.seconds > limits.warn) flag(1, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
         }
     }
     for (const t of ['FULL', 'DIFF', 'LOG']) {
@@ -210,7 +211,9 @@ export function overviewView() {
                                           ' ',
                                           stateBadge(r.live, r.role),
                                           ' ',
-                                          r.chain_state === 'ok' && r.role === 'secondary' && !r.lag?.loop?.failures ? lagBadge(r.lag, threshold) : chainBadge(r),
+                                          r.chain_state === 'ok' && r.role === 'secondary' && !r.lag?.loop?.failures
+                                              ? lagBadge(r.lag, lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), threshold))
+                                              : chainBadge(r),
                                       ),
                                   )
                                 : h('span.muted', 'none');

@@ -242,7 +242,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 - **Alerts.** Mostly-On alerts you once when a problem starts, reminds you every few hours while it lasts, and sends one notice when it is resolved. Alerts cover:
   - a server is unreachable;
   - a database is not in the state it should be;
-  - shipping has stopped, or a secondary is too far behind;
+  - shipping has stopped, or a secondary is too far behind. "Too far" counts on top of the database's own log backup interval: with logs every 15 minutes and a threshold of 10 (Settings), it alerts once a secondary's newest data is more than 25 minutes old, so waiting for the next log backup never alerts;
   - a backup or restore failed;
   - a backup was taken outside Mostly-On;
   - an old primary is out of sync, or is accepting writes (split brain);

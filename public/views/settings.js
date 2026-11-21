@@ -20,7 +20,7 @@ const CARDS = [
         saved: 'Alert settings',
         intro: ['Sent once when a problem starts, as reminders while it lasts, and once when it is resolved. ', h('a', { href: '#/alerts' }, 'See current alerts'), '.'],
         fields: [
-            { key: 'alerts.lag_threshold_minutes', label: 'Alert when a secondary is behind by', unit: 'minutes', min: 1, hint: 'Rows turn amber at half of it.' },
+            { key: 'alerts.lag_threshold_minutes', label: 'Alert when a secondary is late by', unit: 'minutes', min: 1, hint: 'On top of each database’s log backup interval: with logs every 15 minutes and 10 here, it alerts after 25 minutes. Amber at half of it.' },
             { key: 'alerts.reminder_hours', label: 'Remind every', unit: 'hours', min: 0, step: 'any', hint: '0 = no reminders.' },
             { key: 'alerts.debounce_seconds', label: 'Wait before alerting', unit: 'seconds', min: 0, hint: 'A problem must last this long to alert, and be gone this long to resolve.' },
             { key: 'alerts.interval_seconds', label: 'Check alerts every', unit: 'seconds', min: 5 },

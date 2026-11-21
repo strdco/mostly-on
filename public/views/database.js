@@ -5,6 +5,7 @@ import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
 import { retentionProblem } from './retention.js';
+import { lagLimits } from './lag.js';
 
 function editSchedule(db, s) {
     return scheduleDialog({
@@ -777,7 +778,7 @@ export function databaseView(id) {
                         label: 'Copy',
                         cell: (r) => (r.role === 'secondary' ? modeText(r) : ''),
                     },
-                    { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagBadge(r.lag, threshold) : '') },
+                    { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagBadge(r.lag, lagLimits(db.schedules.find((s) => s.backup_type === 'LOG'), threshold)) : '') },
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },
                 ],
             }),
