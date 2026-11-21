@@ -1,4 +1,4 @@
-// The whole brief, end to end, against real SQL Server containers. Mostly On
+// The whole brief, end to end, against real SQL Server containers. Mostly-On
 // connects as the restricted login "mostly_on" (no sysadmin); the compose
 // sql-setup service installed the signed helper procedures it works through.
 //   1. register both servers, manage a new database on sql1, add sql2 as its secondary

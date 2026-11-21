@@ -126,7 +126,7 @@ export function dbHealth(d, alerts, thresholdMinutes) {
         if (mins > expect * 3) flag(2, `last ${t} backup ${ago(at)}`);
         else if (mins > expect * 1.5) flag(1, `last ${t} backup ${ago(at)}`);
     }
-    if (d.foreignLogBackups) flag(2, 'log backup taken outside Mostly On');
+    if (d.foreignLogBackups) flag(2, 'log backup taken outside Mostly-On');
     const mine = alerts.filter((a) => a.database_id === d.id);
     if (mine.length) flag(mine.some((a) => a.severity === 'error') ? 2 : 1, `${mine.length} active alert${mine.length === 1 ? '' : 's'}`);
     return { kind: ['ok', 'warn', 'err'][level], label: ['healthy', 'warning', 'error'][level], reasons };
@@ -226,7 +226,7 @@ export function overviewView() {
                             const stopped = d.replicas.filter((r) => ['broken', 'needs_reseed'].includes(r.chain_state));
                             const out = [];
                             if (d.foreignLogBackups) {
-                                out.push(badge(`${d.foreignLogBackups} log backup${d.foreignLogBackups === 1 ? '' : 's'} taken outside Mostly On`, 'err'));
+                                out.push(badge(`${d.foreignLogBackups} log backup${d.foreignLogBackups === 1 ? '' : 's'} taken outside Mostly-On`, 'err'));
                             }
                             if (stopped.length) out.push(badge(`shipping stopped to ${stopped.map((r) => r.server_name).join(', ')}`, 'err'));
                             return out.length ? out : badge('ok', 'ok');
@@ -252,7 +252,7 @@ export function overviewView() {
                   label: `Manage ${d.name} on ${d.server_name}`,
                   reason: d.shippable
                       ? null
-                      : `${d.recovery_model} recovery: Mostly On can only manage databases in FULL recovery. To manage it, run ALTER DATABASE [${d.name}] SET RECOVERY FULL; on ${d.server_name}.`,
+                      : `${d.recovery_model} recovery: Mostly-On can only manage databases in FULL recovery. To manage it, run ALTER DATABASE [${d.name}] SET RECOVERY FULL; on ${d.server_name}.`,
                   onActivate: () => manage(d),
               });
         return h('div.db-name', sw, d.managed ? h('a', { href: `#/databases/${d.id}` }, d.name) : h('span', d.name));
@@ -262,10 +262,10 @@ export function overviewView() {
         const res = await formDialog({
             title: `Manage ${d.name}?`,
             fields: [
-                h('p', `${d.server_name} becomes the primary for ${d.name}. Mostly On takes a FULL backup right away and then runs the default schedules (FULL weekly, DIFF daily, LOG every 5 minutes).`),
+                h('p', `${d.server_name} becomes the primary for ${d.name}. Mostly-On takes a FULL backup right away and then runs the default schedules (FULL weekly, DIFF daily, LOG every 5 minutes).`),
                 h(
                     'p.muted',
-                    'From now on, Mostly On takes all backups of this database. If another tool (a maintenance plan, a backup agent) also takes log backups, the secondaries miss them and shipping stops. ' +
+                    'From now on, Mostly-On takes all backups of this database. If another tool (a maintenance plan, a backup agent) also takes log backups, the secondaries miss them and shipping stops. ' +
                         'Backups that tools take with the COPY_ONLY option are fine.',
                 ),
             ],
@@ -280,7 +280,7 @@ export function overviewView() {
 
     async function stopManaging(d) {
         if (await stopManagingDialog(d)) {
-            toast(`Mostly On no longer manages ${d.name}`, 'ok');
+            toast(`Mostly-On no longer manages ${d.name}`, 'ok');
             load().catch(() => {});
         }
     }
@@ -294,7 +294,7 @@ export function overviewView() {
                 alertsBox,
                 h(
                     'p.muted',
-                    'Every user database on your servers. The switch before a name turns management by Mostly On on or off. ' +
+                    'Every user database on your servers. The switch before a name turns management by Mostly-On on or off. ' +
                         'Only databases in the FULL recovery model can be managed (log shipping needs it).',
                 ),
                 listBox,

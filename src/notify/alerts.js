@@ -9,7 +9,7 @@
 //   lag:<db>:<srv>        a secondary is further behind than alerts.lag_threshold_minutes
 //   restore:<db>:<srv>    the last restore attempt on a secondary failed
 //   backup:<db>:<TYPE>    the last backup of a type failed and none succeeded since
-//   foreign:<uuid>        a backup Mostly On did not take
+//   foreign:<uuid>        a backup Mostly-On did not take
 //   diverged:<db>:<srv>   an old primary holds a diverged copy (reseed it)
 //   split:<db>:<srv>      ... and it is ONLINE and writable (split-brain risk)
 //   op:<id>               a seed, reseed or failover failed or was interrupted
@@ -73,7 +73,7 @@ export function collectConditions() {
                 key: `setup:${s.id}`,
                 kind: 'setup',
                 severity: 'error',
-                message: `Mostly On cannot back up or restore on ${s.name}: ${h.setup.problems.join(' ')} Run the setup script for ${s.name} (Servers page).`,
+                message: `Mostly-On cannot back up or restore on ${s.name}: ${h.setup.problems.join(' ')} Run the setup script for ${s.name} (Servers page).`,
                 serverId: s.id,
                 link: link.server(s.id),
             });
@@ -152,7 +152,7 @@ export function collectConditions() {
             key: `foreign:${f.backup_set_uuid}`,
             kind: 'foreign_backup',
             severity: f.type === 'LOG' ? 'error' : 'warn',
-            message: `A ${f.type} backup of ${f.database_name} was taken outside Mostly On, on ${f.server_name} (${f.device})${f.type === 'LOG' ? '. The secondaries never get the changes in it, so shipping stops' : ''}`,
+            message: `A ${f.type} backup of ${f.database_name} was taken outside Mostly-On, on ${f.server_name} (${f.device})${f.type === 'LOG' ? '. The secondaries never get the changes in it, so shipping stops' : ''}`,
             databaseId: f.database_id,
             serverId: f.server_id,
             link: link.db(f.database_id),
@@ -253,11 +253,11 @@ export function deliveryStatus() {
 export async function sendTest() {
     const { base } = links();
     const r = await notifier.sendAll({
-        title: 'Mostly On: test notification',
-        message: `This is a test from Mostly On at ${base}. Alerts will arrive like this.`,
+        title: 'Mostly-On: test notification',
+        message: `This is a test from Mostly-On at ${base}. Alerts will arrive like this.`,
         priority: 0,
         url: base,
-        urlTitle: 'Open Mostly On',
+        urlTitle: 'Open Mostly-On',
     });
     delivery.lastSentAt = new Date().toISOString();
     events.add('info', 'notify', `Test notification sent (${r.sent.join(', ')})`);

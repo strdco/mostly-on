@@ -1,7 +1,7 @@
 // SQL Server version facts the controller depends on.
 //
 // Supported: SQL Server 2019 (15.x) and newer. The backup/restore mechanics
-// Mostly On uses (BACKUP ... WITH CHECKSUM/INIT/NORECOVERY, RESTORE ... WITH
+// Mostly-On uses (BACKUP ... WITH CHECKSUM/INIT/NORECOVERY, RESTORE ... WITH
 // NORECOVERY/STANDBY/MOVE, msdb backupset/restorehistory, recovery forks) are
 // unchanged across this range. T-SQL sent by the controller must therefore
 // stay within the 2019 feature set (no IS NOT DISTINCT FROM, GREATEST/LEAST,

@@ -25,7 +25,7 @@ export function buildMoves(fileList, { defaultDataPath, defaultLogPath, dbName }
         let dir;
         if (f.type === 'D' || f.type === 'S') dir = defaultDataPath;
         else if (f.type === 'L') dir = defaultLogPath;
-        else throw new Error(`Backup contains a file of type ${f.type} (${f.logicalName}), which Mostly On cannot place`);
+        else throw new Error(`Backup contains a file of type ${f.type} (${f.logicalName}), which Mostly-On cannot place`);
         let name = baseName(f.physicalName);
         if (!SAFE_FILE_RE.test(name) || name === '.' || name === '..') {
             const ext = f.type === 'L' ? '.ldf' : f.type === 'S' ? '' : f.fileId === 1 ? '.mdf' : '.ndf';
@@ -65,7 +65,7 @@ export function copyMoves(fileList, { defaultDataPath, defaultLogPath, newName }
             dir = defaultDataPath;
             name = `${base}_${safeName(f.logicalName)}`;
         } else {
-            throw new Error(`Backup contains a file of type ${f.type} (${f.logicalName}), which Mostly On cannot place`);
+            throw new Error(`Backup contains a file of type ${f.type} (${f.logicalName}), which Mostly-On cannot place`);
         }
         if (used.has(name.toLowerCase())) {
             const dot = name.lastIndexOf('.');

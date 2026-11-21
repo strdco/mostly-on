@@ -41,7 +41,7 @@ test('paths outside the root, or escaping it, are refused', () => {
     assert.throws(() => rel('\\\\otherserver\\sqlbackup\\x.trn', unc), /not under/);
 });
 
-test("backups Mostly On wrote are recognized on Windows servers, others are not", () => {
+test("backups Mostly-On wrote are recognized on Windows servers, others are not", () => {
     assert.equal(isOwnBackupPath('D:\\Backup\\Sales\\LOG\\Sales_LOG_20261121_131046_sql1.trn', drive), true);
     assert.equal(isOwnBackupPath('d:/backup/Sales/FULL/Sales_FULL_20261121_131046_sql1.bak', drive), true);
     assert.equal(isOwnBackupPath('D:\\Backup\\manual.bak', drive), false);
@@ -68,7 +68,7 @@ test('MOVE targets and the undo file use the target server\'s path style', () =>
     assert.equal(sqlPathApi('E:\\x').sep, '\\');
 });
 
-test('server settings accept Windows SQL Server paths (normalized) but not for Mostly On itself', () => {
+test('server settings accept Windows SQL Server paths (normalized) but not for Mostly-On itself', () => {
     const base = { name: 'win1', host: 'winvm', username: 'mostly_on', password: 'x' };
     assert.equal(validate({ ...base, sql_backup_root: 'D:/Backup/' }).sql_backup_root, 'D:\\Backup');
     assert.equal(validate({ ...base, sql_backup_root: '\\\\fs\\share\\sql\\' }).sql_backup_root, '\\\\fs\\share\\sql');

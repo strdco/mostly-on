@@ -1,4 +1,4 @@
-// Mostly On controller entry point.
+// Mostly-On controller entry point.
 //
 // Startup order matters for crash safety:
 //   1. config + catalog migrations

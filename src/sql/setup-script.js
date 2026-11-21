@@ -16,7 +16,7 @@ export function setupScriptFor(server, { now = new Date() } = {}) {
     };
     const text = fs.readFileSync(TEMPLATE, 'utf8').replace(/\$\((\w+)\)/g, (m, name) => (name in values ? String(values[name]).replace(/'/g, "''") : m));
     const header =
-        `-- Mostly On setup script for server ${server.name} (${server.instance_name ? `${server.host}\\${server.instance_name}` : `${server.host}:${server.port}`}), generated ${now.toISOString()}.\n` +
+        `-- Mostly-On setup script for server ${server.name} (${server.instance_name ? `${server.host}\\${server.instance_name}` : `${server.host}:${server.port}`}), generated ${now.toISOString()}.\n` +
         `-- Run it on that server as a member of sysadmin (SSMS, Azure Data Studio or sqlcmd).\n\n`;
     return header + text;
 }

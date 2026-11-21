@@ -4,7 +4,7 @@
 //
 // Rules:
 //  * Values (database names, paths, LSNs) are always @parameters.
-//  * These run as Mostly On's own login, which only has read access
+//  * These run as Mostly-On's own login, which only has read access
 //    (VIEW SERVER STATE, VIEW ANY DEFINITION, msdb db_datareader).
 //  * LSN columns are CAST to varchar(25) because the driver would otherwise
 //    turn numeric(25,0) into a lossy JS number.
@@ -156,9 +156,9 @@ OUTER APPLY (
     ) AS lr
 WHERE d.name=@db;`;
 
-// Is the server ready for Mostly On? Helper procedure version (NULL if they
+// Is the server ready for Mostly-On? Helper procedure version (NULL if they
 // are missing), whether they are all still signed, and the permissions the
-// login needs. Runs as the login Mostly On uses.
+// login needs. Runs as the login Mostly-On uses.
 export const HELPER_STATUS = `
 DECLARE @version int=NULL;
 IF (OBJECT_ID(N'master.mostly_on.helper_version', N'FN') IS NOT NULL)

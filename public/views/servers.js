@@ -62,12 +62,12 @@ function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
                 field(
                     'Instance name (optional)',
                     h('input', { type: 'text', name: 'instance_name', value: s.instance_name || '', placeholder: 'e.g. SQLEXPRESS', maxlength: 16, spellcheck: 'false', autocapitalize: 'none' }),
-                    'For a named instance. Mostly On then finds its port through the SQL Server Browser service (UDP 1434), and the port above is ignored. Leave empty to connect to the port directly.',
+                    'For a named instance. Mostly-On then finds its port through the SQL Server Browser service (UDP 1434), and the port above is ignored. Leave empty to connect to the port directly.',
                 ),
                 field(
-                    'Shared backup folder, as Mostly On sees it (optional)',
+                    'Shared backup folder, as Mostly-On sees it (optional)',
                     h('input', { type: 'text', name: 'controller_backup_root', value: s.controller_backup_root || '', placeholder: backupRoot, spellcheck: 'false', autocapitalize: 'none' }),
-                    `Leave empty to use ${backupRoot}. Only needed if this server’s share is mounted somewhere else in the Mostly On container.`,
+                    `Leave empty to use ${backupRoot}. Only needed if this server’s share is mounted somewhere else in the Mostly-On container.`,
                 ),
                 field(
                     'Folder for undo files of read-only copies (optional)',
@@ -180,7 +180,7 @@ async function afterRegister(s) {
     const steps = [];
     if (hh && !hh.ok) {
         steps.push(
-            h('li', 'Make sure Mostly On can connect. It could not: ', h('span.mono', String(hh.error).replace(/\.$/, '')), '. If the login does not exist yet, create it on ', h('strong', s.name), ' first.'),
+            h('li', 'Make sure Mostly-On can connect. It could not: ', h('span.mono', String(hh.error).replace(/\.$/, '')), '. If the login does not exist yet, create it on ', h('strong', s.name), ' first.'),
         );
     }
     steps.push(
@@ -191,8 +191,8 @@ async function afterRegister(s) {
     await formDialog({
         title: `One more step for ${s.name}`,
         fields: [
-            h('p', `${s.name} is registered, but Mostly On cannot back up or restore there until its setup script has been run. `
-                + 'The script installs a few signed procedures in master, so Mostly On can do its job without a sysadmin login.'),
+            h('p', `${s.name} is registered, but Mostly-On cannot back up or restore there until its setup script has been run. `
+                + 'The script installs a few signed procedures in master, so Mostly-On can do its job without a sysadmin login.'),
             h('ol.steps-list', steps),
         ],
         submitLabel: 'Download setup script',
@@ -293,7 +293,7 @@ function removeButton(s) {
         const ok = await formDialog({
             title: `Remove server ${s.name}?`,
             fields: [
-                h('p', `Mostly On stops connecting to ${s.name} and no longer lists it. Nothing on the SQL Server is changed.`),
+                h('p', `Mostly-On stops connecting to ${s.name} and no longer lists it. Nothing on the SQL Server is changed.`),
                 h('p.muted', `Backups ${s.name} took stay usable until retention removes them. To use it again later, register a server under the same name.`),
             ],
             submitLabel: 'Remove',
@@ -315,7 +315,7 @@ export function serverDetailView(id) {
                 h('h1', `Server ${s.name}`),
                 h(
                     'div.callout.warn',
-                    `${s.name} was removed on ${formatTime(s.removed_at)}. Mostly On no longer connects to it; the backup files it wrote stay usable until retention removes them. ` +
+                    `${s.name} was removed on ${formatTime(s.removed_at)}. Mostly-On no longer connects to it; the backup files it wrote stay usable until retention removes them. ` +
                         'To use it again, register a server under the same name (Servers page).',
                 ),
             );
@@ -345,7 +345,7 @@ export function serverDetailView(id) {
                     h('dt', 'Version'), h('dd', s.product_version ? `${hh?.info?.versionName || ''} (${s.product_version})` : '–'),
                     h('dt', 'Edition'), h('dd', s.edition || '–'),
                     h('dt', 'Backup path (SQL Server)'), h('dd.mono', s.sql_backup_root),
-                    h('dt', 'Backup path (Mostly On)'), h('dd.mono', s.controller_backup_root || `${info.backupRoot ?? 'BACKUP_ROOT'} (default)`),
+                    h('dt', 'Backup path (Mostly-On)'), h('dd.mono', s.controller_backup_root || `${info.backupRoot ?? 'BACKUP_ROOT'} (default)`),
                     h('dt', 'Default data path'), h('dd.mono', s.default_data_path || '–'),
                     h('dt', 'Default log path'), h('dd.mono', s.default_log_path || '–'),
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
@@ -354,14 +354,14 @@ export function serverDetailView(id) {
             h('h2', 'Setup'),
             h(
                 'p.muted',
-                `Mostly On does not need a sysadmin login. Its backups, restores and failovers run through signed helper procedures in master, which a sysadmin installs once with this server's setup script. `
+                `Mostly-On does not need a sysadmin login. Its backups, restores and failovers run through signed helper procedures in master, which a sysadmin installs once with this server's setup script. `
                     + 'Run the script again whenever this page says it is out of date; running it again is always safe.',
             ),
             h(
                 'p',
                 setupBadge(hh?.setup),
                 ' ',
-                hh?.setup?.login ? h('span.muted', `Mostly On connects as ${hh.setup.login}.`) : null,
+                hh?.setup?.login ? h('span.muted', `Mostly-On connects as ${hh.setup.login}.`) : null,
             ),
             h('p', h(hh?.setup?.ready ? 'a.button' : 'a.button.primary', { href: `/api/servers/${id}/setup-script`, download: '' }, 'Download setup script')),
             h('h2', 'Managed databases on this server'),

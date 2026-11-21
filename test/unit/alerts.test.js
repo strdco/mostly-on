@@ -138,13 +138,13 @@ test('one batched message: new errors first, quiet when only resolved', () => {
         [n('resolved', 'a', 'warn', { resolvedAt: new Date(T0 + 12 * MIN).toISOString() }), n('reminder', 'b', 'warn'), n('new', 'c', 'warn'), n('new', 'd', 'error')],
         { publicUrl: 'http://x', now },
     );
-    assert.equal(batch.title, 'Mostly On: 2 new, 1 still active, 1 resolved');
+    assert.equal(batch.title, 'Mostly-On: 2 new, 1 still active, 1 resolved');
     assert.deepEqual(batch.message.split('\n'), ['ERROR: d message', 'WARNING: c message', 'STILL ACTIVE (1 h): b message', 'RESOLVED (after 12 min): a message']);
     assert.equal(batch.priority, 0);
     assert.equal(batch.url, 'http://x');
 
     const quiet = formatBatch([n('resolved', 'a', 'error', { resolvedAt: new Date(T0 + 90 * MIN).toISOString(), link: 'http://x/#/databases/1' })], { publicUrl: 'http://x', now });
-    assert.equal(quiet.title, 'Mostly On: resolved');
+    assert.equal(quiet.title, 'Mostly-On: resolved');
     assert.equal(quiet.priority, -1);
     assert.equal(quiet.url, 'http://x/#/databases/1');
     assert.equal(quiet.message, 'RESOLVED (after 1 h 30 min): a message');
@@ -155,7 +155,7 @@ test('a long batch is cut with a count of what was left out', () => {
     const b = formatBatch(many, { publicUrl: 'http://x', now: T0 });
     assert.ok(b.message.length <= 1024, `message is ${b.message.length} chars`);
     assert.match(b.message, /… and \d+ more$/);
-    assert.equal(b.title, 'Mostly On: 40 new');
+    assert.equal(b.title, 'Mostly-On: 40 new');
 });
 
 test('alerts a person clears (resolved operation, acknowledged backup) resolve without the debounce', () => {

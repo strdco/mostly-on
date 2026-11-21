@@ -1,5 +1,5 @@
 # Demo / development environment: two SQL Server 2025 Express instances and
-# the Mostly On controller, all sharing one backup volume.
+# the Mostly-On controller, all sharing one backup volume.
 #
 #   cp .env.example .env    # then fill in the secrets
 #   docker compose up -d --build
@@ -55,8 +55,8 @@ services:
       - backup:/var/opt/mssql/backup
 
   # One-shot: creates the restricted login "mostly_on" on both SQL Servers and
-  # installs Mostly On's signed helper procedures (sql/mostly-on-helpers.sql),
-  # so Mostly On never needs sa. Register the servers with login mostly_on.
+  # installs Mostly-On's signed helper procedures (sql/mostly-on-helpers.sql),
+  # so Mostly-On never needs sa. Register the servers with login mostly_on.
   sql-setup:
     image: mcr.microsoft.com/mssql/server:2025-latest
     platform: linux/amd64

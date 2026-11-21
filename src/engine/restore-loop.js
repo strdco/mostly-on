@@ -164,7 +164,7 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
                 events.add(
                     'warn',
                     'restore',
-                    `${db.name} on ${server.name} is not where Mostly On expected it to be (was something restored there by hand?). Mostly On continues from where SQL Server says it is.`,
+                    `${db.name} on ${server.name} is not where Mostly-On expected it to be (was something restored there by hand?). Mostly-On continues from where SQL Server says it is.`,
                     { databaseId: db.id, serverId: server.id, data: { sqlServerLsn: live.position, expectedLsn: rep.position_lsn } },
                 );
             }

@@ -42,10 +42,10 @@ export async function checkServer(serverId) {
         const warnings = [];
         info.versionName = versionName(info.majorVersion);
         if (!isSupported(info.majorVersion)) {
-            warnings.push(`${info.versionName} (${info.productVersion}) is not supported; Mostly On needs ${versionName(MIN_MAJOR)} or newer.`);
+            warnings.push(`${info.versionName} (${info.productVersion}) is not supported; Mostly-On needs ${versionName(MIN_MAJOR)} or newer.`);
         }
         if (!setup.ready) {
-            warnings.push(`Mostly On cannot back up or restore here yet: ${setup.problems.join(' ')} Download the setup script below and run it on this server as a sysadmin.`);
+            warnings.push(`Mostly-On cannot back up or restore here yet: ${setup.problems.join(' ')} Download the setup script below and run it on this server as a sysadmin.`);
         }
         result = { ok: true, checkedAt, error: null, info, databases: dbs, warnings, setup };
         serversRepo.recordHealth(serverId, { ok: true, ...info });
@@ -63,7 +63,7 @@ export async function checkServer(serverId) {
     }
     if (result.ok && result.setup && prev?.setup && prev.setup.ready !== result.setup.ready) {
         if (result.setup.ready) events.add('info', 'server', `The helper procedures on ${server.name} are ready (version ${result.setup.version})`, { serverId });
-        else events.add('error', 'server', `Mostly On cannot back up or restore on ${server.name}: ${result.setup.problems.join(' ')}`, { serverId });
+        else events.add('error', 'server', `Mostly-On cannot back up or restore on ${server.name}: ${result.setup.problems.join(' ')}`, { serverId });
     }
     publish('server.health', { serverId, ok: result.ok, checkedAt });
     return result;

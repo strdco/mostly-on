@@ -27,7 +27,7 @@ export function setRetention(id, { full, diff, log }) {
 
 /**
  * Remembers the database's owner, read from its primary before a backup.
- * Ignored while a restored copy still belongs to Mostly On's own login, and
+ * Ignored while a restored copy still belongs to Mostly-On's own login, and
  * while the owner is the stand-in a failover fell back to (owner_fallback):
  * the real owner stays remembered, so failing back restores it.
  */

@@ -79,7 +79,7 @@ export function migrate(conn, { file = null, dir = MIGRATIONS_DIR } = {}) {
 
     if (current && current.version > known) {
         throw new CatalogVersionError(
-            `The catalog is at version ${current.version} (${current.name}), but this Mostly On image only knows versions up to ${known}. ` +
+            `The catalog is at version ${current.version} (${current.name}), but this Mostly-On image only knows versions up to ${known}. ` +
                 'A newer image has upgraded it. Run that image (or a newer one), or restore the catalog from the .bak copy taken before the upgrade.',
         );
     }

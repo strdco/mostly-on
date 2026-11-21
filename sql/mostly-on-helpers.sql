@@ -1,22 +1,22 @@
 /*
-    Mostly On helper procedures, version 1.
+    Mostly-On helper procedures, version 1.
 
-    Mostly On never needs a sysadmin login. Everything that needs high privileges
+    Mostly-On never needs a sysadmin login. Everything that needs high privileges
     (BACKUP, RESTORE, ALTER DATABASE, KILL) happens inside the procedures in the
     [mostly_on] schema of master. They are signed with a certificate whose login
-    holds CONTROL SERVER and dbcreator; the login Mostly On uses only gets
+    holds CONTROL SERVER and dbcreator; the login Mostly-On uses only gets
     EXECUTE on them, plus read access to server state and backup history.
 
     The procedures refuse system databases, and only read or write backup files
     under the shared backup folder given below.
 
     How to run it:
-      * As a member of sysadmin, on every SQL Server that Mostly On manages.
-      * Create the login Mostly On uses first (CREATE LOGIN ...).
-      * Run it again whenever Mostly On says the setup is out of date. Running it
+      * As a member of sysadmin, on every SQL Server that Mostly-On manages.
+      * Create the login Mostly-On uses first (CREATE LOGIN ...).
+      * Run it again whenever Mostly-On says the setup is out of date. Running it
         again is always safe.
 
-    Mostly On's Servers page offers this script with the values below filled in.
+    Mostly-On's Servers page offers this script with the values below filled in.
     To run the template with sqlcmd instead:
       sqlcmd -S <server> -E -b -i mostly-on-helpers.sql -v ServiceLogin="mostly_on"
              BackupRoot="/var/opt/mssql/backup" StandbyRoot="default" FallbackOwner="sa"
@@ -100,7 +100,7 @@ BEGIN;
 END;
 GO
 
--- Throws unless @path is a file Mostly On may use: a backup file under the
+-- Throws unless @path is a file Mostly-On may use: a backup file under the
 -- backup root, an undo file of a readable copy, or a database file in this
 -- server's default data or log folder.
 CREATE PROCEDURE mostly_on.check_path
@@ -111,7 +111,7 @@ SET NOCOUNT ON;
 DECLARE @ok bit=0;
 
 IF (@path IS NULL OR CHARINDEX(N'..', @path)>0 OR CHARINDEX(NCHAR(0), @path)>0)
-    THROW 50010, N'Mostly On refused a file path: it is empty or contains "..".', 1;
+    THROW 50010, N'Mostly-On refused a file path: it is empty or contains "..".', 1;
 
 IF (@kind='backup')
     SELECT @ok=mostly_on.is_under(@path, s.backup_root)
@@ -128,7 +128,7 @@ IF (@kind='data')
                    OR mostly_on.is_under(@path, CONVERT(nvarchar(400), SERVERPROPERTY(N'InstanceDefaultLogPath')))=1 THEN 1 ELSE 0 END;
 
 IF (@ok=0) BEGIN;
-    DECLARE @message nvarchar(2048)=N'Mostly On refused the path '+@path+N': it is outside the folders Mostly On may use ('+@kind+N'). '
+    DECLARE @message nvarchar(2048)=N'Mostly-On refused the path '+@path+N': it is outside the folders Mostly-On may use ('+@kind+N'). '
         +N'If the shared backup folder moved, run the setup script again with the new path.';
     THROW 50011, @message, 1;
 END;
@@ -141,7 +141,7 @@ CREATE PROCEDURE mostly_on.check_database
 AS
 SET NOCOUNT ON;
 IF (@db IS NULL OR @db IN (N'master', N'model', N'msdb', N'tempdb') OR DB_ID(@db) BETWEEN 1 AND 4)
-    THROW 50001, N'Mostly On never touches system databases.', 1;
+    THROW 50001, N'Mostly-On never touches system databases.', 1;
 IF (@must_exist=1 AND DB_ID(@db) IS NULL) BEGIN;
     DECLARE @message nvarchar(2048)=N'Database '+@db+N' does not exist on this server.';
     THROW 50002, @message, 1;
@@ -150,7 +150,7 @@ GO
 
 -- --- privileged actions (signed) --------------------------------------------------
 -- No TRY/CATCH around BACKUP and RESTORE: SQL Server's own error numbers
--- (3101, 3201, 4305, 4326, 4330 ...) must reach Mostly On unchanged.
+-- (3101, 3201, 4305, 4326, 4330 ...) must reach Mostly-On unchanged.
 
 -- FULL, DIFF or LOG backup, always CHECKSUM + INIT and never compressed (Express).
 -- @copy_only makes a FULL that does not affect the backup chain (safety backups).
@@ -316,7 +316,7 @@ GO
 -- restoring), MULTI_USER, then the owner. The owner is the database's own owner
 -- if that login exists here (matched by SID, then by name), else the fallback
 -- owner. A database created by RESTORE is otherwise owned by the login that
--- ran it, i.e. Mostly On's. Returns the owner and how it was chosen.
+-- ran it, i.e. Mostly-On's. Returns the owner and how it was chosen.
 CREATE PROCEDURE mostly_on.recover
     @db                 sysname,
     @owner_sid          varbinary(85)=NULL,
@@ -416,7 +416,7 @@ GO
 
 DECLARE @password nvarchar(128)=CONVERT(nvarchar(36), NEWID())+N'-Mo!'+CONVERT(nvarchar(36), NEWID());
 DECLARE @sql nvarchar(max)=N'CREATE CERTIFICATE mostly_on_signing ENCRYPTION BY PASSWORD='+QUOTENAME(@password, N'''')
-    +N' WITH SUBJECT=N''Mostly On helper procedures'', EXPIRY_DATE=''2099-12-31'';';
+    +N' WITH SUBJECT=N''Mostly-On helper procedures'', EXPIRY_DATE=''2099-12-31'';';
 EXEC sys.sp_executesql @sql;
 
 SELECT @sql=STRING_AGG(CAST(N'ADD SIGNATURE TO mostly_on.'+QUOTENAME(p.name)+N' BY CERTIFICATE mostly_on_signing WITH PASSWORD='+QUOTENAME(@password, N'''')+N';' AS nvarchar(max)), N'')
@@ -431,7 +431,7 @@ ALTER SERVER ROLE dbcreator ADD MEMBER mostly_on_signing;
 ALTER CERTIFICATE mostly_on_signing REMOVE PRIVATE KEY;
 GO
 
--- --- Mostly On's own login ------------------------------------------------------------
+-- --- Mostly-On's own login ------------------------------------------------------------
 -- EXECUTE on the procedures, plus read access for health checks and backup history.
 
 DECLARE @login sysname=N'$(ServiceLogin)';
@@ -452,7 +452,7 @@ END;
 GO
 
 USE master;
-SELECT N'Mostly On helper procedures version '+CONVERT(nvarchar(11), mostly_on.helper_version())+N' are installed for $(ServiceLogin).' AS result;
+SELECT N'Mostly-On helper procedures version '+CONVERT(nvarchar(11), mostly_on.helper_version())+N' are installed for $(ServiceLogin).' AS result;
 GO
 SET NOEXEC OFF;
 GO

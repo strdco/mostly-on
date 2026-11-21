@@ -31,7 +31,7 @@ export async function resolveOperation(op) {
     const done = await formDialog({
         title: `Mark operation #${op.id} as resolved?`,
         fields: [
-            h('p', 'Use this when you have checked the servers and dealt with the outcome by hand. Mostly On changes nothing on the servers.'),
+            h('p', 'Use this when you have checked the servers and dealt with the outcome by hand. Mostly-On changes nothing on the servers.'),
             field('Note (optional)', h('input', { type: 'text', name: 'note', maxlength: 500, autocomplete: 'off' })),
         ],
         submitLabel: 'Mark resolved',

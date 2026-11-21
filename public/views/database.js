@@ -178,7 +178,7 @@ function previewList(pf) {
         h(
             'li',
             n == null
-                ? `Mostly On could not work out how far behind ${pf.target.name} is.`
+                ? `Mostly-On could not work out how far behind ${pf.target.name} is.`
                 : n === 0
                   ? `${pf.target.name} has restored every log backup taken so far.`
                   : `${pf.target.name} restores ${n} more log backup${n === 1 ? '' : 's'} before it takes over.`,
@@ -201,7 +201,7 @@ function tailOutcome(pf, tailLog) {
         return h(
             'div.callout.warn',
             h('strong', 'Data may be lost. '),
-            `A failover without data loss is not possible: ${pf.plannedBlocker}. Mostly On attempts a best-effort tail-log backup on ${old}; transactions committed after ${since} that it cannot capture are lost. `,
+            `A failover without data loss is not possible: ${pf.plannedBlocker}. Mostly-On attempts a best-effort tail-log backup on ${old}; transactions committed after ${since} that it cannot capture are lost. `,
             `${old} is then marked out of sync and must be reinitialized from the new primary (Reinitialize).`,
         );
     }
@@ -381,7 +381,7 @@ async function pointInTimeDialog(db) {
     const copyGroup = h(
         'fieldset.plain',
         field('Restore it on', serverSelect, 'The copy is a new database next to everything else on that server. Nothing that exists is changed.'),
-        field('Name of the copy', nameInput, 'Letters, digits, _ and -. Mostly On does not back up the copy: drop it when you are done with it.'),
+        field('Name of the copy', nameInput, 'Letters, digits, _ and -. Mostly-On does not back up the copy: drop it when you are done with it.'),
     );
     const secondaries = range.secondaries.map((s) => s.name);
     const rollbackGroup = h(
@@ -425,13 +425,13 @@ async function pointInTimeDialog(db) {
     sync();
 
     const span = range.untilNow
-        ? `any moment from ${formatTime(range.from)} until now. For a moment after the newest log backup, Mostly On takes a log backup first.`
+        ? `any moment from ${formatTime(range.from)} until now. For a moment after the newest log backup, Mostly-On takes a log backup first.`
         : `any moment from ${formatTime(range.from)} to ${formatTime(range.to ?? range.from)}. ${primaryName} is not reachable, so later moments are not available.`;
 
     return formDialog({
         title: `Restore ${db.name}`,
         fields: [
-            h('p', `Mostly On can restore ${db.name} to ${span}`),
+            h('p', `Mostly-On can restore ${db.name} to ${span}`),
             field(`Restore to (your time, ${offsetText(-new Date().getTimezoneOffset())})`, moment, 'Date and time, to the second, or drag the slider below.'),
             sliderBlock,
             clock,
@@ -622,7 +622,7 @@ export function databaseView(id) {
         }
     }
 
-    // DIFF and LOG backups build on a FULL: until Mostly On has one, they are greyed out.
+    // DIFF and LOG backups build on a FULL: until Mostly-On has one, they are greyed out.
     function backupMenu(db) {
         const noFull = !db.latest.FULL;
         const needsFull = noFull ? 'needs a full backup first' : null;
@@ -702,7 +702,7 @@ export function databaseView(id) {
                       'div.callout.err',
                       h('strong', 'Out-of-sync copies (diverged). '),
                       'After a failover that could not move the old primary over cleanly (no tail-log backup, or the primary was down or damaged), the old primary may hold transactions the new primary never received. ' +
-                          'Mostly On leaves such a copy alone: it never restores onto it or backs it up. Reinitialize it to make it a secondary again; a safety backup of it is taken first.',
+                          'Mostly-On leaves such a copy alone: it never restores onto it or backs it up. Reinitialize it to make it a secondary again; a safety backup of it is taken first.',
                       h(
                           'ul',
                           diverged.map((r) =>
@@ -721,7 +721,7 @@ export function databaseView(id) {
             unacked.length
                 ? h(
                       'div.callout.err',
-                      h('strong', 'Backups taken outside Mostly On were found. '),
+                      h('strong', 'Backups taken outside Mostly-On were found. '),
                       'Another tool (a maintenance plan, a backup agent, someone running BACKUP by hand) backed up this database. ' +
                           'A LOG backup like that holds transactions the secondaries never receive, so shipping stops. A FULL backup changes what DIFF backups are based on. ' +
                           'Stop the other tool, or make it use COPY_ONLY. Acknowledge each one once you have dealt with it.',

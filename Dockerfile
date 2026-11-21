@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Mostly On controller image.
+# Mostly-On controller image.
 
 # --- build stage: installs production deps; compilers are present in case
 #     better-sqlite3 has no prebuilt binary for this Node/arch combination.

@@ -40,7 +40,7 @@ export function ensureDir(server, relDir) {
             fs.mkdirSync(cur);
         } catch (err) {
             if (err.code === 'EEXIST') continue; // created meanwhile
-            throw new Error(`Mostly On cannot create the folder ${cur} on the backup share (${err.code || err.message}). Check that the share is mounted read-write for Mostly On's user (uid ${process.getuid?.() ?? '?'}).`);
+            throw new Error(`Mostly-On cannot create the folder ${cur} on the backup share (${err.code || err.message}). Check that the share is mounted read-write for Mostly-On's user (uid ${process.getuid?.() ?? '?'}).`);
         }
         try {
             fs.chmodSync(cur, 0o2770); // umask would otherwise drop group write
@@ -80,7 +80,7 @@ export function effectiveType(requested, state, db) {
     // DIFF
     const base = state.differentialBaseGuid && backups.byUuid(state.differentialBaseGuid);
     if (!base || base.file_status !== 'present' || base.database_id !== db.id) {
-        return { type: 'FULL', reason: 'a DIFF builds on the last FULL backup, and that one was not taken by Mostly On' };
+        return { type: 'FULL', reason: 'a DIFF builds on the last FULL backup, and that one was not taken by Mostly-On' };
     }
     return { type: 'DIFF', reason: null };
 }
@@ -175,7 +175,7 @@ function backupSteps({ db, server, type, relPath, sqlPath }) {
             run: async (ctx) => {
                 await P.run(
                     server.id,
-                    P.takeBackup({ db: db.name, type, path: sqlPath, name: `Mostly On ${type}`, description: `mostly-on op:${ctx.op.id}` }),
+                    P.takeBackup({ db: db.name, type, path: sqlPath, name: `Mostly-On ${type}`, description: `mostly-on op:${ctx.op.id}` }),
                     { timeoutMs: 0, onInfo: (m) => ctx.progress(m) },
                 );
                 return sqlPath;

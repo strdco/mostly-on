@@ -2,7 +2,7 @@
 //
 // Copy (pitr_copy): restores the database as it was at a moment under a new
 // name on any registered server, next to everything else. Nothing that exists
-// is touched and the copy is not managed by Mostly On.
+// is touched and the copy is not managed by Mostly-On.
 //   validate, fresh_log (only if the moment is newer than the last log
 //   backup), plan, prepare (MOVE targets with new file names), restore (FULL,
 //   DIFF, logs WITH STOPAT), recover (+ owner)
@@ -170,7 +170,7 @@ async function restoreToMoment(ctx, { key, server, name, files, at, moves, repla
     const logs = logIds ? files.logs.filter((f) => logIds.includes(f.id)) : files.logs;
     const live = async () => {
         const l = await inspect.dbRestoreState(server.id, name);
-        if (!l?.restoring) throw new Error(`${name} on ${server.name} is ${l?.state ?? 'missing'}; Mostly On expected it to be restoring`);
+        if (!l?.restoring) throw new Error(`${name} on ${server.name} is ${l?.state ?? 'missing'}; Mostly-On expected it to be restoring`);
         return l.position;
     };
     let position = await live();
@@ -369,7 +369,7 @@ function rollbackSteps({ db, primaryServer, params, holder }) {
                 const tail = P.tailLog({
                     db: db.name,
                     path: translatePath(relPath, primaryServer, pathOpts('rel', 'sql')),
-                    name: 'Mostly On tail-log (rollback)',
+                    name: 'Mostly-On tail-log (rollback)',
                     description: `mostly-on op:${ctx.op.id}`,
                     mode: 'planned',
                 });
@@ -541,7 +541,7 @@ export async function startPointInTime(databaseId, { mode, at, targetServerId, n
 function executeCopy(opId, stepDefs, db, params, target) {
     return runOperation(opId, stepDefs).then((op) => {
         if (op.status === 'succeeded') {
-            events.add('info', 'restore', `${params.newName} on ${target.name} is ready: ${db.name} as it was at ${params.at}. Mostly On does not back it up; drop it when you are done with it.`, {
+            events.add('info', 'restore', `${params.newName} on ${target.name} is ready: ${db.name} as it was at ${params.at}. Mostly-On does not back it up; drop it when you are done with it.`, {
                 databaseId: db.id,
                 serverId: target.id,
                 operationId: op.id,

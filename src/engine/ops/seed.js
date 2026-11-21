@@ -297,7 +297,7 @@ export function seedSteps({ db, target, params }) {
                     position_lsn: live.position,
                     position_fork_guid: live.forkGuid,
                 });
-                return `${target.name} is ready; Mostly On restores the log backups there from now on`;
+                return `${target.name} is ready; Mostly-On restores the log backups there from now on`;
             },
         },
     ];
@@ -347,7 +347,7 @@ function safetyBackupStep({ db, target, params }) {
                     db: db.name,
                     type: 'FULL',
                     path: sqlPathOf(relPath),
-                    name: 'Mostly On diverged copy',
+                    name: 'Mostly-On diverged copy',
                     description: `mostly-on op:${ctx.op.id} diverged`,
                     copyOnly: true,
                     continueAfterError,

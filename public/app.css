@@ -1,4 +1,4 @@
-/* Mostly On dashboard. Light/dark via color-scheme + light-dark(), with a
+/* Mostly-On dashboard. Light/dark via color-scheme + light-dark(), with a
    prefers-color-scheme fallback for browsers without light-dark(). */
 
 :root {

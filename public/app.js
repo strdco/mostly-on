@@ -115,7 +115,7 @@ async function render() {
 let navigated = false;
 function announcePage(moveFocus) {
     const heading = app.querySelector('h1')?.textContent?.trim();
-    document.title = heading ? `${heading} · Mostly On` : 'Mostly On';
+    document.title = heading ? `${heading} · Mostly-On` : 'Mostly-On';
     if (moveFocus) {
         window.scrollTo(0, 0);
         app.focus({ preventScroll: true });

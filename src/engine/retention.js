@@ -68,7 +68,7 @@ function retentionDaysFor(db) {
     const problem = checkRetention(effective);
     if (problem && !warnedInconsistent.has(db.id)) {
         warnedInconsistent.add(db.id);
-        events.add('warn', 'retention', `${db.name}: ${problem} Mostly On keeps FULL backups ${Math.max(effective.diff, effective.log)} days instead until you fix the retention settings.`, { databaseId: db.id });
+        events.add('warn', 'retention', `${db.name}: ${problem} Mostly-On keeps FULL backups ${Math.max(effective.diff, effective.log)} days instead until you fix the retention settings.`, { databaseId: db.id });
     }
     const safe = safeRetention(effective);
     return { FULL: safe.full, DIFF: safe.diff, LOG: safe.log };

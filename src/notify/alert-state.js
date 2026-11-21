@@ -138,16 +138,16 @@ export function formatBatch(notices, { publicUrl, now }) {
     let title;
     if (sorted.length === 1) {
         const n = sorted[0];
-        title = n.type === 'new' ? (n.severity === 'error' ? 'Mostly On: error' : 'Mostly On: warning') : n.type === 'reminder' ? 'Mostly On: still active' : 'Mostly On: resolved';
+        title = n.type === 'new' ? (n.severity === 'error' ? 'Mostly-On: error' : 'Mostly-On: warning') : n.type === 'reminder' ? 'Mostly-On: still active' : 'Mostly-On: resolved';
     } else {
         const parts = [];
         if (count('new')) parts.push(`${count('new')} new`);
         if (count('reminder')) parts.push(`${count('reminder')} still active`);
         if (count('resolved')) parts.push(`${count('resolved')} resolved`);
-        title = `Mostly On: ${parts.join(', ')}`;
+        title = `Mostly-On: ${parts.join(', ')}`;
     }
     // Resolved-only batches arrive quietly; anything still wrong at normal priority.
     const priority = count('new') || count('reminder') ? 0 : -1;
     const url = sorted.length === 1 && sorted[0].link ? sorted[0].link : publicUrl;
-    return { title, message: lines.join('\n'), priority, url, urlTitle: 'Open Mostly On' };
+    return { title, message: lines.join('\n'), priority, url, urlTitle: 'Open Mostly-On' };
 }

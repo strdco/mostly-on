@@ -60,7 +60,7 @@ export async function dbBackupState(serverId, dbName) {
         differentialBaseLsn: d.differential_base_lsn,
         differentialBaseGuid: guid(d.differential_base_guid),
         // Owner, as '0x...' hex and login name; ownedByService is true while a
-        // restored copy still belongs to Mostly On's own login (fixed at recovery).
+        // restored copy still belongs to Mostly-On's own login (fixed at recovery).
         ownerSid: d.owner_sid,
         ownerName: d.owner_name,
         ownedByService: !!d.owner_sid && d.owner_sid === d.service_login_sid,
@@ -68,7 +68,7 @@ export async function dbBackupState(serverId, dbName) {
 }
 
 /**
- * Whether the server is ready for Mostly On: the signed helper procedures at
+ * Whether the server is ready for Mostly-On: the signed helper procedures at
  * the version this controller needs, and the read permissions.
  * @returns {{ready: boolean, version: number|null, expected: number, problems: string[], login: string}}
  */
@@ -82,7 +82,7 @@ export function classifyHelperStatus(r) {
     const problems = [];
     const expected = P.HELPER_VERSION;
     if (r.helper_version == null) problems.push('the helper procedures are not installed.');
-    else if (r.helper_version !== expected) problems.push(`the helper procedures are version ${r.helper_version}, and this version of Mostly On needs version ${expected}.`);
+    else if (r.helper_version !== expected) problems.push(`the helper procedures are version ${r.helper_version}, and this version of Mostly-On needs version ${expected}.`);
     else if (r.signed_procedures < r.procedures) problems.push('some helper procedures were changed after setup and are no longer signed.');
     else if (!r.is_sysadmin && !r.can_execute) problems.push(`the login ${r.login_name} may not run the helper procedures.`);
     if (!r.is_sysadmin && !(r.view_server_state && r.view_any_definition && r.read_msdb)) {

@@ -1,6 +1,6 @@
 // Every privileged action (BACKUP, RESTORE, ALTER DATABASE, KILL) goes through
 // the signed helper procedures in master.mostly_on (sql/mostly-on-helpers.sql),
-// so the SQL login Mostly On uses never needs sysadmin. Read-only queries stay
+// so the SQL login Mostly-On uses never needs sysadmin. Read-only queries stay
 // in tsql.js / inspect.js.
 //
 // Each builder returns { text, params } for query() or a dedicated connection;
@@ -96,7 +96,7 @@ export function assertReady(serverId) {
     const setup = health.getHealth(serverId)?.setup;
     if (setup && !setup.ready) {
         const name = serversRepo.get(serverId)?.name ?? `server ${serverId}`;
-        throw Object.assign(new Error(`Mostly On cannot back up or restore on ${name}: ${setup.problems[0]} Run the setup script for ${name} (Servers page)`), {
+        throw Object.assign(new Error(`Mostly-On cannot back up or restore on ${name}: ${setup.problems[0]} Run the setup script for ${name} (Servers page)`), {
             status: 409,
             expose: true,
             setupProblem: true,
@@ -109,7 +109,7 @@ function explain(err, serverId) {
     const n = err?.number ?? err?.originalError?.info?.number;
     if (n !== 2812 && !(n === 229 && /mostly_on/.test(err.message))) return err;
     const name = serversRepo.get(serverId)?.name ?? `server ${serverId}`;
-    return Object.assign(new Error(`Mostly On's helper procedures are missing on ${name}, or its login may not run them. Run the setup script for ${name} (Servers page): ${err.message}`), {
+    return Object.assign(new Error(`Mostly-On's helper procedures are missing on ${name}, or its login may not run them. Run the setup script for ${name} (Servers page): ${err.message}`), {
         number: n,
         cause: err,
         setupProblem: true,

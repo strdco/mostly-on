@@ -273,7 +273,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
                 const tail = P.tailLog({
                     db: db.name,
                     path: translatePath(relPath, oldServer, pathOpts('rel', 'sql')),
-                    name: 'Mostly On tail-log',
+                    name: 'Mostly-On tail-log',
                     description: `mostly-on op:${ctx.op.id}`,
                     mode: 'planned',
                 });
@@ -406,7 +406,7 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
                         P.tailLog({
                             db: db.name,
                             path: translatePath(relPath, oldServer, pathOpts('rel', 'sql')),
-                            name: 'Mostly On forced tail-log',
+                            name: 'Mostly-On forced tail-log',
                             description: `mostly-on op:${ctx.op.id}`,
                             mode: 'forced',
                             continueAfterError,

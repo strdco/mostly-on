@@ -98,7 +98,7 @@ export function nextLog({ files, position, forkGuid = null, lineage = null }) {
         if (usable.length === 1) candidates = usable;
     }
     if (candidates.length > 1) {
-        return { status: 'broken', reason: `${candidates.length} different log backups could each be the next one to restore (${candidates.map((f) => f.rel_path).join(', ')}), so Mostly On does not guess (LSN ${position})` };
+        return { status: 'broken', reason: `${candidates.length} different log backups could each be the next one to restore (${candidates.map((f) => f.rel_path).join(', ')}), so Mostly-On does not guess (LSN ${position})` };
     }
     if (candidates.length === 1) {
         const file = candidates[0];
@@ -112,7 +112,7 @@ export function nextLog({ files, position, forkGuid = null, lineage = null }) {
     const next = later.reduce((a, b) => (L.lt(b.first_lsn, a.first_lsn) ? b : a));
     return {
         status: 'broken',
-        reason: `A log backup is missing: the next one Mostly On knows about (${next.rel_path}) starts later than where this copy stopped. Was a log backup taken by another tool? (stopped at LSN ${position}, next starts at LSN ${next.first_lsn})`,
+        reason: `A log backup is missing: the next one Mostly-On knows about (${next.rel_path}) starts later than where this copy stopped. Was a log backup taken by another tool? (stopped at LSN ${position}, next starts at LSN ${next.first_lsn})`,
     };
 }
 

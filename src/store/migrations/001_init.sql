@@ -1,4 +1,4 @@
--- Mostly On catalog, version 1.
+-- Mostly-On catalog, version 1.
 -- Conventions: timestamps are ISO-8601 UTC text, LSNs are decimal text
 -- (compared as BigInt in code, never as numbers), booleans are 0/1 integers,
 -- JSON is stored as text.

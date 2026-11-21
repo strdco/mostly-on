@@ -13,7 +13,7 @@ export function get(databaseId, forkGuid) {
     return getDb().prepare('SELECT database_id, fork_guid, parent_fork_guid, fork_point_lsn FROM forks WHERE database_id=? AND fork_guid=?').get(databaseId, forkGuid);
 }
 
-/** Records the fork a database is on when Mostly On first sees it (no parent). */
+/** Records the fork a database is on when Mostly-On first sees it (no parent). */
 export function ensureRoot(databaseId, forkGuid) {
     if (!forkGuid) return false;
     const existing = getDb().prepare('SELECT COUNT(*) FROM forks WHERE database_id=?').pluck().get(databaseId);

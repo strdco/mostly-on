@@ -1,6 +1,6 @@
 // Integration test harness: an isolated docker compose project (own name,
 // volumes, host ports and freshly generated secrets) so it never touches a
-// dev stack, an HTTP client for the Mostly On API, and direct SQL access to
+// dev stack, an HTTP client for the Mostly-On API, and direct SQL access to
 // both SQL Server containers for assertions.
 //
 // Environment:
