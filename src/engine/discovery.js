@@ -56,12 +56,11 @@ export async function scanForeign(db) {
     for (const bs of sets) {
         if (backups.byUuid(bs.backup_set_uuid) || foreign.isKnown(bs.backup_set_uuid)) continue;
 
-        if (bs.description?.startsWith('mostly-on op:') && bs.devices.length === 1 && ['FULL', 'DIFF', 'LOG'].includes(bs.type)) {
+        const own = ownBackupClaim(db, server, bs);
+        if (own) {
             // Still being recorded by its own operation: leave it alone.
-            const opId = Number(/op:(\d+)/.exec(bs.description)?.[1]);
-            if (opId && ['running', 'queued'].includes(ops.get(opId)?.status)) continue;
-            const imported = tryImportOwn(db, server, bs);
-            if (imported) {
+            if (['running', 'queued'].includes(own.op.status)) continue;
+            if (tryImportOwn(db, server, bs, own.relPath)) {
                 changed = true;
                 continue;
             }
@@ -92,13 +91,30 @@ export async function scanForeign(db) {
     if (changed) publish('database.changed', { databaseId: db.id });
 }
 
-function tryImportOwn(db, server, bs) {
+/**
+ * The operation that took a backup set described as Mostly-On's ("mostly-on
+ * op:N"), and the file's path in the catalog; null if the backup is not
+ * really Mostly-On's. Anyone who may take a backup can write that
+ * description, so it only counts if operation N is about this database and
+ * recorded this very file before taking it. Otherwise the backup is foreign.
+ */
+export function ownBackupClaim(db, server, bs) {
+    const opId = Number(/^mostly-on op:(\d+)(?: |$)/.exec(bs.description ?? '')?.[1]);
+    if (!opId || bs.devices.length !== 1 || !['FULL', 'DIFF', 'LOG'].includes(bs.type)) return null;
+    const op = ops.get(opId);
+    if (!op || op.database_id !== db.id) return null;
     let relPath;
     try {
         relPath = translatePath(bs.devices[0], server, pathOpts('sql', 'rel'));
     } catch {
-        return false;
+        return null;
     }
+    // Every operation saves the path of its backup before taking it (backup: relPath, tail-log: tailRelPath).
+    const recorded = [op.ctx?.relPath, op.ctx?.tailRelPath, op.ctx?.safetyRelPath];
+    return recorded.includes(relPath) ? { op, relPath } : null;
+}
+
+function tryImportOwn(db, server, bs, relPath) {
     if (backups.byRelPath(relPath)) return false;
     const controllerPath = translatePath(relPath, server, pathOpts('rel', 'controller'));
     if (!fs.existsSync(controllerPath)) return false;
