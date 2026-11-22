@@ -57,6 +57,9 @@ export async function recordFork(db, server, ctx) {
  */
 export function ownerNote(db, target, owner, row, { name = db.name, category = 'failover', record = true, whose = 'the owner on the old primary' } = {}) {
     if (!row) return 'owner unchanged';
+    // 'kept': the database was not restored by Mostly-On (a rollback WITH REPLACE
+    // keeps the owner), so the helper left the owner, and what is known about it, alone.
+    if (row.matched_by === 'kept') return `owner: ${row.owner_name} (unchanged)`;
     if (record) databases.noteRecoveredOwner(db.id, { ownerName: row.owner_name, matchedBy: row.matched_by });
     const wanted = owner?.owner_name;
     if (row.matched_by === 'sid' || row.matched_by === 'name') return `owner: ${row.owner_name}`;

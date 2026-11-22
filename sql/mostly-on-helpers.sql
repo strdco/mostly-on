@@ -1,5 +1,5 @@
 /*
-    Mostly-On helper procedures, version 1.
+    Mostly-On helper procedures, version 3.
 
     Mostly-On never needs a sysadmin login. Everything that needs high privileges
     (BACKUP, RESTORE, ALTER DATABASE, KILL) happens inside the procedures in the
@@ -36,6 +36,10 @@ IF (SUSER_ID(N'$(ServiceLogin)') IS NULL) BEGIN;
     RAISERROR(N'The login $(ServiceLogin) does not exist. Create it first (CREATE LOGIN), then run this script again.', 16, 1);
     SET NOEXEC ON;
 END;
+IF (SUSER_SID(ISNULL(NULLIF(N'$(FallbackOwner)', N''), N'sa'))=SUSER_SID(N'$(ServiceLogin)') AND IS_SRVROLEMEMBER(N'sysadmin', N'$(ServiceLogin)')=0) BEGIN;
+    RAISERROR(N'FallbackOwner must be another login than $(ServiceLogin): a login that owns a database can read all its data.', 16, 1);
+    SET NOEXEC ON;
+END;
 IF (N'$(BackupRoot)' NOT LIKE N'/%' AND N'$(BackupRoot)' NOT LIKE N'[A-Za-z]:\%' AND N'$(BackupRoot)' NOT LIKE N'\\%') BEGIN;
     RAISERROR(N'BackupRoot must be an absolute path, as this SQL Server sees the shared backup folder.', 16, 1);
     SET NOEXEC ON;
@@ -70,6 +74,16 @@ CREATE TABLE mostly_on.settings (
 );
 GO
 
+-- Databases recover gave to the fallback owner because their own owner had no
+-- login here. Only recover writes it; it may give these back to their owner later.
+IF (OBJECT_ID(N'mostly_on.stand_in_owners', N'U') IS NULL)
+CREATE TABLE mostly_on.stand_in_owners (
+    database_name       sysname NOT NULL,
+    family_guid         uniqueidentifier NOT NULL,               -- tells the database apart from a later one of the same name
+    CONSTRAINT PK_stand_in_owners PRIMARY KEY CLUSTERED (database_name, family_guid)
+);
+GO
+
 MERGE mostly_on.settings AS s
 USING (VALUES (1, N'$(BackupRoot)', NULLIF(NULLIF(N'$(StandbyRoot)', N''), N'default'), ISNULL(NULLIF(N'$(FallbackOwner)', N''), N'sa'))) AS v (id, backup_root, standby_root, fallback_owner)
 ON s.id=v.id
@@ -83,7 +97,7 @@ CREATE FUNCTION mostly_on.helper_version()
 RETURNS int
 AS
 BEGIN;
-    RETURN 2;
+    RETURN 3;
 END;
 GO
 
@@ -313,10 +327,14 @@ ELSE
 GO
 
 -- Brings a copy online at failover: RESTORE WITH RECOVERY (if it is still
--- restoring), MULTI_USER, then the owner. The owner is the database's own owner
--- if that login exists here (matched by SID, then by name), else the fallback
--- owner. A database created by RESTORE is otherwise owned by the login that
--- ran it, i.e. Mostly-On's. Returns the owner and how it was chosen.
+-- restoring), MULTI_USER, then the owner. A database created by RESTORE is
+-- owned by the login that ran it, i.e. Mostly-On's. Only such a database, or
+-- one this procedure earlier gave to the fallback owner as a stand-in (and
+-- that still has it), gets a new owner: the database's own owner if that
+-- login exists here (matched by SID, then by name), else the fallback owner.
+-- Any other database keeps its owner, and Mostly-On's login never becomes the
+-- owner, so this procedure cannot give Mostly-On access to any data.
+-- Returns the owner and how it was chosen.
 CREATE PROCEDURE mostly_on.recover
     @db                 sysname,
     @owner_sid          varbinary(85)=NULL,
@@ -335,26 +353,55 @@ IF ((SELECT d.user_access_desc FROM sys.databases AS d WHERE d.name=@db)!=N'MULT
 END;
 
 DECLARE @owner sysname, @matched_by varchar(10), @note nvarchar(2048);
+DECLARE @family uniqueidentifier=(SELECT rs.family_guid FROM sys.database_recovery_status AS rs WHERE rs.database_id=DB_ID(@db));
+
+-- SUSER_SID() is the caller's login: a signature adds permissions, not another identity.
+IF (NOT EXISTS (SELECT NULL FROM sys.databases AS d WHERE d.name=@db AND d.owner_sid=SUSER_SID())
+    AND NOT EXISTS (SELECT NULL
+                    FROM sys.databases AS d
+                    INNER JOIN mostly_on.stand_in_owners AS si ON si.database_name=d.name
+                    CROSS JOIN mostly_on.settings AS s
+                    WHERE d.name=@db
+                      AND si.family_guid=@family
+                      AND d.owner_sid=SUSER_SID(s.fallback_owner))) BEGIN;
+    SELECT @owner=SUSER_SNAME(d.owner_sid), @matched_by='kept'
+    FROM sys.databases AS d
+    WHERE d.name=@db;
+
+    SELECT @owner AS owner_name, @matched_by AS matched_by, @note AS note;
+    RETURN;
+END;
+
+-- The login that may not become the owner: the caller, unless it is a sysadmin anyway.
+DECLARE @self varbinary(85)=CASE WHEN IS_SRVROLEMEMBER(N'sysadmin')=1 THEN NULL ELSE SUSER_SID() END;
 
 -- Individual logins only: a Windows group cannot own a database.
 SELECT @owner=sp.name, @matched_by='sid'
 FROM sys.server_principals AS sp
 WHERE sp.sid=@owner_sid
-  AND sp.type IN ('S', 'U', 'E');
+  AND sp.type IN ('S', 'U', 'E')
+  AND (@self IS NULL OR sp.sid!=@self);
 
 IF (@owner IS NULL)
     SELECT @owner=sp.name, @matched_by='name'
     FROM sys.server_principals AS sp
     WHERE sp.name=@owner_name
-      AND sp.type IN ('S', 'U', 'E');
+      AND sp.type IN ('S', 'U', 'E')
+      AND (@self IS NULL OR sp.sid!=@self);
 
 IF (@owner IS NULL)
     SELECT @owner=s.fallback_owner, @matched_by='fallback'
     FROM mostly_on.settings AS s;
 
 BEGIN TRY;
+    IF (SUSER_SID(@owner)=@self)
+        THROW 50050, N'Mostly-On never makes its own login the owner of a database. Run the setup script again with another FallbackOwner.', 1;
     SET @sql=N'ALTER AUTHORIZATION ON DATABASE::'+QUOTENAME(@db)+N' TO '+QUOTENAME(@owner)+N';';
     EXEC sys.sp_executesql @sql;
+
+    DELETE FROM mostly_on.stand_in_owners WHERE database_name=@db;
+    IF (@matched_by='fallback' AND @family IS NOT NULL)
+        INSERT INTO mostly_on.stand_in_owners (database_name, family_guid) VALUES (@db, @family);
 END TRY
 BEGIN CATCH;
     -- The database is online either way; the owner is reported, not fatal.

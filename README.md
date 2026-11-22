@@ -227,10 +227,10 @@ Backing up, restoring, failing over and disconnecting users all need high privil
 
 What that means in practice:
 
-- **Mostly-On's login on its own can do almost nothing.** It cannot read your data, create logins, change server settings, or back up and restore anything directly.
-- **The procedures have guard rails.** They never touch system databases, and only read or write backup files inside the shared backup folder. Restored database files only go to the server's default data and log folders.
-- **They can still do what failover needs.** That includes overwriting a secondary and taking a database offline, which is the job itself. Whoever controls Mostly-On can therefore disrupt the managed databases; protect its dashboard login accordingly.
-- **Database owners are kept.** A restored database would otherwise belong to Mostly-On's login. When a copy is brought online at failover, it gets its original owner back if that login exists on the server: matched by SID first, then by name. If neither exists, it gets `sa`, and an event tells you how to fix it.
+- **Mostly-On's login on its own can do almost nothing.** It cannot read your data, create logins, change server settings, or back up and restore anything directly. (The backup files hold all your data, so protect the shared backup folder too.)
+- **The procedures have guard rails.** They never touch system databases, and only read or write backup files inside the shared backup folder. Restored database files only go to the server's default data and log folders. They never make Mostly-On's login the owner of a database, so they can't be used to read your data either.
+- **They can still do what failover needs.** That includes overwriting a database and taking one offline, which is the job itself. The procedures accept **every user database on the server**, not only the ones Mostly-On manages. Whoever controls Mostly-On (its dashboard, or its SQL login) can therefore disrupt any user database on the server; protect both accordingly.
+- **Database owners are kept.** A restored database would otherwise belong to Mostly-On's login. When a copy is brought online at failover, it gets its original owner back if that login exists on the server: matched by SID first, then by name. If neither exists, it gets `sa`, and an event tells you how to fix it; a later failover to that server gives it back to its owner once the login exists. Any other database (one that Mostly-On didn't restore or hand to `sa` itself) always keeps its owner.
 
 To set a server up:
 

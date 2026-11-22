@@ -140,6 +140,10 @@ test('1b. the restricted login can only act through the helper procedures', asyn
         /refused a file path/,
     );
     await assert.rejects(asMostlyOn('sql1', 'CREATE LOGIN sneaky WITH PASSWORD=N\'Sneaky-1!x\';'), /permission/i, 'no server-level rights of its own');
+    // recover only re-owns a copy Mostly-On restored itself, and never to its own login.
+    const [kept] = await asMostlyOn('sql1', `DECLARE @me varbinary(85)=SUSER_SID(); EXEC master.mostly_on.recover @db=N'${DB}', @owner_sid=@me, @owner_name=N'mostly_on';`);
+    assert.equal(kept.matched_by, 'kept', 'recover leaves the owner of a database it did not restore');
+    await assert.rejects(asMostlyOn('sql1', `SELECT COUNT(*) AS n FROM ${DB}.dbo.orders;`), /not able to access/i, 'still no access to the data');
 });
 
 test('2. a shipped row is on sql2 after a failover with a tail-log backup', async () => {

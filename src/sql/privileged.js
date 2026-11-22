@@ -11,7 +11,7 @@ import * as health from '../engine/health.js';
 import * as serversRepo from '../store/repos/servers.js';
 
 /** The helper procedure version this controller needs (helper_version() in the script). */
-export const HELPER_VERSION = 2;
+export const HELPER_VERSION = 3;
 
 function call(proc, params) {
     const names = Object.keys(params);
