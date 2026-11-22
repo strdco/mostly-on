@@ -82,7 +82,7 @@ services:
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Set ADMIN_PASSWORD_HASH in .env (npm run hash-password)}
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env (npm run gen-secret)}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
       TZ: ${TZ:-UTC}
       LOG_LEVEL: ${LOG_LEVEL:-info}
