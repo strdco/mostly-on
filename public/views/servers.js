@@ -46,7 +46,7 @@ function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
             field(
                 'Password',
                 h('input', { type: 'password', name: 'password', required: !isEdit, autocomplete: 'new-password' }),
-                isEdit ? 'Leave empty to keep current password.' : null,
+                isEdit ? 'Leave empty to keep the current password. Changing the host, port, instance, login or encryption settings needs it again.' : null,
             ),
         ),
         field(

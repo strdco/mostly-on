@@ -55,6 +55,15 @@ function mustGet(id) {
     return s;
 }
 
+/** Throws unless the edit v keeps the saved password with the settings it was saved with, or brings its own. */
+function requirePasswordForNewConnection(saved, v) {
+    if (v.password !== undefined) return;
+    const changed = serversRepo.changedConnectionSettings(saved, v);
+    if (changed.length) {
+        throw new HttpError(400, `Enter the password again: you changed the ${changed.join(', ')}, and Mostly-On only sends a saved password with the connection settings it was saved with.`);
+    }
+}
+
 export function serverRoutes(router, { cfg }) {
     router.get('/api/servers', async () => serversRepo.list().map(withHealth));
 
@@ -91,6 +100,7 @@ export function serverRoutes(router, { cfg }) {
         const before = mustGet(id);
         if (before.removed_at) throw new HttpError(409, `${before.name} was removed. To use it again, register it again under the same name.`);
         const v = serversRepo.validate(ctx.body || {}, { partial: true });
+        requirePasswordForNewConnection(before, v);
         if (v.name && v.name !== before.name) {
             if (serversRepo.replicaCount(id) > 0) throw new HttpError(409, 'Cannot rename a server that holds managed replicas (the name is part of backup file names)');
             const taken = serversRepo.getByName(v.name);
@@ -130,11 +140,12 @@ export function serverRoutes(router, { cfg }) {
         const body = ctx.body || {};
         let v;
         if (body.id) {
-            // Testing an edit of an existing server: fall back to the stored password.
+            // Testing an edit of an existing server: fall back to the stored password,
+            // but only with the connection settings it was saved with.
             const id = idParam(body.id);
-            const stored = serversRepo.getWithSecret(id, cfg.secretKeyBytes);
-            if (!stored) throw new HttpError(404, 'Server not found');
-            v = { ...stored, ...serversRepo.validate(body, { partial: true }) };
+            const edit = serversRepo.validate(body, { partial: true });
+            requirePasswordForNewConnection(mustGet(id), edit);
+            v = { ...serversRepo.getWithSecret(id, cfg.secretKeyBytes), ...edit };
         } else {
             v = serversRepo.validate(body);
         }

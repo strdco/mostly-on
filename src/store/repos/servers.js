@@ -104,6 +104,34 @@ export function validate(input, { partial = false } = {}) {
     return out;
 }
 
+// Where, and how safely, a password is sent. Labels are for messages.
+const CONNECTION_SETTINGS = {
+    host: 'host',
+    port: 'port',
+    instance_name: 'instance name',
+    username: 'SQL login',
+    encrypt: 'encryption',
+    trust_server_cert: 'certificate trust',
+};
+
+function connectionValue(k, value) {
+    if (k === 'encrypt' || k === 'trust_server_cert') return !!value;
+    if (k === 'host' || k === 'instance_name') return value ? String(value).toLowerCase() : null;
+    return value ?? null;
+}
+
+/**
+ * The connection settings (as labels) that v, a validated edit, changes on the
+ * saved server s. A saved password is only ever sent with the settings it was
+ * saved with: anyone who could change the host could otherwise have it sent
+ * to a server of their own.
+ */
+export function changedConnectionSettings(s, v) {
+    return Object.entries(CONNECTION_SETTINGS)
+        .filter(([k]) => v[k] !== undefined && connectionValue(k, v[k]) !== connectionValue(k, s[k]))
+        .map(([, label]) => label);
+}
+
 export function create(v, key) {
     const now = nowIso();
     const info = getDb()
