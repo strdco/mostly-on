@@ -199,10 +199,10 @@ function pauseDialog(db, r) {
         [1, 4, 12, 24].map((n) => h('option', { value: n, selected: n === 4 }, n === 1 ? '1 hour' : `${n} hours`)),
     );
     return formDialog({
-        title: `Pause restores on ${r.server_name}`,
+        title: `Pause synchronization to ${r.server_name}`,
         fields: [
             h('p', `${r.server_name} stops restoring log backups of ${db.name}, so nobody using the copy is disconnected while you look at it. Meanwhile the copy falls further behind.`),
-            field('Pause for', hours, 'Restores resume by themselves after that, or with Resume restores. Then the copy catches up to its delay.'),
+            field('Pause for', hours, 'Restores resume automatically, or with Resume sync.'),
         ],
         submitLabel: 'Pause',
         onSubmit: (v) => post(`/api/databases/${db.id}/replicas/${r.server_id}/pause`, { hours: Number(v.hours) }),
@@ -573,8 +573,8 @@ function replicaActions(db, r, reload) {
             : null,
         r.restore_delay_minutes > 0 && r.chain_state === 'ok'
             ? restoresPaused(r)
-                ? h('button', { type: 'button', onclick: async () => { await replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/resume`), `Restores on ${r.server_name} resume`); reload(); } }, 'Resume restores')
-                : h('button', { type: 'button', onclick: async () => { if (await pauseDialog(db, r)) reload(); } }, 'Pause restores…')
+                ? h('button', { type: 'button', onclick: async () => { await replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/resume`), `Restores on ${r.server_name} resume`); reload(); } }, 'Resume sync')
+                : h('button', { type: 'button', onclick: async () => { if (await pauseDialog(db, r)) reload(); } }, 'Pause sync…')
             : null,
         r.chain_state === 'needs_reseed' ? dialogButton('Reinitialize', () => reseedDialog(db, r), 'button.primary') : null,
         ['broken', 'needs_reseed'].includes(r.chain_state)

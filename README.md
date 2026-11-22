@@ -250,7 +250,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 - **Delayed secondaries.** A secondary can be kept behind on purpose, so you can look at the data as it was before a problem: set its **Restore delay** in minutes.
   - Restores a log backup only once that backup is as old as the delay, so it is between the delay and the delay plus one log backup interval behind.
   - A delayed secondary can **never** take over in a failover. To fail over to it anyway, set its delay to 0 first; the failover then restores the missing log backups itself.
-  - Only a readable (STANDBY) copy can be queried. Readers are still disconnected at every restore, so while you look at it, press **Pause restores…** (1 to 24 hours; restores resume by themselves, or with **Resume restores**).
+  - Only a readable (STANDBY) copy can be queried. Readers are still disconnected at every restore, so while you look at it, press **Pause sync** (for up to 24 hours.
   - Added or reinitialized, it starts with current data and falls behind over the first delay. A longer delay holds it until it is that far behind; a shorter one, or none, lets it catch up.
   - The backup share keeps every log backup it has not restored yet (about one delay's worth, plus any pause).
 - **Retention.** Old backup files are deleted after the number of days you set (Settings), per backup type; a database can have its own values (its page, **Backup retention**). Files a secondary still needs, and the newest complete set needed to restore each database, are always kept. FULL backups must be kept at least as long as DIFF and LOG backups, because those are useless without the FULL they build on; Mostly-On refuses settings that break this rule.

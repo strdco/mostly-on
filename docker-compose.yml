@@ -54,6 +54,14 @@ services:
       - sql2-data:/var/opt/mssql
       - backup:/var/opt/mssql/backup
 
+  sql3:
+    <<: *mssql
+    hostname: sql3
+    ports: ["${SQL3_PORT:-14333}:1433"]
+    volumes:
+      - sql3-data:/var/opt/mssql
+      - backup:/var/opt/mssql/backup
+
   # One-shot: creates the restricted login "mostly_on" on both SQL Servers and
   # installs Mostly-On's signed helper procedures (sql/mostly-on-helpers.sql),
   # so Mostly-On never needs sa. Register the servers with login mostly_on.
@@ -70,6 +78,8 @@ services:
       sql1:
         condition: service_healthy
       sql2:
+        condition: service_healthy
+      sql3:
         condition: service_healthy
     restart: "no"
 
@@ -102,3 +112,4 @@ volumes:
   controller-data:
   sql1-data:
   sql2-data:
+  sql3-data:

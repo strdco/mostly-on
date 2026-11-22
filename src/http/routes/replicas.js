@@ -127,7 +127,7 @@ export function replicaRoutes(router) {
         const hours = Number(ctx.body?.hours);
         if (!Number.isInteger(hours) || hours < 1 || hours > MAX_PAUSE_HOURS) throw new HttpError(400, `Pause for 1 to ${MAX_PAUSE_HOURS} hours`);
         const updated = databases.updateReplica(db.id, rep.server_id, { restores_paused_until: new Date(Date.now() + hours * 3_600_000).toISOString() });
-        events.add('info', 'restore', `Restores of ${db.name} on ${rep.server_name} are paused for ${hours} h. They resume by themselves after that, or with Resume restores.`, {
+        events.add('info', 'restore', `Restores of ${db.name} on ${rep.server_name} are paused for ${hours} h and will resume automatically after that.`, {
             databaseId: db.id,
             serverId: rep.server_id,
             data: { until: updated.restores_paused_until },
