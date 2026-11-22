@@ -142,8 +142,37 @@ h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
 .topbar.is-wide .site-nav { justify-content: flex-start; }
 .topbar.is-wide .site-menu { display: flex; gap: 0.25rem; }
 .topbar.is-wide .site-menu a { padding: 0.35rem 0.6rem; }
-.live { font-size: 0.8rem; color: var(--muted); }
-.live.on { color: var(--ok); }
+/* Live-update connection: a dot plus a word, so the state never rests on colour
+   alone. Quiet while online; a tinted pill while reconnecting or offline. */
+.live {
+    --live-color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid transparent; /* shows as a border in forced colours */
+    border-radius: 999px;
+    font-size: 0.875rem;
+    color: var(--text);
+}
+/* Drawn with a border, not a background, so it stays visible in forced colours. */
+.live-dot {
+    inline-size: 0;
+    block-size: 0;
+    border: 0.3125rem solid var(--live-color);
+    border-radius: 50%;
+}
+.live[data-state="online"] { --live-color: var(--ok); }
+.live[data-state="connecting"],
+.live[data-state="reconnecting"] { --live-color: var(--warn); background: var(--warn-bg); border-color: var(--warn); color: var(--warn); font-weight: 600; }
+.live[data-state="offline"] { --live-color: var(--err); background: var(--err-bg); border-color: var(--err); color: var(--err); font-weight: 600; }
+@media (prefers-reduced-motion: no-preference) {
+    .live[data-state="connecting"] .live-dot,
+    .live[data-state="reconnecting"] .live-dot { animation: live-pulse 1.2s ease-in-out infinite alternate; }
+}
+@keyframes live-pulse {
+    to { opacity: 0.35; }
+}
 @media (forced-colors: active) {
     .site-menu a[aria-current="page"] { outline: 2px solid CanvasText; }
 }

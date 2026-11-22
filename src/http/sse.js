@@ -2,6 +2,7 @@
 import { subscribe } from '../bus.js';
 
 const clients = new Set();
+const HEARTBEAT_MS = 15_000;
 
 export function clientCount() {
     return clients.size;
@@ -21,13 +22,15 @@ export function openStream(req, res, opts = {}) {
         res.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt)}\n\n`);
     };
     const unsubscribe = subscribe(send);
+    // A named event, not a comment: the page sees it, and treats a stream that
+    // stays silent well past this interval as dropped (public/app.js).
     const heartbeat = setInterval(() => {
         if (opts.stillValid && !opts.stillValid()) {
             res.end();
             return;
         }
-        res.write(': ping\n\n');
-    }, 25_000);
+        res.write('event: ping\ndata: {}\n\n');
+    }, HEARTBEAT_MS);
     const client = { res, close: () => res.end() };
     clients.add(client);
 

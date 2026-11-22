@@ -122,19 +122,92 @@ function announcePage(moveFocus) {
     }
 }
 
+// --- live updates over SSE, and the connection badge ------------------------
+// Online while the stream delivers (the server sends a ping every 15 s);
+// Reconnecting while the last contact was less than a minute ago; Offline after that.
+const liveText = liveIndicator.querySelector('.live-text');
+const LIVE_LABELS = { connecting: 'Connecting', online: 'Online', reconnecting: 'Reconnecting', offline: 'Offline' };
+const OFFLINE_AFTER_MS = 60_000;
+const SILENT_AFTER_MS = 40_000; // no ping for this long: the connection is gone, even if the browser has not noticed
+const RETRY_MS = 5000;
+const live = { status: null, lastContact: 0, offlineTimer: 0, silentTimer: 0, retryTimer: 0 };
+
+function setLiveStatus(status) {
+    if (live.status === status) return;
+    const was = live.status;
+    live.status = status;
+    liveIndicator.dataset.state = status;
+    liveText.textContent = LIVE_LABELS[status];
+    // Only lasting changes are announced; a blip of a few seconds is not.
+    if (status === 'offline') toast('Lost the connection to Mostly-On. This page is not being updated; it keeps trying to reconnect.', 'err');
+    if (status === 'online' && was === 'offline') toast('Connected to Mostly-On again. Reload the page if something looks out of date.', 'ok');
+    // The badge changed width: check that the navigation still fits on one row.
+    lastHeaderWidth = 0;
+    layoutNav();
+}
+
+function heardFromServer() {
+    live.lastContact = Date.now();
+    clearTimeout(live.offlineTimer);
+    clearTimeout(live.silentTimer);
+    live.silentTimer = setTimeout(() => {
+        lostContact();
+        restartStream(0);
+    }, SILENT_AFTER_MS);
+    setLiveStatus('online');
+}
+
+function lostContact() {
+    clearTimeout(live.silentTimer);
+    if (live.status === 'offline') return;
+    const since = Date.now() - live.lastContact;
+    if (since >= OFFLINE_AFTER_MS) {
+        setLiveStatus('offline');
+        return;
+    }
+    if (live.status !== 'connecting') setLiveStatus('reconnecting');
+    clearTimeout(live.offlineTimer);
+    live.offlineTimer = setTimeout(() => setLiveStatus('offline'), OFFLINE_AFTER_MS - since);
+}
+
+/** A new stream after `delay`, once the session is confirmed: an ended session signs out instead of retrying. */
+function restartStream(delay) {
+    state.stream?.close();
+    state.stream = null;
+    clearTimeout(live.retryTimer);
+    live.retryTimer = setTimeout(async () => {
+        if (!state.user) return;
+        try {
+            await get('/api/auth/me');
+        } catch (err) {
+            if (err.status !== 401) restartStream(RETRY_MS); // 401: api.js signs out ('auth-required')
+            return;
+        }
+        if (state.user) connectStream();
+    }, delay);
+}
+
 function connectStream() {
     if (state.stream) return;
+    clearTimeout(live.retryTimer);
+    if (!live.status) {
+        live.lastContact = Date.now();
+        setLiveStatus('connecting');
+        live.offlineTimer = setTimeout(() => setLiveStatus('offline'), OFFLINE_AFTER_MS);
+    }
     const es = new EventSource('/api/stream');
     state.stream = es;
-    es.onopen = () => {
-        liveIndicator.textContent = 'live';
-        liveIndicator.classList.add('on');
-    };
+    es.onopen = heardFromServer;
+    es.addEventListener('ping', heardFromServer);
     es.onerror = () => {
-        liveIndicator.textContent = 'reconnecting';
-        liveIndicator.classList.remove('on');
+        if (state.stream !== es) return;
+        lostContact();
+        // The browser retries by itself, except after an error response (a proxy's
+        // 502 while Mostly-On restarts, or a 401): then the stream is CLOSED for good.
+        if (es.readyState === EventSource.CLOSED) restartStream(RETRY_MS);
     };
     const dispatch = (e) => {
+        heardFromServer();
         let evt;
         try {
             evt = JSON.parse(e.data);
@@ -151,8 +224,10 @@ function connectStream() {
 function disconnectStream() {
     state.stream?.close();
     state.stream = null;
-    liveIndicator.textContent = 'offline';
-    liveIndicator.classList.remove('on');
+    clearTimeout(live.offlineTimer);
+    clearTimeout(live.silentTimer);
+    clearTimeout(live.retryTimer);
+    live.status = null; // signed out: the top bar is hidden, and the next sign-in starts at Connecting
 }
 
 function onLogin(me) {

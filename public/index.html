@@ -14,6 +14,12 @@
     <header class="topbar" id="topbar" hidden>
         <div class="topbar-inner">
             <a class="brand" href="#/">Mostly-On</a>
+            <!-- Live-update connection: Online, Reconnecting (under a minute without contact) or Offline. app.js sets data-state. -->
+            <span class="live" id="live-indicator" data-state="connecting">
+                <span class="live-dot" aria-hidden="true"></span>
+                <span class="visually-hidden">Connection:</span>
+                <span class="live-text">Connecting</span>
+            </span>
             <nav class="site-nav" aria-label="Main">
                 <!-- Narrow: the list is a popover opened by this button. Wide: app.js removes
                      the popover attribute and the list sits inline. -->
@@ -27,7 +33,6 @@
                     <li><a href="#/settings">Settings</a></li>
                 </ul>
             </nav>
-            <span class="live" id="live-indicator">offline</span>
             <button type="button" class="link" id="logout">Sign out</button>
         </div>
     </header>
