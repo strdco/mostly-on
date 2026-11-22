@@ -1,20 +1,24 @@
 # Mostly-On
 
-Backups and log shipping for **SQL Server Express**, with failover at the click of a button.
+SQL Server backup and log shipping for people who don't have SQL Server Agent or just don't have the patience for shell scripts and cron jobs.
 
-SQL Server Express has no SQL Server Agent and no built-in high availability. Mostly-On is a small controller, running in its own container, that takes over that job:
+SQL Server Express Edition has no SQL Server Agent, and for anything less than Enterprise Edition, you won't have out-of-the-box high availability. Mostly-On is a small orchestrator, running in its own container, that takes care of that:
 
-- It **backs up** your databases on a schedule (FULL, DIFF and LOG), with checksums, to a shared backup folder.
-- It **ships** every log backup to one or more **secondary** servers, which keep an up-to-date copy of the database.
-- When the primary server needs maintenance or has failed, you **fail over** to a secondary from the dashboard.
-- It **alerts** you (Pushover) when something needs attention, and keeps quiet when nothing does.
+- **Backing up** your databases on a schedule (FULL, DIFF and LOG), with checksums, to a shared backup folder.
+- **Shipping logs** to one or more secondary servers, keeping an up-to-date copy of the database.
+- **Failing over** your databases to a secondary replica if the primary server needs maintenance or has failed, directly from the dashboard.
+- **Alerting** (using [Pushover](https://pushover.net/)) when something needs your attention.
 
 What it deliberately does **not** do:
 
 - **No automatic failover.** A person always decides.
 - **No login or job sync.** Server-level objects (logins, linked servers, ...) are yours to keep in step.
-- **No client redirection.** After a failover, point your applications at the new primary yourself (connection string, DNS alias, ...).
-- **No high availability for the controller.** If the Mostly-On container is down, nothing is backed up or shipped until it is back. It is built to restart safely, though.
+- **No client redirection.** After a failover, you need to point your applications at the new primary yourself (connection string, DNS alias, virtual IP, ...).
+- **No high availability for the orchestrator itself.** If the Mostly-On container is down, nothing is backed up or shipped until it is back. It is built to restart safely, though. You need to make sure your container restarts automatically.
+
+> [!WARNING]
+> This project was largely vibe-coded and is in early beta. Please test it properly
+> before deploying to important or sensitive environments.
 
 Contents: [Quick start](#quick-start-demo) · [Deploying](#deploying) · [The shared backup folder](#the-shared-backup-folder) · [Configuration](#configuration) · [SQL Server requirements](#sql-server-requirements) · [How it works](#how-it-works) · [Failover, step by step](#failover-step-by-step) · [Upgrading](#upgrading) · [Development and tests](#development-and-tests) · [Known limitations](#known-limitations)
 
@@ -53,7 +57,7 @@ The included `docker-compose.yml` starts two SQL Server Express containers (`sql
 
    The first start of SQL Server takes a minute or two.
 
-4. Open <http://localhost:8080> and sign in as `admin`.
+4. Open <http://localhost:8080> (or the hostname your container runs under) and sign in as `admin`.
 
 5. On **Servers**, register both SQL Servers:
 
@@ -77,13 +81,18 @@ From then on Mostly-On backs the database up on schedule and keeps `sql2` up to 
 
 A production setup has three parts:
 
-1. **Your SQL Server Express instances** (containers or not), version 2019 or newer.
+1. **Your SQL Server instances** (containers or not), version 2019 or newer.
 2. **One shared backup folder** that every SQL Server and the Mostly-On container can read and write, typically a network share or a shared volume.
 3. **The Mostly-On container**, with:
    - a persistent volume at `/data` for its catalog (settings, history, operation journal);
    - the shared backup folder mounted, by default at `/backup`;
    - network access to each SQL Server's port (1433 by default; for a named instance found through SQL Server Browser, also UDP 1434);
    - the environment variables below.
+
+> [!IMPORTANT]
+> Using container volumes is critical to persisting Mostly-On's metadata and catalog.
+> If you don't use persistent volumes, all this data will be lost when you update the
+> Docker image.
 
 Use `docker-compose.yml` as a template: drop the two `sql` services if your SQL Servers run elsewhere, and keep `restart: unless-stopped` so the controller comes back after a reboot.
 
@@ -200,7 +209,7 @@ Everything is set through environment variables (see `.env.example`). Everything
 
 ## SQL Server requirements
 
-- **SQL Server 2019 or newer.** Express is what Mostly-On is made for; other editions work too.
+- **SQL Server 2019 or newer.** Express Edition is what Mostly-On is made for; all other editions work too.
 - Databases you ship must use the **FULL recovery model**. To switch one: `ALTER DATABASE [name] SET RECOVERY FULL;`
 - **Each server needs Mostly-On's setup script, run once by a sysadmin.** Mostly-On's own login does *not* need sysadmin (see below).
 - Secondaries that should be **readable between restores** (STANDBY) need the same major SQL Server version as the primary.
@@ -235,7 +244,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 
 ## How it works
 
-- **Backups.** Each managed database has a FULL, DIFF and LOG schedule (by default: FULL weekly, DIFF daily, LOG every 5 minutes), editable on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express cannot compress).
+- **Backups.** Each managed database has a FULL, DIFF and LOG schedule (by default: FULL weekly, DIFF daily, LOG every 5 minutes), editable on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression).
 - **Shipping.** After every log backup, each secondary restores it (`WITH NORECOVERY`, or `STANDBY` for a readable copy). Readers of a readable copy are disconnected when a restore is due, so the copy stays current. "Behind" on the dashboard is how old the newest data on a secondary is.
 - **Stopped shipping.** If a log backup a secondary needs is missing, or SQL Server refuses it, Mostly-On stops shipping to that secondary and tells you why. It never skips ahead or guesses. Put the file back and press **Try again**, or **Reinitialize** the secondary (a fresh copy from the primary).
 - **Retention.** Old backup files are deleted after the number of days you set (Settings), per backup type; a database can have its own values (its page, **Backup retention**). Files a secondary still needs, and the newest complete set needed to restore each database, are always kept. FULL backups must be kept at least as long as DIFF and LOG backups, because those are useless without the FULL they build on; Mostly-On refuses settings that break this rule.
@@ -372,10 +381,12 @@ It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards 
 
 ## Known limitations
 
+> [!IMPORTANT]
+> This is not an enterprise-grade high-availability solution, nor is it a professional monitoring solution.
+
 - **No automatic failover, no login sync, no client redirection.** These are out of scope by design; see the top of this file.
-- **The controller is a single point of failure for shipping.** While it is down, no backups are taken and nothing ships. The databases themselves keep running, and everything catches up when it returns.
+- **The controller is a single point of failure.** While it is down, no backups are taken and nothing ships. The databases themselves keep running, and everything catches up when it returns.
 - **SQL Server 2019 or newer only.** Readable (STANDBY) secondaries need the same major version as the primary, and a secondary cannot run an older major version than its primary.
 - **A short window during a failover with a tail-log backup.** Between disconnecting everyone (`SINGLE_USER`) and taking the tail-log backup, another program can grab the one allowed connection. The step then fails with "database is in use"; **Resume** tries again.
 - **Backup times around daylight-saving changes.** SQL Server records backup times in the server's local time. Mostly-On converts them with the server's current UTC offset, so in the hour around a DST change, lag and "last backup" times can be off by an hour. Backups and restores themselves are not affected.
 - **Point-in-time restore and time zones.** SQL Server reads the moment in the local time of the server that wrote the log backup. Mostly-On converts it with that server's current UTC offset, so a moment within the hour around a DST change can be off by an hour; check the copy before relying on it.
-- **No database size monitoring.** Express's 10 GB data limit is not tracked by Mostly-On; watch it with your usual monitoring.
