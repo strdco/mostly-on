@@ -78,6 +78,19 @@ test('the catalog keeps the delay through a reseed, but never on a primary', () 
     closeDb();
 });
 
+test('a readable copy\'s undo file is forgotten when it starts over (reinitialize, role swap)', () => {
+    const { s1, s2, db } = setup();
+    const undo = { standby_undo_file: '/var/opt/mssql/data/Sales.20261101T000000Z.tuf' };
+    databases.updateReplica(db.id, s2.id, undo);
+    assert.equal(databases.replica(db.id, s2.id).standby_undo_file, undo.standby_undo_file);
+    databases.addSecondary({ databaseId: db.id, serverId: s2.id, restoreMode: 'standby' });
+    assert.equal(databases.replica(db.id, s2.id).standby_undo_file, null, 'reinitialized: it starts a new undo file');
+    databases.updateReplica(db.id, s2.id, undo);
+    databases.swapPrimary(db.id, { newPrimaryId: s2.id, oldPrimaryId: s1.id, oldPrimaryRole: 'secondary' });
+    assert.equal(databases.replica(db.id, s2.id).standby_undo_file, null);
+    closeDb();
+});
+
 test('a delayed secondary is never a failover target', async () => {
     const { s2, s3, db } = setup();
     assert.match(restoreDelayProblem(databases.replica(db.id, s3.id)), /sql3 is kept 12 h behind on purpose \(restore delay\), so it can never take over/);

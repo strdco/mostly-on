@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { nextLog, lag, chainGap, retentionPlan } from '../../src/engine/chain.js';
-import { buildMoves, undoFilePath, classifyRestoreError, backoffMs } from '../../src/engine/restore-plan.js';
+import { buildMoves, undoFilePath, standbyUndoFile, classifyRestoreError, backoffMs } from '../../src/engine/restore-plan.js';
 import { checkLive } from '../../src/engine/restore-loop.js';
 
 let nextId = 1;
@@ -139,6 +139,29 @@ test('STANDBY undo file goes to standby_root, else the default data path', () =>
     assert.equal(undoFilePath({ standby_root: null, default_data_path: '/data/' }, 'Sales'), '/data/Sales.tuf');
     assert.match(undoFilePath({ default_data_path: '/data' }, '../x y'), /^\/data\/[^/]+~[0-9a-f]{8}\.tuf$/, 'unsafe names are sanitized and cannot escape the directory');
     assert.throws(() => undoFilePath({ name: 'x' }, 'Sales'), /no standby path/);
+});
+
+// SQL Server lets a login that is not sysadmin reuse a readable copy's current undo
+// file or create a new one, but not overwrite one an earlier copy left behind.
+test('a readable copy keeps its undo file; one that starts over gets a new one', () => {
+    const server = { name: 'sql2', standby_root: null, default_data_path: '/var/opt/mssql/data/' };
+    const now = Date.parse('2026-11-22T18:15:30.123Z');
+    const pick = (standby, recorded) => standbyUndoFile({ server, dbName: 'Sales', live: { standby }, recorded, now });
+    const fresh = '/var/opt/mssql/data/Sales.20261122T181530Z.tuf';
+    // Not readable yet (added, reinitialized, rolled back, switched to readable): always a new file,
+    // even if one is recorded or the plain <db>.tuf is lying around.
+    assert.equal(pick(false, null), fresh);
+    assert.equal(pick(false, '/var/opt/mssql/data/Sales.20261101T000000Z.tuf'), fresh);
+    assert.equal(standbyUndoFile({ server, dbName: 'Sales', live: null, recorded: null, now }), fresh, 'state unknown: a new file is always safe');
+    // Readable: the file it uses now.
+    assert.equal(pick(true, '/var/opt/mssql/data/Sales.20261101T000000Z.tuf'), '/var/opt/mssql/data/Sales.20261101T000000Z.tuf');
+    assert.equal(pick(true, null), '/var/opt/mssql/data/Sales.tuf', 'a copy made before this was recorded uses the plain name');
+    // The standby folder setting changed: a new file in the new folder.
+    assert.equal(pick(true, '/old/undo/Sales.tuf'), fresh);
+    // Windows paths.
+    const win = { name: 'w', standby_root: 'D:\\Undo' };
+    assert.equal(standbyUndoFile({ server: win, dbName: 'Sales', live: { standby: true }, recorded: 'D:\\Undo\\Sales.20261101T000000Z.tuf', now }), 'D:\\Undo\\Sales.20261101T000000Z.tuf');
+    assert.equal(standbyUndoFile({ server: win, dbName: 'Sales', live: { standby: false }, recorded: null, now }), 'D:\\Undo\\Sales.20261122T181530Z.tuf');
 });
 
 test('restore errors are classified by SQL error number, including preceding errors', () => {

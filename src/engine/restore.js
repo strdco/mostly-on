@@ -82,13 +82,14 @@ export async function assertSameBackup(server, file, sqlPath = translatePath(fil
  * classifyRestoreError() result.
  *
  * @param {{db:object, server:object, file:object, operationId?:number|null, mode?:'norecovery'|'standby',
- *          moves?:{from:string,to:string}[], replace?:boolean, onInfo?:(m:string)=>void}} p
+ *          undo?:string|null, moves?:{from:string,to:string}[], replace?:boolean, onInfo?:(m:string)=>void}} p
+ *   undo: the STANDBY undo file (restore-plan.js standbyUndoFile(); the restore loop picks it).
  */
-export async function restoreFile({ db, server, file, operationId = null, mode = 'norecovery', moves = [], replace = false, onInfo }) {
+export async function restoreFile({ db, server, file, operationId = null, mode = 'norecovery', undo = null, moves = [], replace = false, onInfo }) {
     const sqlPath = translatePath(file.rel_path, server, pathOpts('rel', 'sql'));
     let c;
     if (file.type === 'LOG') {
-        c = P.restoreLog({ db: db.name, path: sqlPath, undo: mode === 'standby' ? undoFilePath(server, db.name) : null });
+        c = P.restoreLog({ db: db.name, path: sqlPath, undo: mode === 'standby' ? (undo ?? undoFilePath(server, db.name)) : null });
     } else if (file.type === 'FULL' || file.type === 'DIFF') {
         c = P.restoreDatabase({ db: db.name, path: sqlPath, moves, replace });
     } else {

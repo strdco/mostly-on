@@ -363,6 +363,42 @@ test('5d. a delayed secondary holds back young logs, can never take over, and ca
     assert.equal(r.restore_delay_minutes, 0);
 });
 
+test('5e. a readable secondary stays readable after it is reinitialized', async () => {
+    const primary = await primaryName();
+    const secondary = primary === 'sql1' ? 'sql2' : 'sql1';
+    const url = `/api/databases/${dbId}/replicas/${ids[secondary]}`;
+    const readable = async () => (await replica(secondary)).live?.isInStandby === true;
+    try {
+        await api.put(url, { restore_mode: 'standby' });
+        await insertRow(primary, 'readable before');
+        await shipTo(secondary);
+        await waitFor(`${DB} readable on ${secondary}`, readable, { timeout: 60_000 });
+        const first = (await replica(secondary)).standby_undo_file;
+        assert.match(first, /\.\d{8}T\d{6}Z\.tuf$/, 'switched to readable: a new undo file');
+
+        // Reinitializing restores a FULL over the readable copy and leaves its undo file behind.
+        // SQL Server refuses to overwrite that file for a login that is not sysadmin, so the
+        // copy must start another one, or it never becomes readable again (error 3441).
+        const { operation } = await api.post(`${url}/reseed`, { confirm: DB, safety_backup: false, source: 'new_full', restore_mode: 'standby' });
+        await succeeded(api.waitOp(operation.id));
+        await insertRow(primary, 'readable after reinitializing');
+        await shipTo(secondary);
+        await waitFor(`${DB} readable on ${secondary} again`, readable, { timeout: 60_000 });
+        const second = (await replica(secondary)).standby_undo_file;
+        assert.notEqual(second, first, 'a new undo file after reinitializing');
+        assert.equal(await rowCount(secondary, 'readable after reinitializing'), 1, 'readers can query the newest data');
+
+        // Readable from restore to restore: the copy keeps the undo file it uses.
+        await insertRow(primary, 'readable, next log');
+        await shipTo(secondary);
+        assert.equal((await replica(secondary)).standby_undo_file, second);
+        assert.equal(await rowCount(secondary, 'readable, next log'), 1);
+    } finally {
+        await api.put(url, { restore_mode: 'norecovery' });
+    }
+    await shipTo(secondary); // back to not readable for the tests that follow
+});
+
 test('6. one notification per problem, none re-sent after a restart', async () => {
     const unreachable = (m) => m.message.includes('Server sql2 is unreachable') && !m.message.includes('RESOLVED');
     const resolved = (m) => m.message.includes('RESOLVED') && m.message.includes('Server sql2 is unreachable');

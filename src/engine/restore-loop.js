@@ -29,7 +29,7 @@ import * as L from '../lsn.js';
 import * as forks from '../store/repos/forks.js';
 import { nextLog, lag, lineageProblem } from './chain.js';
 import { restoreFile, confirmOnDisk } from './restore.js';
-import { backoffMs, logDueAt, isPaused } from './restore-plan.js';
+import { backoffMs, logDueAt, isPaused, standbyUndoFile } from './restore-plan.js';
 import { tryAcquire, exclusiveWaiting } from './locks.js';
 import { subscribe, publish } from '../bus.js';
 import { sqlErrorText } from '../sql/pool.js';
@@ -204,8 +204,16 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
         if (yieldToExclusive && exclusiveWaiting(db.id)) return result('yield', at);
         lastFileId = file.id;
         onProgress?.(`Restoring ${file.rel_path} on ${server.name}`);
+        const restoreMode = mode || rep.restore_mode;
+        let undo = null;
+        if (restoreMode === 'standby') {
+            // Readable: keep its undo file, or start a new one if it is not readable yet. Recorded
+            // first; an interrupted restore leaves the copy unreadable, so it simply starts another.
+            undo = standbyUndoFile({ server, dbName: db.name, live, recorded: rep.standby_undo_file });
+            if (undo !== rep.standby_undo_file) rep = databases.updateReplica(db.id, server.id, { standby_undo_file: undo });
+        }
         try {
-            await restoreFile({ db, server, file, operationId, mode: mode || rep.restore_mode });
+            await restoreFile({ db, server, file, operationId, mode: restoreMode, undo });
         } catch (err) {
             if (err.restoreKind === 'already_applied') continue;
             // Someone reconnected in the instant between the disconnect and the restore: try again shortly.

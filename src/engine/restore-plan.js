@@ -96,11 +96,42 @@ export function inPlaceMoves(fileList, current, target) {
         .map(({ from, to }) => ({ from, to }));
 }
 
-/** STANDBY undo file for a database on a server (SQL Server path). */
-export function undoFilePath(server, dbName) {
+/**
+ * STANDBY undo file for a database on a server (SQL Server path): <db>.tuf, or
+ * <db>.<stamp>.tuf for a new one (see standbyUndoFile()).
+ */
+export function undoFilePath(server, dbName, stamp = null) {
     const dir = server.standby_root || server.default_data_path;
     if (!dir) throw new Error(`Server ${server.name} has no standby path and has not reported its default data path`);
-    return sqlPathApi(dir).join(dir, `${safeName(dbName)}.tuf`);
+    return sqlPathApi(dir).join(dir, `${safeName(dbName)}${stamp ? `.${stamp}` : ''}.tuf`);
+}
+
+/**
+ * The undo file for the next STANDBY log restore on a readable copy.
+ *
+ * SQL Server lets a login that is not sysadmin reuse the copy's current undo
+ * file or create a new one, but refuses to overwrite a file an earlier copy
+ * left behind (error 3441, "its standby file was inaccessible", OS error
+ * 1244), and nothing inside SQL Server can delete it. So:
+ *  - a copy that is readable now keeps the file it uses: `recorded`, or for
+ *    a copy made before this was recorded, the plain <db>.tuf it always used;
+ *  - a copy that is not readable yet (just added, reinitialized, rolled back,
+ *    switched to readable) starts a new file, <db>.<UTC time>.tuf.
+ * A recorded file outside the current standby folder (the folder setting
+ * changed) is replaced by a new one too; a readable copy may switch to a new
+ * file at any restore.
+ *
+ * @param {{server:object, dbName:string, live:{standby:boolean}|null, recorded:string|null, now?:number}} p
+ */
+export function standbyUndoFile({ server, dbName, live, recorded, now = Date.now() }) {
+    const current = undoFilePath(server, dbName);
+    if (live?.standby) {
+        const api = sqlPathApi(current);
+        if (!recorded) return current;
+        if (api.dirname(recorded) === api.dirname(current)) return recorded;
+    }
+    const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z'); // 20261122T181530Z
+    return undoFilePath(server, dbName, stamp);
 }
 
 /** Every SQL error number in an mssql error (including preceding errors). */
