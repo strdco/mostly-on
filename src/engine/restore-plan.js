@@ -1,5 +1,5 @@
 // Pure helpers for restores (no I/O): MOVE targets, STANDBY undo files,
-// classification of RESTORE errors and retry backoff.
+// classification of RESTORE errors, retry backoff, and restore delays.
 import { safeName, sqlPathApi } from '../paths.js';
 
 const SAFE_FILE_RE = /^[A-Za-z0-9_.-]{1,120}$/;
@@ -139,4 +139,30 @@ const BACKOFF_S = [30, 60, 120, 300, 600, 900];
 /** Delay before retry number `failures` (1-based). */
 export function backoffMs(failures) {
     return BACKOFF_S[Math.min(Math.max(failures, 1), BACKOFF_S.length) - 1] * 1000;
+}
+
+// --- restore delay and pause (a secondary kept deliberately behind) -----------------
+
+/** Longest restore delay a secondary may have: 7 days. */
+export const MAX_RESTORE_DELAY_MINUTES = 7 * 24 * 60;
+/** Longest pause of a delayed secondary: the share keeps every log it has not restored. */
+export const MAX_PAUSE_HOURS = 24;
+
+/**
+ * Epoch ms from which a log backup may be restored on a secondary kept
+ * `delayMinutes` behind (0: right away). Measured from when the backup
+ * finished; a catalog row without that time falls back to when it was
+ * recorded (never earlier). With no time at all it is due now: a delayed
+ * copy must never stall for good.
+ */
+export function logDueAt(file, delayMinutes) {
+    if (!(delayMinutes > 0)) return 0;
+    const t = Date.parse(file?.backup_finish ?? file?.created_at ?? '');
+    return Number.isFinite(t) ? t + delayMinutes * 60_000 : 0;
+}
+
+/** Whether a secondary's restores are paused at `now` (epoch ms). */
+export function isPaused(rep, now = Date.now()) {
+    const until = Date.parse(rep?.restores_paused_until ?? '');
+    return Number.isFinite(until) && until > now;
 }

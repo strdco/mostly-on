@@ -8,6 +8,7 @@
 //   dbstate:<db>:<srv>    not ONLINE on the primary / not RESTORING (or STANDBY) on a secondary
 //   chain:<db>:<srv>      shipping stopped: chain broken or reseed needed
 //   lag:<db>:<srv>        a secondary is further behind than its LOG interval plus alerts.lag_threshold_minutes
+//                         (plus its restore delay; none while its restores are paused or catching up)
 //   restore:<db>:<srv>    the last restore attempt on a secondary failed
 //   backup:<db>:<TYPE>    the last backup of a type failed and none succeeded since
 //   foreign:<uuid>        a backup Mostly-On did not take
@@ -85,7 +86,7 @@ export function collectConditions() {
 
     const thresholdMinutes = settings.get('alerts.lag_threshold_minutes');
     for (const db of databases.list()) {
-        const limits = lagLimits(schedules.get(db.id, 'LOG'), thresholdMinutes);
+        const logSchedule = schedules.get(db.id, 'LOG');
         const reps = databases.replicas(db.id);
         const busy = holders(db.id).includes('exclusive');
         const primary = reps.find((r) => r.role === 'primary');
@@ -123,14 +124,16 @@ export function collectConditions() {
                 add(ref(r, { key: `dbstate:${db.id}:${r.server_id}`, kind: 'db_state', severity: 'error', message: `${db.name} on the secondary ${r.server_name} is ${stateText} instead of receiving (RESTORING)` }));
             }
             const l = lags.get(r.server_id);
-            if (primary && reachable.has(primary.server_id) && l?.seconds != null && l.seconds > limits.alert) {
+            const limits = lagLimits(logSchedule, thresholdMinutes, r.restore_delay_minutes);
+            // Paused, or catching up after a pause or a lowered delay (restores_paused_until set): behind on purpose.
+            if (primary && reachable.has(primary.server_id) && !r.restores_paused_until && l?.seconds != null && l.seconds > limits.alert) {
                 add(ref(r, {
                     key: `lag:${db.id}:${r.server_id}`,
                     kind: 'lag',
                     severity: 'warn',
                     message:
                         `${db.name} on ${r.server_name} is ${formatDuration(l.seconds)} behind (${plural(l.files ?? 0, 'log')} not restored yet). ` +
-                        `Expected: at most ${formatDuration(limits.logMinutes * 60)} (one log backup interval) plus the ${formatDuration(thresholdMinutes * 60)} threshold.`,
+                        `Expected: at most ${limits.delayMinutes ? `its ${formatDuration(limits.delayMinutes * 60)} restore delay plus ` : ''}${formatDuration(limits.logMinutes * 60)} (one log backup interval) plus the ${formatDuration(thresholdMinutes * 60)} threshold.`,
                 }));
             }
             const [last] = restores.list({ databaseId: db.id, serverId: r.server_id, limit: 1 });

@@ -2,7 +2,7 @@ import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, fo
 import { get, post } from '../api.js';
 import { activeAlertsCallout } from './alerts.js';
 import { stopManagingBlocker, stopManagingDialog } from './database.js';
-import { lagLimits } from './lag.js';
+import { lagLimits, delayText, restoresPaused } from './lag.js';
 
 // Database states in words; the SQL Server name stays in brackets where it is a problem.
 const STATE_TEXT = {
@@ -32,10 +32,14 @@ export function stateBadge(live, role) {
     return badge(stateText(live, role), stateExpected(live, role) ? 'ok' : 'err');
 }
 
-/** What a copy's state means, for its role (role: primary, secondary or diverged). */
-export function stateHelp(live, role) {
+/**
+ * What a copy's state means, for its role (role: primary, secondary or diverged).
+ * delayMinutes: the secondary's restore delay (a delayed copy never takes over).
+ */
+export function stateHelp(live, role, delayMinutes = 0) {
     if (!live) return 'Mostly-On could not read the state of this copy: the server is unreachable, or the database is missing there.';
-    if (live.isInStandby) return 'A read-only copy: people can run read-only queries (reports) on it between restores. Everyone using it is disconnected each time a log backup is restored.';
+    const kept = role === 'secondary' && delayMinutes > 0 ? ` It is kept ${delayText(delayMinutes)} behind on purpose (restore delay), so it never takes over in a failover.` : '';
+    if (live.isInStandby) return `A read-only copy: people can run read-only queries (reports) on it between restores. Everyone using it is disconnected each time a log backup is restored.${kept}`;
     switch (live.state) {
         case 'ONLINE':
             if (role === 'primary') return 'Online: your applications can read and write it. This is how the primary should be.';
@@ -44,6 +48,7 @@ export function stateHelp(live, role) {
         case 'RESTORING':
             if (role === 'primary') return 'Not online: applications cannot use the database. A failover or restore may have stopped halfway; check Operations.';
             if (role === 'diverged') return 'Restoring and not in use. Reinitialize it to make it a secondary again.';
+            if (kept) return `Receiving: SQL Server restores the primary's log backups into this copy. Nobody can query it.${kept}`;
             return 'Receiving: SQL Server restores the primary\'s log backups into this copy. Nobody can query it; it is ready to take over in a failover. This is how a secondary should be.';
         case 'OFFLINE':
             if (role === 'diverged') return 'Offline, so nothing can write to this old copy. Reinitialize it to make it a secondary again.';
@@ -62,9 +67,9 @@ export function stateHelp(live, role) {
 }
 
 /** stateBadge() with its meaning as a tooltip. */
-export function stateTipBadge(live, role) {
-    if (!live) return tipBadge('unknown', '', stateHelp(live, role));
-    return tipBadge(stateText(live, role), stateExpected(live, role) ? 'ok' : 'err', stateHelp(live, role));
+export function stateTipBadge(live, role, delayMinutes = 0) {
+    if (!live) return tipBadge('unknown', '', stateHelp(live, role, delayMinutes));
+    return tipBadge(stateText(live, role), stateExpected(live, role) ? 'ok' : 'err', stateHelp(live, role, delayMinutes));
 }
 
 /** Age badge for a last-backup timestamp against an expected interval (minutes). */
@@ -113,41 +118,56 @@ export function chainBadge(r) {
 
 /**
  * How far behind the primary a secondary's data is (age of the newest restored
- * log backup), plus log backups still waiting, coloured against the database's
- * lag limits (lag.js: its LOG interval plus the alert threshold).
+ * log backup), plus log backups still waiting, coloured against its lag limits
+ * (lag.js: its LOG interval, its restore delay, plus the alert threshold).
+ * rep: the replica, for its pause. Paused or catching up: behind on purpose, no colour.
  */
-function lagKind(lag, limits) {
+function lagKind(lag, limits, rep) {
+    if (rep?.restores_paused_until) return '';
     return lag.seconds > limits.alert ? 'err' : lag.seconds > limits.warn ? 'warn' : 'ok';
 }
 
-function lagText(lag) {
+function lagText(lag, limits, rep) {
+    if (limits?.delayMinutes) return `${formatDuration(lag.seconds)} behind · ${restoresPaused(rep) ? 'paused' : `delay ${delayText(limits.delayMinutes)}`}`;
     const waiting = lag.files ? ` · ${lag.files} log backup${lag.files === 1 ? '' : 's'} to restore` : '';
     return `${formatDuration(lag.seconds)} behind${waiting}`;
 }
 
-export function lagBadge(lag, limits) {
+export function lagBadge(lag, limits, rep = null) {
     if (!lag || lag.seconds === null) return badge('behind: unknown');
-    return badge(lagText(lag), lagKind(lag, limits));
+    return badge(lagText(lag, limits, rep), lagKind(lag, limits, rep));
 }
 
 const minutesText = (m) => (m < 60 ? `${m} min` : `${+(m / 60).toFixed(1)} h`);
 
 /** lagBadge() with what it means as a tooltip: where the data ends, and when it counts as too far behind. */
-export function lagTipBadge(lag, limits) {
+export function lagTipBadge(lag, limits, rep = null) {
     if (!lag || lag.seconds === null) {
         return tipBadge('behind: unknown', '', 'Mostly-On cannot tell yet how far behind this copy is: no log backup has been restored on it yet.');
     }
     const parts = [];
+    const delay = limits.delayMinutes;
+    if (delay) parts.push(`This copy is kept ${delayText(delay)} behind on purpose (restore delay): it restores a log backup only once that backup is ${delayText(delay)} old.`);
+    if (restoresPaused(rep)) parts.push(`Its restores are paused until ${formatTime(rep.restores_paused_until)}, so nobody using it is disconnected meanwhile.`);
+    else if (rep?.restores_paused_until) parts.push('It is catching up after a pause or a smaller delay.');
     const finish = lag.lastRestored?.backup_finish;
     parts.push(
         finish
             ? `The newest data on this copy is from ${formatTime(finish)}: when the last log backup restored here was taken.`
             : `The newest data on this copy is ${formatDuration(lag.seconds)} old.`,
     );
-    parts.push(lag.files ? `${lag.files} newer log backup${lag.files === 1 ? ' is' : 's are'} waiting to be restored.` : 'Every log backup taken so far has been restored here.');
-    const normal = limits.logMinutes ? `Up to ${minutesText(limits.logMinutes)} is normal (the time between log backups). ` : '';
-    parts.push(`${normal}It turns amber after ${minutesText(limits.warn / 60)}, and red with an alert after ${minutesText(limits.alert / 60)}.`);
-    return tipBadge(lagText(lag), lagKind(lag, limits), parts.join(' '));
+    const n = lag.files;
+    if (!n) parts.push('Every log backup taken so far has been restored here.');
+    else if (delay) parts.push(`${n} newer log backup${n === 1 ? ' is' : 's are'} waiting until ${n === 1 ? 'it is' : 'they are'} old enough.`);
+    else parts.push(`${n} newer log backup${n === 1 ? ' is' : 's are'} waiting to be restored.`);
+    if (rep?.restores_paused_until) {
+        parts.push('No lag alert while its restores are paused or catching up.');
+    } else {
+        const normalMin = limits.logMinutes + (delay || 0);
+        const normal = normalMin ? `Up to ${minutesText(normalMin)} is normal (${delay ? 'its delay plus ' : ''}the time between log backups). ` : '';
+        parts.push(`${normal}It turns amber after ${minutesText(limits.warn / 60)}, and red with an alert after ${minutesText(limits.alert / 60)}.`);
+    }
+    return tipBadge(lagText(lag, limits, rep), lagKind(lag, limits, rep), parts.join(' '));
 }
 
 export function expectedMinutes(schedule) {
@@ -174,8 +194,8 @@ export function dbHealth(d, alerts, thresholdMinutes) {
         if (r.role === 'diverged') flag(1, `out-of-sync copy on ${r.server_name} needs reinitializing`);
         if (r.role !== 'secondary') continue;
         if (['broken', 'needs_reseed'].includes(r.chain_state)) flag(2, `shipping to ${r.server_name} stopped`);
-        else if (r.chain_state === 'ok' && r.lag?.seconds != null) {
-            const limits = lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), thresholdMinutes);
+        else if (r.chain_state === 'ok' && r.lag?.seconds != null && !r.restores_paused_until) {
+            const limits = lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), thresholdMinutes, r.restore_delay_minutes);
             if (r.lag.seconds > limits.alert) flag(2, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
             else if (r.lag.seconds > limits.warn) flag(1, `${r.server_name} is ${formatDuration(r.lag.seconds)} behind`);
         }
@@ -277,7 +297,7 @@ export function overviewView() {
                                           stateBadge(r.live, r.role),
                                           ' ',
                                           r.chain_state === 'ok' && r.role === 'secondary' && !r.lag?.loop?.failures
-                                              ? lagBadge(r.lag, lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), threshold))
+                                              ? lagBadge(r.lag, lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), threshold, r.restore_delay_minutes), r)
                                               : chainBadge(r),
                                       ),
                                   )

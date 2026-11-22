@@ -8,11 +8,14 @@ import * as events from '../../store/repos/events.js';
 import * as opsRepo from '../../store/repos/operations.js';
 import * as inspect from '../../sql/inspect.js';
 import { sqlErrorText } from '../../sql/pool.js';
-import { acquire, BusyError } from '../locks.js';
+import { acquire, BusyError, holders, exclusiveWaiting } from '../locks.js';
 import { nudgeDatabase } from '../restore-loop.js';
 import { startBackup, recordBackupFile } from '../backup.js';
 import { translatePath } from '../../paths.js';
 import { pathOpts } from '../context.js';
+import { delayText } from '../../../public/views/lag.js';
+
+export { delayText };
 
 export const LOCK_WAIT_MS = 30 * 60_000;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -68,6 +71,37 @@ export function assertStillApplies(db, op, primaryIds) {
     if (why) {
         throw new Error(`The roles of ${db.name} changed: ${why}. Continuing could leave two copies taking changes, so this operation stops here. Mark it resolved, and start a new one if it is still needed.`);
     }
+}
+
+/**
+ * Why a replica may not become the primary because of its restore delay, or
+ * null. A delayed copy is kept behind on purpose and is never a failover
+ * target; once its delay is removed, a failover restores the missing logs itself.
+ */
+export function restoreDelayProblem(rep) {
+    if (!rep || rep.role === 'primary' || !(rep.restore_delay_minutes > 0)) return null;
+    return `${rep.server_name} is kept ${delayText(rep.restore_delay_minutes)} behind on purpose (restore delay), so it can never take over. ` +
+        'Remove its delay first (Settings); a failover then restores the missing log backups itself.';
+}
+
+const FAILOVERS = ['planned_failover', 'forced_failover'];
+
+/**
+ * Why a restore delay may not be set on a secondary right now, or null: while
+ * a failover or rollback holds or waits for the database's exclusive lock, or
+ * while a failover to that server has not finished (it could still be
+ * resumed). Lowering or removing a delay is never blocked; callers check and
+ * update without an await in between.
+ */
+export function restoreDelayChangeBlocker(db, rep) {
+    if (holders(db.id).includes('exclusive') || exclusiveWaiting(db.id)) {
+        return `A failover or rollback of ${db.name} is running. Set the delay once it has finished.`;
+    }
+    const open = opsRepo
+        .list({ databaseId: db.id, status: ['queued', 'running', 'failed', 'interrupted'], limit: 1000 })
+        .find((o) => FAILOVERS.includes(o.type) && o.server_id === rep.server_id);
+    if (open) return `Failover #${open.id} to ${rep.server_name} has not finished. Resume it or mark it resolved (Operations page) first.`;
+    return null;
 }
 
 /** Records the fork the recovered copy is on as a child of the lineage tip. */

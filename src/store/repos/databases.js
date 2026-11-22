@@ -54,7 +54,7 @@ export function setFamilyGuid(id, familyGuid) {
 
 const REPLICA_COLS = `r.database_id, r.server_id, s.name AS server_name, r.role, r.chain_state, r.chain_reason,
     r.restore_mode, r.position_lsn, r.position_fork_guid, r.last_restored_file_id,
-    r.last_restored_at, r.updated_at`;
+    r.last_restored_at, r.updated_at, r.restore_delay_minutes, r.restores_paused_until`;
 
 export function replicas(databaseId) {
     return getDb()
@@ -88,6 +88,7 @@ export function replicasOnServer(serverId) {
 /**
  * Adds a server as a secondary in state 'seeding', or puts an existing
  * secondary back into 'seeding' (reseed). Never touches a primary.
+ * A reseeded copy keeps its restore delay; any pause ends.
  */
 export function addSecondary({ databaseId, serverId, restoreMode }) {
     return tx(() => {
@@ -99,7 +100,7 @@ export function addSecondary({ databaseId, serverId, restoreMode }) {
                 .prepare(
                     `UPDATE database_replicas SET role='secondary', chain_state='seeding', chain_reason=NULL, restore_mode=?,
                         position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL,
-                        last_restored_at=NULL, updated_at=? WHERE database_id=? AND server_id=?`,
+                        last_restored_at=NULL, restores_paused_until=NULL, updated_at=? WHERE database_id=? AND server_id=?`,
                 )
                 .run(restoreMode, now, databaseId, serverId);
         } else {
@@ -114,7 +115,10 @@ export function addSecondary({ databaseId, serverId, restoreMode }) {
     });
 }
 
-const REPLICA_PATCHABLE = ['chain_state', 'chain_reason', 'restore_mode', 'position_lsn', 'position_fork_guid', 'last_restored_file_id', 'last_restored_at'];
+const REPLICA_PATCHABLE = [
+    'chain_state', 'chain_reason', 'restore_mode', 'position_lsn', 'position_fork_guid', 'last_restored_file_id', 'last_restored_at',
+    'restore_delay_minutes', 'restores_paused_until',
+];
 
 /** Updates any subset of the replica's shipping fields. */
 export function updateReplica(databaseId, serverId, patch) {
@@ -136,6 +140,7 @@ export function updateReplica(databaseId, serverId, patch) {
 /**
  * Failover role change in one transaction: `newPrimaryId` becomes primary,
  * the old primary becomes `oldPrimaryRole` ('secondary' or 'diverged').
+ * Neither keeps a restore delay or a pause (a delayed copy never becomes primary).
  */
 export function swapPrimary(databaseId, { newPrimaryId, oldPrimaryId, oldPrimaryRole, oldPrimaryPatch = {} }) {
     return tx(() => {
@@ -144,7 +149,8 @@ export function swapPrimary(databaseId, { newPrimaryId, oldPrimaryId, oldPrimary
         getDb()
             .prepare(
                 `UPDATE database_replicas SET role=?, chain_state='ok', chain_reason=NULL, restore_mode='norecovery',
-                    position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL, last_restored_at=NULL, updated_at=?
+                    position_lsn=NULL, position_fork_guid=NULL, last_restored_file_id=NULL, last_restored_at=NULL,
+                    restore_delay_minutes=0, restores_paused_until=NULL, updated_at=?
                  WHERE database_id=? AND server_id=?`,
             )
             .run(oldPrimaryRole, now, databaseId, oldPrimaryId);
@@ -152,7 +158,7 @@ export function swapPrimary(databaseId, { newPrimaryId, oldPrimaryId, oldPrimary
         getDb()
             .prepare(
                 `UPDATE database_replicas SET role='primary', chain_state='ok', chain_reason=NULL, position_lsn=NULL, position_fork_guid=NULL,
-                    updated_at=? WHERE database_id=? AND server_id=?`,
+                    restore_delay_minutes=0, restores_paused_until=NULL, updated_at=? WHERE database_id=? AND server_id=?`,
             )
             .run(now, databaseId, newPrimaryId);
         return replicas(databaseId);

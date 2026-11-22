@@ -25,6 +25,7 @@ function targetProblem(databaseId, to) {
     if (!rep) return `no copy on ${to.name}`;
     if (rep.role === 'diverged') return `the copy on ${to.name} is out of sync`;
     if (rep.role !== 'secondary') return `${to.name} is not a secondary`;
+    if (rep.restore_delay_minutes > 0) return `the copy on ${to.name} is kept behind on purpose (restore delay)`;
     if (rep.chain_state === 'seeding') return `the copy on ${to.name} is still being set up`;
     if (rep.chain_state === 'needs_reseed') return `the copy on ${to.name} needs reinitializing`;
     if (rep.chain_state !== 'ok') return `shipping to ${to.name} has stopped`;

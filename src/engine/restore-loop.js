@@ -11,6 +11,9 @@
 //  - A database that was recovered, dropped or replaced on the secondary is
 //    marked "needs_reseed".
 //  - Any other error is retried with backoff.
+//  - A secondary with a restore delay only restores a log once that backup is
+//    as old as the delay, and none while its restores are paused (pass() only;
+//    failovers restore everything). A delayed copy is never a failover target.
 //
 // Passes are triggered by finished backups (bus) and by a poll timer. Each
 // pass holds the restore:<serverId> lock, so a seed or failover on that
@@ -26,7 +29,7 @@ import * as L from '../lsn.js';
 import * as forks from '../store/repos/forks.js';
 import { nextLog, lag, lineageProblem } from './chain.js';
 import { restoreFile, confirmOnDisk } from './restore.js';
-import { backoffMs } from './restore-plan.js';
+import { backoffMs, logDueAt, isPaused } from './restore-plan.js';
 import { tryAcquire, exclusiveWaiting } from './locks.js';
 import { subscribe, publish } from '../bus.js';
 import { sqlErrorText } from '../sql/pool.js';
@@ -137,14 +140,17 @@ export function checkLive(db, server, live) {
  * holds the restore:<server> or the exclusive lock. Used by the restore loop
  * and by failovers (catch-up, applying the tail).
  *
- * @param {{db:object, server:object, mode?:'norecovery'|'standby', operationId?:number|null, onProgress?:(t:string)=>void}} p
+ * @param {{db:object, server:object, mode?:'norecovery'|'standby', operationId?:number|null, onProgress?:(t:string)=>void, honorDelay?:boolean}} p
  *   mode overrides the replica's restore mode (failovers always use NORECOVERY).
  *   Every log restore disconnects anyone reading a STANDBY copy first.
- * @returns {Promise<{status:'caught_up'|'broken'|'reseed'|'stopped'|'readers'|'yield'|'more', reason?:string, restored:number,
+ *   honorDelay (the restore loop only): stop at a log younger than the
+ *   replica's restore delay ('delayed', with dueAt) or while it is paused
+ *   ('paused'). Failovers leave it off: a failover restores every log there is.
+ * @returns {Promise<{status:'caught_up'|'broken'|'reseed'|'stopped'|'readers'|'yield'|'more'|'delayed'|'paused', reason?:string, restored:number,
  *           position:string|null, forkGuid:string|null, lastFile:object|null}>}
  *   Throws on errors that are worth retrying (connection, unexpected SQL errors).
  */
-export async function applyAvailableLogs({ db, server, mode = null, operationId = null, onProgress, yieldToExclusive = false }) {
+export async function applyAvailableLogs({ db, server, mode = null, operationId = null, onProgress, yieldToExclusive = false, honorDelay = false }) {
     let lastFileId = null;
     let lastFile = null;
     let restored = 0;
@@ -185,6 +191,14 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
             throw new Error(`Restoring ${file.rel_path} did not move ${db.name} on ${server.name} past LSN ${live.position}`);
         }
         if (!(await confirmOnDisk(file))) return result('broken', { ...at, reason: `The next log backup ${file.rel_path} is missing from the backup volume.` });
+
+        // Kept behind on purpose: wait until the log is as old as the delay (after
+        // the on-disk check, so a missing file is still reported right away).
+        if (honorDelay) {
+            if (isPaused(rep)) return result('paused', at);
+            const dueAt = logDueAt(file, rep.restore_delay_minutes);
+            if (dueAt > Date.now()) return result('delayed', { ...at, dueAt });
+        }
 
         // A failover is waiting for this database: stop between files; it restores the rest itself.
         if (yieldToExclusive && exclusiveWaiting(db.id)) return result('yield', at);
@@ -227,7 +241,7 @@ async function pass(dbId, serverId, w) {
     if (!release) return; // a seed or failover owns this secondary; the poll comes back
     w.lastPassAt = nowIso();
     try {
-        const r = await applyAvailableLogs({ db, server, yieldToExclusive: true });
+        const r = await applyAvailableLogs({ db, server, yieldToExclusive: true, honorDelay: true });
         if (r.status === 'broken') return stopShipping(db, server, 'broken', r.reason);
         if (r.status === 'reseed') return stopShipping(db, server, 'needs_reseed', r.reason);
         if (r.status === 'stopped' || r.status === 'yield') return;
@@ -238,6 +252,15 @@ async function pass(dbId, serverId, w) {
         }
         if (r.status === 'more') w.again = true;
         const restored = r.restored;
+        // 'delayed' and 'paused' are not failures: the next poll checks again.
+        // Back where its delay says after a pause or a lowered delay: lag alerts apply again.
+        if (r.status === 'delayed' || r.status === 'caught_up') {
+            const now = databases.replica(dbId, serverId);
+            if (now?.restores_paused_until && !isPaused(now)) {
+                databases.updateReplica(dbId, serverId, { restores_paused_until: null });
+                changed(db, server);
+            }
+        }
 
         if (w.failures) {
             events.add('info', 'restore', `Log shipping of ${db.name} to ${server.name} is working again`, { databaseId: db.id, serverId: server.id });

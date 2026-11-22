@@ -25,3 +25,14 @@ test('with LOG backups switched off, only the threshold counts', () => {
     assert.equal(logIntervalMinutes({ enabled: false, kind: 'interval', interval_minutes: 5 }), 0);
     assert.equal(lagLimits(undefined, 30).alert, 30 * 60);
 });
+
+test('a secondary kept behind on purpose adds its restore delay to both limits', () => {
+    const l = lagLimits(every(5), 30, 720);
+    assert.equal(l.delayMinutes, 720);
+    assert.equal(l.logMinutes, 5, 'the log interval itself is unchanged');
+    assert.equal(l.warn, (720 + 5 + 15) * 60);
+    assert.equal(l.alert, (720 + 5 + 30) * 60);
+    // About 12 h 5 min behind, which is normal for it: no colour, no alert.
+    assert.ok((720 + 5) * 60 < l.warn);
+    assert.deepEqual(lagLimits(every(5), 30, 0), lagLimits(every(5), 30), 'no delay: as before');
+});

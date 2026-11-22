@@ -33,7 +33,7 @@ import { withDedicated } from '../../sql/pool.js';
 import { createOperation, runOperation } from '../operations.js';
 import { applyAvailableLogs, checkLive, nudgeDatabase } from '../restore-loop.js';
 import { ensureDir, uniqueRelPath } from '../backup.js';
-import { fail, errText, lockHolder, recordFork, ownerNote, firstLogStep, catalogTail, assertStillApplies, LOCK_GUIDANCE } from './shared.js';
+import { fail, errText, lockHolder, recordFork, ownerNote, firstLogStep, catalogTail, assertStillApplies, restoreDelayProblem, LOCK_GUIDANCE } from './shared.js';
 import { reachable, lineageProblem, lag, onLineage } from '../chain.js';
 import { restoreCompatibility } from '../../sqlversion.js';
 import { translatePath, backupRelDir } from '../../paths.js';
@@ -64,6 +64,8 @@ function loadTopology(databaseId, targetServerId) {
     if (!target.enabled) throw fail(409, `Server ${target.name} is disabled; enable it before failing over to it`);
     const rep = databases.replica(db.id, target.id);
     if (!rep || rep.role !== 'secondary') throw fail(409, `${target.name} is not a secondary of ${db.name}`);
+    const delayed = restoreDelayProblem(rep); // never a failover to a copy kept behind on purpose
+    if (delayed) throw fail(409, delayed);
     return { db, primary, oldServer: serversRepo.get(primary.server_id), target, rep };
 }
 
@@ -190,9 +192,13 @@ function lockStep(holder, db, oldServer, target) {
             await holder.acquire(ctx);
             // The primary is the old one, or the target once this failover swapped the roles.
             assertStillApplies(db, ctx.op, [oldServer.id, target.id]);
-            if (!['secondary', 'primary'].includes(databases.replica(db.id, target.id)?.role)) {
+            const rep = databases.replica(db.id, target.id);
+            if (!['secondary', 'primary'].includes(rep?.role)) {
                 throw new Error(`${target.name} no longer holds a working secondary of ${db.name}, so it cannot take over. Mark this operation resolved.`);
             }
+            // A delay set after this failover stopped: resuming must not promote the copy (null once it is the primary).
+            const delayed = restoreDelayProblem(rep);
+            if (delayed) throw new Error(`${delayed} Then resume, or mark this operation resolved.`);
             return 'Backups, restores and retention of this database are paused until the roles are swapped';
         },
     };

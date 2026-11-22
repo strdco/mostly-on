@@ -5,7 +5,7 @@ import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
 import { retentionProblem } from './retention.js';
-import { lagLimits } from './lag.js';
+import { lagLimits, delayText, restoresPaused } from './lag.js';
 
 function editSchedule(db, s) {
     return scheduleDialog({
@@ -47,10 +47,15 @@ function restoreModeFields({ mode = 'norecovery' } = {}) {
     return { select, fields: [modeField] };
 }
 
-/** The mode description for tables. */
+/** The mode description for tables, with a restore delay and pause. */
 function modeText(r) {
-    return r.restore_mode === 'standby' ? `${MODE_LABEL.standby}; readers are disconnected at each restore` : MODE_LABEL.norecovery;
+    const mode = r.restore_mode === 'standby' ? `${MODE_LABEL.standby}; readers are disconnected at each restore` : MODE_LABEL.norecovery;
+    if (!(r.restore_delay_minutes > 0)) return mode;
+    const paused = restoresPaused(r) ? `; restores paused until ${formatTime(r.restores_paused_until)}` : '';
+    return `${mode}; kept ${delayText(r.restore_delay_minutes)} behind${paused}`;
 }
+
+const MAX_DELAY_MINUTES = 7 * 24 * 60; // src/engine/restore-plan.js MAX_RESTORE_DELAY_MINUTES
 
 async function seedDialog(db) {
     // Servers that already hold a copy are handled from their row in the Replicas table (Reinitialize).
@@ -168,12 +173,48 @@ async function seedDialog(db) {
 
 function settingsDialog(db, r) {
     const rm = restoreModeFields({ mode: r.restore_mode });
+    const delay = h('input', { type: 'number', name: 'restore_delay_minutes', min: 0, max: MAX_DELAY_MINUTES, step: 1, inputmode: 'numeric', value: r.restore_delay_minutes || 0 });
     return formDialog({
         title: `Shipping to ${r.server_name}`,
-        fields: [...rm.fields, h('p.muted', 'Changes apply from the next log restore.')],
+        fields: [
+            ...rm.fields,
+            field(
+                'Restore delay (minutes)',
+                delay,
+                'Keeps this copy behind on purpose, so you can look at older data: for example, 120 keeps it 2 hours behind; 0 means no delay. ' +
+                    'A delayed copy can never take over in a failover, and only a readable copy can be queried.',
+            ),
+            h('p.muted', 'Changes apply from the next log restore.'),
+        ],
         onSubmit: (v) =>
-            put(`/api/databases/${db.id}/replicas/${r.server_id}`, { restore_mode: v.restore_mode }),
+            put(`/api/databases/${db.id}/replicas/${r.server_id}`, { restore_mode: v.restore_mode, restore_delay_minutes: Number(v.restore_delay_minutes || 0) }),
     });
+}
+
+/** Hold the restores of a delayed copy while someone looks at it. */
+function pauseDialog(db, r) {
+    const hours = h(
+        'select',
+        { name: 'hours' },
+        [1, 4, 12, 24].map((n) => h('option', { value: n, selected: n === 4 }, n === 1 ? '1 hour' : `${n} hours`)),
+    );
+    return formDialog({
+        title: `Pause restores on ${r.server_name}`,
+        fields: [
+            h('p', `${r.server_name} stops restoring log backups of ${db.name}, so nobody using the copy is disconnected while you look at it. Meanwhile the copy falls further behind.`),
+            field('Pause for', hours, 'Restores resume by themselves after that, or with Resume restores. Then the copy catches up to its delay.'),
+        ],
+        submitLabel: 'Pause',
+        onSubmit: (v) => post(`/api/databases/${db.id}/replicas/${r.server_id}/pause`, { hours: Number(v.hours) }),
+    });
+}
+
+/** A delayed copy is never a failover target: a greyed-out Failover button that says why. */
+function delayedFailoverButton(r) {
+    const button = h('button.primary', { type: 'button', 'aria-disabled': 'true' }, 'Failover');
+    const tip = tooltip(button, `${r.server_name} is kept ${delayText(r.restore_delay_minutes)} behind on purpose, so it can never take over. To fail over to it, set its restore delay to 0 first (Settings).`);
+    button.addEventListener('click', () => tip.show());
+    return [button, tip.tip];
 }
 
 function removeDialog(db, r) {
@@ -402,7 +443,8 @@ async function pointInTimeDialog(db) {
         field('Restore to', serverSelect, ''),
         field('Name of the restored database', nameInput, 'Letters, digits, _ and -.'),
     );
-    const secondaries = range.secondaries.map((s) => s.name);
+    const delayed = (db.replicas || []).filter((r) => r.role === 'secondary' && r.restore_delay_minutes > 0).map((r) => r.server_name);
+    const secondaries = range.secondaries.map((s) => s.name).filter((n) => !delayed.includes(n)); // delayed ones get their own line
     const rollbackGroup = h(
         'fieldset.plain',
         { hidden: true, disabled: true },
@@ -415,6 +457,13 @@ async function pointInTimeDialog(db) {
                 h('li', 'If you might need some of those changes, restore a copy as it is now first, before rolling back.'),
                 secondaries.length
                     ? h('li', `${secondaries.join(' and ')} ${secondaries.length === 1 ? 'is restored to the same moment and then continues' : 'are restored to the same moment and then continue'} as usual. A secondary that cannot be restored is marked for reinitializing.`)
+                    : null,
+                delayed.length
+                    ? h(
+                          'li',
+                          `${delayed.join(' and ')} ${delayed.length === 1 ? 'is' : 'are'} kept behind on purpose (restore delay), and the rollback brings ${delayed.length === 1 ? 'it' : 'them'} to the same moment too: ` +
+                              `the older data ${delayed.length === 1 ? 'it shows' : 'they show'} now is replaced. To keep that view, restore a copy as it was then first.`,
+                      )
                     : null,
             ),
         ),
@@ -517,7 +566,16 @@ function replicaActions(db, r, reload) {
     }
     return h(
         'div.actions',
-        ['ok', 'broken'].includes(r.chain_state) ? dialogButton('Failover', () => failoverDialog(db, r), 'button.primary') : null,
+        ['ok', 'broken'].includes(r.chain_state)
+            ? r.restore_delay_minutes > 0
+                ? delayedFailoverButton(r)
+                : dialogButton('Failover', () => failoverDialog(db, r), 'button.primary')
+            : null,
+        r.restore_delay_minutes > 0 && r.chain_state === 'ok'
+            ? restoresPaused(r)
+                ? h('button', { type: 'button', onclick: async () => { await replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/resume`), `Restores on ${r.server_name} resume`); reload(); } }, 'Resume restores')
+                : h('button', { type: 'button', onclick: async () => { if (await pauseDialog(db, r)) reload(); } }, 'Pause restores…')
+            : null,
         r.chain_state === 'needs_reseed' ? dialogButton('Reinitialize', () => reseedDialog(db, r), 'button.primary') : null,
         ['broken', 'needs_reseed'].includes(r.chain_state)
             ? h('button', { type: 'button', onclick: () => replicaAction(() => post(`/api/databases/${db.id}/replicas/${r.server_id}/recheck`), `Trying ${r.server_name} again`) }, 'Try again')
@@ -776,7 +834,7 @@ export function databaseView(id) {
                 columns: [
                     { label: 'Server', header: true, cell: (r) => h('a', { href: `#/servers/${r.server_id}` }, r.server_name) },
                     { label: 'Role', cell: (r) => ROLE_TEXT[r.role] || r.role },
-                    { label: 'State', cell: (r) => stateTipBadge(r.live, r.role) },
+                    { label: 'State', cell: (r) => stateTipBadge(r.live, r.role, r.restore_delay_minutes) },
                     { label: 'Reachable', cell: (r) => (r.reachable ? badge('yes', 'ok') : badge('no', 'err')) },
                     {
                         label: 'Shipping',
@@ -792,7 +850,7 @@ export function databaseView(id) {
                         label: 'Copy',
                         cell: (r) => (r.role === 'secondary' ? modeText(r) : ''),
                     },
-                    { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagTipBadge(r.lag, lagLimits(db.schedules.find((s) => s.backup_type === 'LOG'), threshold)) : '') },
+                    { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagTipBadge(r.lag, lagLimits(db.schedules.find((s) => s.backup_type === 'LOG'), threshold, r.restore_delay_minutes), r) : '') },
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },
                 ],
             }),

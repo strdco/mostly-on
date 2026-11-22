@@ -247,11 +247,17 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 - **Backups.** Each managed database has a FULL, DIFF and LOG schedule (by default: FULL weekly, DIFF daily, LOG every 5 minutes), editable on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression).
 - **Shipping.** After every log backup, each secondary restores it (`WITH NORECOVERY`, or `STANDBY` for a readable copy). Readers of a readable copy are disconnected when a restore is due, so the copy stays current. "Behind" on the dashboard is how old the newest data on a secondary is.
 - **Stopped shipping.** If a log backup a secondary needs is missing, or SQL Server refuses it, Mostly-On stops shipping to that secondary and tells you why. It never skips ahead or guesses. Put the file back and press **Try again**, or **Reinitialize** the secondary (a fresh copy from the primary).
+- **Delayed secondaries.** A secondary can be kept behind on purpose, so you can look at the data as it was before a problem: set its **Restore delay** in minutes.
+  - Restores a log backup only once that backup is as old as the delay, so it is between the delay and the delay plus one log backup interval behind.
+  - A delayed secondary can **never** take over in a failover. To fail over to it anyway, set its delay to 0 first; the failover then restores the missing log backups itself.
+  - Only a readable (STANDBY) copy can be queried. Readers are still disconnected at every restore, so while you look at it, press **Pause restores…** (1 to 24 hours; restores resume by themselves, or with **Resume restores**).
+  - Added or reinitialized, it starts with current data and falls behind over the first delay. A longer delay holds it until it is that far behind; a shorter one, or none, lets it catch up.
+  - The backup share keeps every log backup it has not restored yet (about one delay's worth, plus any pause).
 - **Retention.** Old backup files are deleted after the number of days you set (Settings), per backup type; a database can have its own values (its page, **Backup retention**). Files a secondary still needs, and the newest complete set needed to restore each database, are always kept. FULL backups must be kept at least as long as DIFF and LOG backups, because those are useless without the FULL they build on; Mostly-On refuses settings that break this rule.
 - **Alerts.** Mostly-On alerts you once when a problem starts, reminds you every few hours while it lasts, and sends one notice when it is resolved. Alerts cover:
   - a server is unreachable;
   - a database is not in the state it should be;
-  - shipping has stopped, or a secondary is too far behind. "Too far" counts on top of the database's own log backup interval: with logs every 15 minutes and a threshold of 10 (Settings), it alerts once a secondary's newest data is more than 25 minutes old, so waiting for the next log backup never alerts;
+  - shipping has stopped, or a secondary is too far behind. "Too far" counts on top of the database's own log backup interval: with logs every 15 minutes and a threshold of 10 (Settings), it alerts once a secondary's newest data is more than 25 minutes old, so waiting for the next log backup never alerts. A delayed secondary's delay counts on top as well, and it never alerts while its restores are paused or catching up;
   - a backup or restore failed;
   - a backup was taken outside Mostly-On;
   - an old primary is out of sync, or is accepting writes (split brain);
@@ -265,6 +271,8 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 ## Failover, step by step
 
 Press **Failover** on a secondary's row. The dialog shows how many log backups the secondary still needs and offers one choice: **Perform tail log backup**.
+
+A secondary with a restore delay is never a failover target: its **Failover** button is greyed out, and Mostly-On refuses any failover to it, including resuming one that stopped. Set its delay to 0 first if it really has to take over.
 
 ### With a tail-log backup (no data lost)
 
@@ -300,7 +308,7 @@ When the old primary comes back, use **Take offline** if applications might stil
 For server maintenance, press **Fail over databases…** on a server's page and pick the server to move them to. The list only offers servers that hold a working secondary of at least one of the databases, with how many each covers ("sql2: 3 of 5 databases").
 
 - Every database with a working secondary on the chosen server moves, one at a time, each with a tail-log backup so nothing is lost. The old server becomes its secondary.
-- The dialog lists the databases that stay behind and why (no copy there, shipping stopped, still being set up). They stay unavailable while the old server is down: run it again with another server, or fail them over from their own pages.
+- The dialog lists the databases that stay behind and why (no copy there, shipping stopped, still being set up, kept behind on purpose). They stay unavailable while the old server is down: run it again with another server, or fail them over from their own pages.
 - If the chosen server runs a newer SQL Server version, the old server cannot receive its log backups afterwards; the dialog warns about this per database.
 - If one failover fails, the rest wait; resume the batch once it is fixed.
 - The button is greyed out, with the reason in a tooltip, while the server is unreachable or none of its databases has a working secondary elsewhere.
@@ -328,7 +336,7 @@ Puts the managed database itself back to that moment, on the primary and on ever
 2. Disconnect all users and take a **tail-log backup** on the primary: every change up to now goes into the backups, and the database accepts no changes until the rollback is done.
 3. Restore the primary to the moment (`REPLACE`, `STOPAT`), bring it online, give it its owner back and let users in.
 4. Record that the database continues on a new branch of its history, as after a failover.
-5. Restore each secondary to the same moment, so it can follow the new branch. A secondary that cannot be restored (for example because it is unreachable) is marked for reinitializing.
+5. Restore each secondary to the same moment, so it can follow the new branch. A secondary that cannot be restored (for example because it is unreachable) is marked for reinitializing. A delayed secondary is restored to the moment too, so the older data it showed is replaced; its delay builds up again afterwards.
 6. Take the first log backup; shipping and the schedules continue from there.
 
 The tail-log backup and the other backups from after the moment stay on the share until retention deletes them. However, the dashboard only offers moments on the database's current branch of history, so it cannot undo a rollback. **If you might need any of the changes made after the moment, restore a copy as it is now first, then roll back.**
@@ -389,4 +397,5 @@ It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards 
 - **SQL Server 2019 or newer only.** Readable (STANDBY) secondaries need the same major version as the primary, and a secondary cannot run an older major version than its primary.
 - **A short window during a failover with a tail-log backup.** Between disconnecting everyone (`SINGLE_USER`) and taking the tail-log backup, another program can grab the one allowed connection. The step then fails with "database is in use"; **Resume** tries again.
 - **Backup times around daylight-saving changes.** SQL Server records backup times in the server's local time. Mostly-On converts them with the server's current UTC offset, so in the hour around a DST change, lag and "last backup" times can be off by an hour. Backups and restores themselves are not affected.
+- **Delayed readable secondaries are not readable for a while after reinitializing or a rollback.** Those restores cannot leave the copy readable, so it stays `RESTORING` until its next log backup is old enough (up to the delay plus one log backup interval). Around a DST change, a delay can also be an hour longer or shorter, for the reason above.
 - **Point-in-time restore and time zones.** SQL Server reads the moment in the local time of the server that wrote the log backup. Mostly-On converts it with that server's current UTC offset, so a moment within the hour around a DST change can be off by an hour; check the copy before relying on it.

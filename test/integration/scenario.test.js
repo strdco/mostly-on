@@ -319,6 +319,50 @@ test('5c. a rollback puts the database back to a moment; the secondary follows',
     assert.equal(r.lag.files, 0, 'caught up');
 });
 
+test('5d. a delayed secondary holds back young logs, can never take over, and catches up once the delay is removed', async () => {
+    const primary = await primaryName();
+    const secondary = primary === 'sql1' ? 'sql2' : 'sql1';
+    const url = `/api/databases/${dbId}/replicas/${ids[secondary]}`;
+    let relPath;
+    const restored = async () => (await api.get(`/api/databases/${dbId}/restores?limit=20`)).some((r) => r.server_name === secondary && r.rel_path === relPath && r.outcome === 'success');
+    try {
+        assert.equal((await api.put(url, { restore_delay_minutes: 60 })).restore_delay_minutes, 60);
+        await insertRow(primary, 'while delayed');
+        relPath = (await logBackup()).ctx.relPath;
+        await sleep(15_000); // the backup's own nudge, plus a few restore polls
+        assert.equal(await restored(), false, 'a log younger than the delay is not restored');
+        const r = await replica(secondary);
+        assert.equal(r.chain_state, 'ok', 'waiting is not a failure');
+        assert.ok(r.lag.files >= 1, 'the held-back log is counted as waiting');
+
+        // Never a failover target, whichever way, and nothing changes.
+        const refused = (err) => err.status === 409 && /restore delay/.test(err.message);
+        await assert.rejects(api.get(`/api/databases/${dbId}/failover-preview?server_id=${ids[secondary]}`), refused);
+        await assert.rejects(api.post(`/api/databases/${dbId}/failover`, { server_id: ids[secondary], tail_log: true }), refused);
+        await assert.rejects(api.post(`/api/databases/${dbId}/failover`, { server_id: ids[secondary], tail_log: false, accept_data_loss: true }), refused);
+        const plan = await api.get(`/api/servers/${ids[primary]}/switchover-plan?to=${ids[secondary]}`);
+        assert.match(plan.databases.find((d) => d.name === DB).problem, /restore delay/);
+        assert.equal(await primaryName(), primary);
+        // Express closes idle databases (AUTO_CLOSE), so the primary may be briefly RECOVERING; a
+        // failover would have left it RESTORING after its tail-log backup.
+        await waitFor(`${DB} online on ${primary}`, async () => (await dbState(primary)) === 'ONLINE', { timeout: 30_000 });
+
+        // Pause and resume.
+        const paused = await api.post(`${url}/pause`, { hours: 1 });
+        assert.ok(new Date(paused.restores_paused_until) > new Date(), 'paused for an hour');
+        await api.post(`${url}/resume`);
+        assert.equal(await restored(), false, 'resuming does not skip the delay');
+    } finally {
+        await api.put(url, { restore_delay_minutes: 0 });
+    }
+    // Without its delay it catches up right away, and is an ordinary secondary again.
+    await waitFor(`${relPath} restored on ${secondary}`, restored, { timeout: 60_000 });
+    await waitFor('the catch-up to finish', async () => (await replica(secondary)).restores_paused_until === null, { timeout: 60_000 });
+    const r = await replica(secondary);
+    assert.equal(r.lag.files, 0, 'caught up');
+    assert.equal(r.restore_delay_minutes, 0);
+});
+
 test('6. one notification per problem, none re-sent after a restart', async () => {
     const unreachable = (m) => m.message.includes('Server sql2 is unreachable') && !m.message.includes('RESOLVED');
     const resolved = (m) => m.message.includes('RESOLVED') && m.message.includes('Server sql2 is unreachable');

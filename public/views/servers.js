@@ -319,7 +319,8 @@ function serverDatabasesTable(roles, hh) {
     for (const d of live.values()) if (!managed.has(key(d.name))) rows.push({ name: d.name, role: null, live: d });
     rows.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
-    const roleBadge = (r) => (r ? badge(r.role === 'diverged' ? 'old primary, out of sync' : r.role, r.role === 'diverged' ? 'err' : '') : badge('unmanaged'));
+    const roleText = (r) => (r.role === 'diverged' ? 'old primary, out of sync' : r.role === 'secondary' && r.restore_delay_minutes > 0 ? 'secondary (delayed)' : r.role);
+    const roleBadge = (r) => (r ? badge(roleText(r), r.role === 'diverged' ? 'err' : '') : badge('unmanaged'));
     const stateCell = ({ role, live: d }) => {
         if (!d) return hh?.ok ? badge('not found', 'err') : badge('unknown');
         if (role) return stateBadge(d, role.role);
