@@ -5,6 +5,7 @@ import * as databases from '../../store/repos/databases.js';
 import * as backups from '../../store/repos/backups.js';
 import * as forks from '../../store/repos/forks.js';
 import * as events from '../../store/repos/events.js';
+import * as opsRepo from '../../store/repos/operations.js';
 import * as inspect from '../../sql/inspect.js';
 import { sqlErrorText } from '../../sql/pool.js';
 import { acquire, BusyError } from '../locks.js';
@@ -38,6 +39,35 @@ export function lockHolder(db) {
             release = null;
         },
     };
+}
+
+// The operations that move a database's primary or start a new branch of its history.
+const ROLE_CHANGING = ['planned_failover', 'forced_failover', 'pitr_rollback'];
+
+/** Guidance of the lock step of a failover or rollback (it also runs assertStillApplies). */
+export const LOCK_GUIDANCE =
+    'Either something kept the database busy for 30 minutes (a long backup, or a secondary being added?): check Operations, then resume. ' +
+    'Or the roles of the database changed since this operation started: the error says how. Then mark this operation resolved, and start a new one if it is still needed.';
+
+/**
+ * Throws unless op (a failover or rollback of db) may still act: no later
+ * failover or rollback of db got past its checks, and the catalog's primary is
+ * one of primaryIds. Called right after the lock is taken, on every run, so an
+ * operation resumed after the roles changed stops there instead of bringing a
+ * second copy online.
+ */
+export function assertStillApplies(db, op, primaryIds) {
+    const later = opsRepo
+        .laterForDatabase(db.id, op.id, ROLE_CHANGING)
+        .find((o) => o.steps.some((s) => s.name !== 'lock' && s.name !== 'validate' && s.status !== 'pending'));
+    const primary = databases.primaryOf(db.id);
+    let why = null;
+    if (later) why = `operation #${later.id} (${later.type.replace(/_/g, ' ')}) has changed it since this one started`;
+    else if (!primary) why = 'it has no primary';
+    else if (!primaryIds.includes(primary.server_id)) why = `${primary.server_name} is its primary now`;
+    if (why) {
+        throw new Error(`The roles of ${db.name} changed: ${why}. Continuing could leave two copies taking changes, so this operation stops here. Mark it resolved, and start a new one if it is still needed.`);
+    }
 }
 
 /** Records the fork the recovered copy is on as a child of the lineage tip. */

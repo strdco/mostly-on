@@ -33,7 +33,7 @@ import { withDedicated } from '../../sql/pool.js';
 import { createOperation, runOperation } from '../operations.js';
 import { applyAvailableLogs, checkLive, nudgeDatabase } from '../restore-loop.js';
 import { ensureDir, uniqueRelPath } from '../backup.js';
-import { fail, errText, lockHolder, recordFork, ownerNote, firstLogStep, catalogTail } from './shared.js';
+import { fail, errText, lockHolder, recordFork, ownerNote, firstLogStep, catalogTail, assertStillApplies, LOCK_GUIDANCE } from './shared.js';
 import { reachable, lineageProblem, lag, onLineage } from '../chain.js';
 import { restoreCompatibility } from '../../sqlversion.js';
 import { translatePath, backupRelDir } from '../../paths.js';
@@ -181,13 +181,18 @@ export async function startFailover(databaseId, { serverId, tailLog, acceptDataL
 
 // --- shared steps ---------------------------------------------------------------------
 
-function lockStep(holder, db) {
+function lockStep(holder, db, oldServer, target) {
     return {
         name: 'lock',
         label: `Wait until no backup or restore of ${db.name} is running`,
-        guidance: 'Something kept the database busy for 30 minutes (a long backup, or a secondary being added?). Check Operations, then resume.',
+        guidance: LOCK_GUIDANCE,
         run: async (ctx) => {
             await holder.acquire(ctx);
+            // The primary is the old one, or the target once this failover swapped the roles.
+            assertStillApplies(db, ctx.op, [oldServer.id, target.id]);
+            if (!['secondary', 'primary'].includes(databases.replica(db.id, target.id)?.role)) {
+                throw new Error(`${target.name} no longer holds a working secondary of ${db.name}, so it cannot take over. Mark this operation resolved.`);
+            }
             return 'Backups, restores and retention of this database are paused until the roles are swapped';
         },
     };
@@ -223,7 +228,7 @@ function recoverStep(db, target) {
 function plannedSteps({ db, oldServer, target, holder }) {
     const live = (server) => inspect.dbRestoreState(server.id, db.name);
     return [
-        lockStep(holder, db),
+        lockStep(holder, db, oldServer, target),
         {
             name: 'validate',
             label: `Check ${oldServer.name} and ${target.name}`,
@@ -374,7 +379,7 @@ function offlineOldStep(db, oldServer) {
 function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' }) {
     const live = (server) => inspect.dbRestoreState(server.id, db.name);
     return [
-        lockStep(holder, db),
+        lockStep(holder, db, oldServer, target),
         {
             name: 'validate',
             label: `Check ${target.name}`,

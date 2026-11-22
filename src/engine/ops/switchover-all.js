@@ -73,12 +73,18 @@ export function switchoverPlan(fromId, toId) {
     return { from, to, items };
 }
 
-function childSteps(plan, toId) {
+function childSteps(plan, fromId, toId) {
     return plan.map(({ databaseId, name }) => ({
         name: `db_${databaseId}`,
         label: `Fail over ${name} (with a tail-log backup)`,
         guidance: `The failover of ${name} stopped; its own operation shows the step and what to do. Resume this batch to resume that failover and continue with the rest.`,
-        check: () => (databases.primaryOf(databaseId)?.server_id === toId ? `${name} is already on the target` : false),
+        check: () => {
+            const primary = databases.primaryOf(databaseId);
+            if (primary?.server_id === toId) return `${name} is already on the target`;
+            // Moved elsewhere since the batch started (a resumed batch): the batch only moves databases off its source.
+            if (primary?.server_id !== fromId) return `${name} is no longer on the source server${primary ? ` (its primary is ${primary.server_name})` : ''}; left where it is`;
+            return false;
+        },
         run: async (ctx) => {
             const children = ctx.state.children || {};
             const prev = children[databaseId] ? opsRepo.get(children[databaseId]) : null;
@@ -108,7 +114,7 @@ export async function startSwitchoverAll({ fromServerId, toServerId, confirm }) 
     if (!health.getHealth(to.id)?.ok) throw fail(503, `${to.name} is unreachable`);
 
     const staying = items.filter((i) => !i.moves).map((i) => i.name);
-    const stepDefs = childSteps(plan, to.id);
+    const stepDefs = childSteps(plan, from.id, to.id);
     const operation = createOperation({
         type: 'switchover_all',
         serverId: from.id,
@@ -124,7 +130,7 @@ export async function resumeSwitchoverAll(op) {
     const from = serversRepo.get(op.params.fromServerId);
     const to = serversRepo.get(op.params.toServerId);
     if (!from || !to) throw fail(409, 'One of the servers no longer exists');
-    const stepDefs = childSteps(op.params.databases, to.id);
+    const stepDefs = childSteps(op.params.databases, from.id, to.id);
     events.add('warn', 'failover', `Resuming switch-over #${op.id} from ${from.name} to ${to.name}`, { serverId: from.id, operationId: op.id });
     return { operation: op, done: execute(op.id, stepDefs, from, to) };
 }

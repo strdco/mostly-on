@@ -48,6 +48,14 @@ export function save(id, patch) {
     return get(id);
 }
 
+/** Operations of the given types on a database that were started after operation afterId. */
+export function laterForDatabase(databaseId, afterId, types) {
+    return getDb()
+        .prepare(`SELECT ${COLS} FROM operations WHERE database_id=? AND id>? AND type IN (${types.map(() => '?').join(', ')}) ORDER BY id`)
+        .all(databaseId, afterId, ...types)
+        .map(shape);
+}
+
 /**
  * @param {{status?:string[], type?:string, databaseId?:number, includeRoutine?:boolean, limit?:number, beforeId?:number}} f
  * "Routine" = scheduled backups that succeeded; hidden by default to keep the list readable.

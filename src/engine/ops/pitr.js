@@ -44,7 +44,7 @@ import { translatePath, backupRelDir } from '../../paths.js';
 import { pathOpts } from '../context.js';
 import { publish } from '../../bus.js';
 import { nowIso } from '../../store/db.js';
-import { fail, errText, sleep, lockHolder, recordFork, ownerNote, firstLogStep, catalogTail } from './shared.js';
+import { fail, errText, sleep, lockHolder, recordFork, ownerNote, firstLogStep, catalogTail, assertStillApplies, LOCK_GUIDANCE } from './shared.js';
 
 export const MODES = ['copy', 'rollback'];
 const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,99}$/;
@@ -328,9 +328,10 @@ function rollbackSteps({ db, primaryServer, params, holder }) {
         {
             name: 'lock',
             label: `Wait until no backup or restore of ${db.name} is running`,
-            guidance: 'Something kept the database busy for 30 minutes (a long backup, or a secondary being added?). Check Operations, then resume.',
+            guidance: LOCK_GUIDANCE,
             run: async (ctx) => {
                 await holder.acquire(ctx);
+                assertStillApplies(db, ctx.op, [primaryServer.id]);
                 return 'Backups, restores and retention of this database are paused until the rollback is done';
             },
         },
