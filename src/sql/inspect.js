@@ -20,7 +20,17 @@ export async function serverInfo(serverId) {
         serverName: row.server_name,
         utcNow: row.utc_now,
         tzOffsetMinutes: row.tz_offset_minutes,
+        host: hostOf(row),
     };
+}
+
+/**
+ * Where the instance runs: { platform: 'Linux'|'Windows'|null, distribution,
+ * release, container: e.g. 'LINUX CONTAINER', or null when not in one }.
+ */
+export function hostOf(row) {
+    const container = row.container_type && row.container_type !== 'NONE' ? row.container_type : null;
+    return { platform: row.host_platform ?? null, distribution: row.host_distribution ?? null, release: row.host_release ?? null, container };
 }
 
 /** The files of a database on a server: [{ logicalName, physicalName, type }] (empty if it does not exist). */

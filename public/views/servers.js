@@ -1,10 +1,29 @@
-import { h, clear, dataTable, badge, formDialog, field, toast, ago, tooltip, formatTime } from '../dom.js';
+import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, tooltip, formatTime } from '../dom.js';
 import { get, post, put, del } from '../api.js';
 import { stateText, stateBadge, chainBadge } from './overview.js';
 
 /** host:port, or host\INSTANCE for a named instance. */
 export function serverAddress(s) {
     return s.instance_name ? `${s.host}\\${s.instance_name}` : `${s.host}:${s.port}`;
+}
+
+/**
+ * Where a server runs, from its last health check (inspect.js hostOf()):
+ * { short: 'Linux container' | 'Linux' | 'Windows' ..., long: 'Ubuntu 24.04, in a container' }, or null.
+ */
+export function platformOf(host) {
+    if (!host?.platform) return null;
+    const os = host.platform === 'Windows' ? host.distribution || 'Windows' : [host.distribution, host.release].filter(Boolean).join(' ') || host.platform;
+    return {
+        short: host.container ? `${host.platform} container` : host.platform,
+        long: host.container ? `${os}, in a container (Docker, Kubernetes or similar)` : `${os}, not in a container`,
+    };
+}
+
+/** platformOf() as a neutral tag with the details in its tooltip. */
+function platformTag(host) {
+    const p = platformOf(host);
+    return p ? tipBadge(p.short, '', p.long) : '–';
 }
 
 export function setupBadge(setup) {
@@ -126,6 +145,7 @@ export function serversView() {
                     { label: 'Status', cell: (s) => [healthBadge(s), s.health?.setup && !s.health.setup.ready ? [' ', setupBadge(s.health.setup)] : null] },
                     { label: 'Version', cell: (s) => (s.product_version ? `${s.health?.info?.versionName || ''} ${s.product_version}`.trim() : '–') },
                     { label: 'Edition', cell: (s) => s.edition || '–' },
+                    { label: 'Platform', cell: (s) => platformTag(s.health?.info?.host) },
                     { label: 'Databases', num: true, cell: (s) => (s.health?.ok ? String(s.health.databases.length) : '–') },
                     { label: 'Checked', cell: (s) => ago(s.health?.checkedAt) },
                 ],
@@ -384,6 +404,7 @@ export function serverDetailView(id) {
                     h('dt', 'Status'), h('dd', healthBadge(s)),
                     h('dt', 'Address'), h('dd.mono', serverAddress(s)),
                     h('dt', 'Version'), h('dd', s.product_version ? `${hh?.info?.versionName || ''} (${s.product_version})` : '–'),
+                    h('dt', 'Platform'), h('dd', platformOf(hh?.info?.host)?.long ?? '–'),
                     h('dt', 'Edition'), h('dd', s.edition || '–'),
                     h('dt', 'Backup path (SQL Server)'), h('dd.mono', s.sql_backup_root),
                     h('dt', 'Backup path (Mostly-On)'), h('dd.mono', s.controller_backup_root || `${info.backupRoot ?? 'BACKUP_ROOT'} (default)`),

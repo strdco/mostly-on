@@ -252,9 +252,9 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 ## How it works
 
 - **Backups.** Each managed database has a FULL, DIFF and LOG schedule (by default: FULL weekly, DIFF daily, LOG every 5 minutes), editable on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression).
-- **Concurrency.** You can configure how many concurrent backup or restore operations can run on a given server. By default, at most 2 backups and restores run at a time on each SQL Server, counting all its databases, as primary and as secondary. You can override this setting on the individual server registration (edit the server, **More options**).
-  - All operations will wait their turn, first come first served; reporting "Waiting for a free connection to sql1".
-  - Health checks and other short queries have their own connections.
+- **Load on each SQL Server.** At most **2 backups and restores run at a time** on each SQL Server, counting all its databases, as primary and as secondary. Change the default under Settings (**SQL Servers connections**), or give a server its own value (edit the server, **More options**).
+  - More wait their turn, first come first served; the operation shows "Waiting for a free connection to sql1" meanwhile.
+  - Health checks and other short queries have their own connections and never wait, so a busy server is never reported unreachable.
   - Failovers and rollbacks never wait. A scheduled backup or a restore that is still waiting when a failover or rollback needs its database gives way, and runs again later.
 - **Shipping.** After every log backup, each secondary restores it (`WITH NORECOVERY`, or `STANDBY` for a readable copy). Readers of a readable copy are disconnected when a restore happens, so the copy stays current. "Behind" on the dashboard shows how old the newest data on a secondary is.
 - **Stopped shipping.** If a log backup is missing, or if the secondary refuses it, Mostly-On stops shipping to that replica and tells you why. It never skips ahead or guesses. Put the log backup file back and press **Try again**, or **Reinitialize** the secondary completely.
