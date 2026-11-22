@@ -1,5 +1,5 @@
 /*
-    Mostly-On helper procedures, version 3.
+    Mostly-On helper procedures, version 4.
 
     Mostly-On never needs a sysadmin login. Everything that needs high privileges
     (BACKUP, RESTORE, ALTER DATABASE, KILL) happens inside the procedures in the
@@ -97,7 +97,17 @@ CREATE FUNCTION mostly_on.helper_version()
 RETURNS int
 AS
 BEGIN;
-    RETURN 3;
+    RETURN 4;
+END;
+GO
+
+-- The folders this script was last run with, as JSON, so Mostly-On can tell
+-- when they no longer match its own settings for this server.
+CREATE FUNCTION mostly_on.setup_values()
+RETURNS nvarchar(max)
+AS
+BEGIN;
+    RETURN (SELECT s.backup_root, s.standby_root FROM mostly_on.settings AS s FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES);
 END;
 GO
 

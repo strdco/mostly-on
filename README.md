@@ -238,7 +238,7 @@ To set a server up:
 2. On that server's page, under **Setup**, press **Download setup script**. The script has that server's backup folder and login filled in.
 3. Run it on the server as a sysadmin (SSMS, Azure Data Studio or `sqlcmd`). Running it again is always safe.
 
-The **Servers** page shows whether each server is ready. A new version of Mostly-On sometimes needs a newer script; the page (and an alert) will tell you, and backups and failovers on that server wait until you run it again. The template is [`sql/mostly-on-helpers.sql`](sql/mostly-on-helpers.sql); review it before you run it.
+The **Servers** page shows whether each server is ready. A new version of Mostly-On sometimes needs a newer script, and so does changing a server's backup folder or undo-file folder in Mostly-On (the helper procedures only use the folders the script was run with). The page (and an alert) will tell you, and backups and failovers on that server wait until you run it again. The template is [`sql/mostly-on-helpers.sql`](sql/mostly-on-helpers.sql); review it before you run it.
 
 ---
 

@@ -52,7 +52,8 @@ function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
         field(
             'Shared backup folder, as this SQL Server sees it',
             h('input', { type: 'text', name: 'sql_backup_root', required: true, value: s.sql_backup_root || '/var/opt/mssql/backup', spellcheck: 'false', autocapitalize: 'none' }),
-            'The folder all servers back up to, as a path on this server: for example /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup.',
+            'The folder all servers back up to, as a path on this server: for example /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup.'
+                + (isEdit ? ' If you change it, run this server’s setup script again.' : ''),
         ),
         h(
             'details.more',
@@ -72,7 +73,7 @@ function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
                 field(
                     'Folder for undo files of read-only copies (optional)',
                     h('input', { type: 'text', name: 'standby_root', value: s.standby_root || '', placeholder: s.default_data_path || '(the server’s data folder)', spellcheck: 'false', autocapitalize: 'none' }),
-                    'A path on this SQL Server. Only used by readable (STANDBY) secondaries.',
+                    'A path on this SQL Server. Only used by readable (STANDBY) secondaries.' + (isEdit ? ' If you change it, run this server’s setup script again.' : ''),
                 ),
                 field('Encrypt connection', h('input', { type: 'checkbox', name: 'encrypt', checked: isEdit ? s.encrypt : true })),
                 field(

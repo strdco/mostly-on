@@ -38,7 +38,7 @@ export async function checkServer(serverId) {
     const checkedAt = new Date().toISOString();
     let result;
     try {
-        const [info, dbs, setup] = await Promise.all([inspect.serverInfo(serverId), inspect.databases(serverId), inspect.helperStatus(serverId)]);
+        const [info, dbs, setup] = await Promise.all([inspect.serverInfo(serverId), inspect.databases(serverId), inspect.helperStatus(server)]);
         const warnings = [];
         info.versionName = versionName(info.majorVersion);
         if (!isSupported(info.majorVersion)) {

@@ -48,6 +48,22 @@ test('readiness: ready, missing, out of date, unsigned, no permissions', () => {
     assert.match(classifyHelperStatus({ ...ready, read_msdb: 0 }).problems[0], /read permissions/);
 });
 
+test('readiness: a backup or undo-file folder changed after setup needs the script again', () => {
+    const run = { ...ready, setup_backup_root: '/var/opt/mssql/backup', setup_standby_root: null };
+    const server = { sql_backup_root: '/var/opt/mssql/backup', standby_root: null };
+    assert.equal(classifyHelperStatus(run, server).ready, true);
+    // The folder was changed to C:\Backup in Mostly-On, but the script was not run again.
+    const moved = classifyHelperStatus(run, { ...server, sql_backup_root: 'C:\\Backup' });
+    assert.equal(moved.ready, false);
+    assert.match(moved.problems[0], /last run with the shared backup folder \/var\/opt\/mssql\/backup, but this server's settings in Mostly-On say C:\\Backup/);
+    assert.match(classifyHelperStatus(run, { ...server, standby_root: '/var/opt/mssql/standby' }).problems[0], /the default data folder as the folder for undo files/);
+    // The same folder written differently is the same folder.
+    const win = { ...ready, setup_backup_root: 'c:/backup\\', setup_standby_root: '\\\\FS\\Undo' };
+    assert.equal(classifyHelperStatus(win, { sql_backup_root: 'C:\\Backup', standby_root: '\\\\fs\\undo' }).ready, true);
+    // An older helper version has no folders to compare: only the version is reported.
+    assert.deepEqual(classifyHelperStatus({ ...run, helper_version: P.HELPER_VERSION - 1, setup_backup_root: null }, server).problems.length, 1);
+});
+
 test('readiness: a sysadmin login still needs the helper procedures, but no grants', () => {
     const sa = { ...ready, is_sysadmin: 1, can_execute: 0, view_server_state: 0, read_msdb: 0, login_name: 'sa' };
     assert.equal(classifyHelperStatus(sa).ready, true);

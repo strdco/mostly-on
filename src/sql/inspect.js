@@ -2,6 +2,8 @@
 import { query, T } from './pool.js';
 import * as Q from './tsql.js';
 import * as P from './privileged.js';
+import path from 'node:path';
+import { isWindowsPath } from '../paths.js';
 
 export const guid = (g) => (g ? String(g).trim().toLowerCase() : null);
 
@@ -72,19 +74,39 @@ export async function dbBackupState(serverId, dbName) {
  * the version this controller needs, and the read permissions.
  * @returns {{ready: boolean, version: number|null, expected: number, problems: string[], login: string}}
  */
-export async function helperStatus(serverId) {
-    const r = (await query(serverId, Q.HELPER_STATUS)).recordset[0];
-    return classifyHelperStatus(r);
+export async function helperStatus(server) {
+    const r = (await query(server.id, Q.HELPER_STATUS)).recordset[0];
+    return classifyHelperStatus(r, server);
 }
 
-/** Pure part of helperStatus(), for tests. */
-export function classifyHelperStatus(r) {
+/** A folder in one form, for comparing (as servers.validate() stores it; Windows paths ignore case). */
+function folderKey(p) {
+    if (!p) return null;
+    if (isWindowsPath(p)) {
+        const n = path.win32.normalize(p).toLowerCase();
+        return /^[a-z]:\\$/.test(n) ? n : n.replace(/\\+$/, '');
+    }
+    return p.replace(/\/+$/, '') || '/';
+}
+
+/** Pure part of helperStatus(), for tests. server: the registered server (its folders). */
+export function classifyHelperStatus(r, server = null) {
     const problems = [];
     const expected = P.HELPER_VERSION;
     if (r.helper_version == null) problems.push('the helper procedures are not installed.');
     else if (r.helper_version !== expected) problems.push(`the helper procedures are version ${r.helper_version}, and this version of Mostly-On needs version ${expected}.`);
     else if (r.signed_procedures < r.procedures) problems.push('some helper procedures were changed after setup and are no longer signed.');
     else if (!r.is_sysadmin && !r.can_execute) problems.push(`the login ${r.login_name} may not run the helper procedures.`);
+    // The procedures only use the folders the setup script was run with, so a folder changed in Mostly-On needs the script again.
+    if (server && r.helper_version === expected) {
+        if (folderKey(r.setup_backup_root) !== folderKey(server.sql_backup_root)) {
+            problems.push(`the setup script was last run with the shared backup folder ${r.setup_backup_root ?? '(none)'}, but this server's settings in Mostly-On say ${server.sql_backup_root}.`);
+        }
+        if (folderKey(r.setup_standby_root) !== folderKey(server.standby_root)) {
+            const shown = (p) => p ?? 'the default data folder';
+            problems.push(`the setup script was last run with ${shown(r.setup_standby_root)} as the folder for undo files, but this server's settings in Mostly-On say ${shown(server.standby_root)}.`);
+        }
+    }
     if (!r.is_sysadmin && !(r.view_server_state && r.view_any_definition && r.read_msdb)) {
         problems.push(`the login ${r.login_name} is missing read permissions (VIEW SERVER STATE, VIEW ANY DEFINITION, or reading msdb).`);
     }

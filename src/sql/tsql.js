@@ -158,13 +158,18 @@ WHERE d.name=@db;`;
 
 // Is the server ready for Mostly-On? Helper procedure version (NULL if they
 // are missing), whether they are all still signed, and the permissions the
-// login needs. Runs as the login Mostly-On uses.
+// login needs, and the folders the setup script was last run with. Runs as the
+// login Mostly-On uses.
 export const HELPER_STATUS = `
-DECLARE @version int=NULL;
+DECLARE @version int=NULL, @setup nvarchar(max)=NULL;
 IF (OBJECT_ID(N'master.mostly_on.helper_version', N'FN') IS NOT NULL)
     EXEC sys.sp_executesql N'SELECT @v=master.mostly_on.helper_version();', N'@v int OUTPUT', @v=@version OUTPUT;
+IF (OBJECT_ID(N'master.mostly_on.setup_values', N'FN') IS NOT NULL)
+    EXEC sys.sp_executesql N'SELECT @s=master.mostly_on.setup_values();', N'@s nvarchar(max) OUTPUT', @s=@setup OUTPUT;
 
 SELECT @version AS helper_version,
+       JSON_VALUE(@setup, N'$.backup_root') AS setup_backup_root,
+       JSON_VALUE(@setup, N'$.standby_root') AS setup_standby_root,
        (SELECT COUNT(*) FROM master.sys.procedures AS p WHERE p.schema_id=SCHEMA_ID(N'mostly_on')) AS procedures,
        (SELECT COUNT(*)
         FROM master.sys.procedures AS p
