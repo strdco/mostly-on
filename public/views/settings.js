@@ -38,7 +38,7 @@ const CARDS = [
     },
     {
         id: 'load',
-        title: 'Load on the SQL Servers',
+        title: 'SQL Servers connections',
         intro:
             'Backups and restores over the limit wait their turn, in order, so a long FULL backup can hold up LOG backups and restores on the same server. ' +
             'Failovers and rollbacks never wait, and health checks have their own connections.',

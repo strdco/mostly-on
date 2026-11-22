@@ -245,7 +245,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 ## How it works
 
 - **Backups.** Each managed database has a FULL, DIFF and LOG schedule (by default: FULL weekly, DIFF daily, LOG every 5 minutes), editable on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression).
-- **Load on each SQL Server.** At most **2 backups and restores run at a time** on each SQL Server, counting all its databases, as primary and as secondary. Change the default under Settings (**Load on the SQL Servers**), or give a server its own value (edit the server, **More options**).
+- **Load on each SQL Server.** At most **2 backups and restores run at a time** on each SQL Server, counting all its databases, as primary and as secondary. Change the default under Settings (**SQL Servers connections**), or give a server its own value (edit the server, **More options**).
   - More wait their turn, first come first served; the operation shows "Waiting for a free connection to sql1" meanwhile.
   - Health checks and other short queries have their own connections and never wait, so a busy server is never reported unreachable.
   - Failovers and rollbacks never wait. A scheduled backup or a restore that is still waiting when a failover or rollback needs its database gives way, and runs again later.
