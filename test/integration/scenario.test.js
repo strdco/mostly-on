@@ -60,6 +60,11 @@ async function failover(target, body) {
 before(async () => {
     secrets = await startStack();
     for (const s of ['sql1', 'sql2']) await waitFor(`${s} to accept connections`, () => q(s, 'SELECT 1 AS ok;'), { timeout: 300_000, interval: 3000 });
+    // The sql-setup service creates the mostly_on login, then installs the helpers. Registering a
+    // server before that raises real but misleading alerts ("Login failed", "not installed").
+    for (const s of ['sql1', 'sql2']) {
+        await waitFor(`the setup script on ${s}`, async () => (await asMostlyOn(s, 'SELECT master.mostly_on.helper_version() AS v;'))[0].v != null, { timeout: 300_000, interval: 3000 });
+    }
     await waitFor('the controller', controllerUp, { timeout: 120_000 });
     await api.login(secrets.adminPassword);
     // Short loops so the scenario runs in minutes; reminders off so step 6 counts exactly.
@@ -319,19 +324,21 @@ test('6. one notification per problem, none re-sent after a restart', async () =
     const resolved = (m) => m.message.includes('RESOLVED') && m.message.includes('Server sql2 is unreachable');
     const sent = await mockMessages();
     assert.ok(sent.some((m) => m.message.includes('Server sql1 is unreachable')), 'step 4 sent an alert for sql1');
+    // Only what this step sends counts: earlier steps may have had their own sql2 alerts.
+    const since = async () => (await mockMessages()).slice(sent.length);
 
     compose('stop', 'sql2');
-    await waitFor('the sql2 alert', async () => (await mockMessages()).some(unreachable), { timeout: 90_000 });
+    await waitFor('the sql2 alert', async () => (await since()).some(unreachable), { timeout: 90_000 });
 
     compose('restart', 'controller');
     await waitFor('the controller after restart', controllerUp, { timeout: 120_000 });
     await sleep(30_000); // several alert evaluations, well past the debounce
-    assert.equal((await mockMessages()).filter(unreachable).length, 1, 'the restart did not re-send the active alert');
+    assert.equal((await since()).filter(unreachable).length, 1, 'the restart did not re-send the active alert');
 
     compose('start', 'sql2');
-    await waitFor('the sql2 alert to resolve', async () => (await mockMessages()).some(resolved), { timeout: 300_000, interval: 3000 });
+    await waitFor('the sql2 alert to resolve', async () => (await since()).some(resolved), { timeout: 300_000, interval: 3000 });
     await sleep(15_000);
-    const all = await mockMessages();
+    const all = await since();
     assert.equal(all.filter(resolved).length, 1, 'resolved once');
     assert.equal(all.filter(unreachable).length, 1, 'still only one alert for sql2');
 });

@@ -525,7 +525,10 @@ export async function startPointInTime(databaseId, { mode, at, targetServerId, n
         const name = String(newName ?? '').trim();
         if (!NAME_RE.test(name)) throw fail(400, 'The new name may use letters, digits, _ and - (up to 100 characters)');
         if (name.toLowerCase() === db.name.toLowerCase()) throw fail(400, `The copy needs a name other than ${db.name}`);
-        if (health.dbState(target.id, name)) throw fail(409, `A database named ${name} already exists on ${target.name}`);
+        // Asked live: the health snapshot can be seconds old (a copy restored just now), and
+        // SQL Server compares names without case. The snapshot is only a fallback.
+        const existing = await inspect.dbRestoreState(target.id, name).catch(() => health.dbState(target.id, name));
+        if (existing) throw fail(409, `A database named ${name} already exists on ${target.name}`);
         const params = { mode, at: moment, targetServerId: target.id, newName: name };
         const stepDefs = copySteps({ db, target, params });
         const operation = createOperation({ type: 'pitr_copy', databaseId: db.id, serverId: target.id, params, stepDefs });
