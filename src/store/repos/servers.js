@@ -3,12 +3,14 @@ import { getDb, nowIso } from '../db.js';
 import { encrypt, decrypt } from '../../crypto.js';
 import path from 'node:path';
 import { isWindowsPath } from '../../paths.js';
+import { MAXIMUMS } from './settings.js';
 
 const PUBLIC_COLS = `id, name, host, port, instance_name, username, encrypt, trust_server_cert, sql_backup_root,
     controller_backup_root, standby_root, enabled, last_seen_at, last_error, product_version, edition,
-    engine_edition, default_data_path, default_log_path, created_at, updated_at, removed_at`;
+    engine_edition, default_data_path, default_log_path, created_at, updated_at, removed_at, max_parallel`;
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+const MAX_PARALLEL = MAXIMUMS['servers.max_parallel'];
 
 function toBool(r) {
     if (!r) return r;
@@ -101,6 +103,16 @@ export function validate(input, { partial = false } = {}) {
     absPath('sql_backup_root', true, { windows: true });
     absPath('controller_backup_root', false, { windows: false });
     absPath('standby_root', false, { windows: true });
+    // Backups and restores at a time on this instance; empty = the orchestrator's default.
+    if (has('max_parallel')) {
+        const raw = input.max_parallel;
+        if (raw === null || raw === '') out.max_parallel = null;
+        else {
+            const n = Number(raw);
+            if (!Number.isInteger(n) || n < 1 || n > MAX_PARALLEL) err(`max_parallel must be a whole number from 1 to ${MAX_PARALLEL}, or empty for the default`);
+            out.max_parallel = n;
+        }
+    }
     return out;
 }
 
@@ -137,9 +149,9 @@ export function create(v, key) {
     const info = getDb()
         .prepare(
             `INSERT INTO servers (name, host, port, instance_name, username, password_enc, encrypt, trust_server_cert,
-                sql_backup_root, controller_backup_root, standby_root, enabled, created_at, updated_at)
+                sql_backup_root, controller_backup_root, standby_root, enabled, max_parallel, created_at, updated_at)
              VALUES (@name, @host, @port, @instance_name, @username, @password_enc, @encrypt, @trust_server_cert,
-                @sql_backup_root, @controller_backup_root, @standby_root, @enabled, @now, @now)`,
+                @sql_backup_root, @controller_backup_root, @standby_root, @enabled, @max_parallel, @now, @now)`,
         )
         .run({
             name: v.name,
@@ -153,6 +165,7 @@ export function create(v, key) {
             sql_backup_root: v.sql_backup_root,
             controller_backup_root: v.controller_backup_root ?? null,
             standby_root: v.standby_root ?? null,
+            max_parallel: v.max_parallel ?? null,
             enabled: v.enabled ?? 1,
             now,
         });
@@ -162,7 +175,7 @@ export function create(v, key) {
 export function update(id, v, key) {
     const cols = [];
     const args = {};
-    for (const k of ['name', 'host', 'port', 'instance_name', 'username', 'encrypt', 'trust_server_cert', 'sql_backup_root', 'controller_backup_root', 'standby_root', 'enabled']) {
+    for (const k of ['name', 'host', 'port', 'instance_name', 'username', 'encrypt', 'trust_server_cert', 'sql_backup_root', 'controller_backup_root', 'standby_root', 'enabled', 'max_parallel']) {
         if (v[k] !== undefined) {
             cols.push(`${k}=@${k}`);
             args[k] = v[k];

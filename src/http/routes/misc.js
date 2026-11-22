@@ -10,7 +10,7 @@ import { checkAllRetention, globalRetention } from '../../engine/retention-rules
 
 export function miscRoutes(router, { cfg }) {
     // Facts about this controller the dashboard shows (for example as placeholders).
-    router.get('/api/info', async () => ({ backupRoot: cfg.backupRoot }));
+    router.get('/api/info', async () => ({ backupRoot: cfg.backupRoot, maxParallel: settings.get('servers.max_parallel') }));
 
     router.get('/api/settings', async () => settings.all());
 

@@ -154,7 +154,7 @@ export function firstLogStep(db, target, holder, { trigger = 'failover', what = 
             try {
                 for (let i = 0; ; i++) {
                     try {
-                        started = await startBackup(db.id, 'LOG', { trigger, parentId: ctx.op.id });
+                        started = await startBackup(db.id, 'LOG', { trigger, parentId: ctx.op.id, priority: true });
                         break;
                     } catch (err) {
                         if (err instanceof BusyError && i < 24) {

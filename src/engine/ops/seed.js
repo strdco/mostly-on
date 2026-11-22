@@ -260,6 +260,7 @@ export function seedSteps({ db, target, params }) {
                     moves: ctx.state.moves,
                     replace: !!ctx.state.replace,
                     onInfo: (m) => ctx.progress(m),
+                    onWait: (t) => ctx.progress(t),
                 });
                 return recordPosition(db, target, full);
             },
@@ -277,7 +278,7 @@ export function seedSteps({ db, target, params }) {
             run: async (ctx) => {
                 const diff = fileOf(ctx.state.diffFileId);
                 if (!(await confirmOnDisk(diff))) throw new Error(`Backup file ${diff.rel_path} is missing from the backup volume`);
-                await restoreFile({ db, server: target, file: diff, operationId: ctx.op.id, onInfo: (m) => ctx.progress(m) });
+                await restoreFile({ db, server: target, file: diff, operationId: ctx.op.id, onInfo: (m) => ctx.progress(m), onWait: (t) => ctx.progress(t) });
                 return recordPosition(db, target, diff);
             },
         },
@@ -353,11 +354,11 @@ function safetyBackupStep({ db, target, params }) {
                     continueAfterError,
                 });
             try {
-                await P.run(target.id, safety(false), { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
+                await P.run(target.id, safety(false), { timeoutMs: 0, onInfo: (m) => ctx.progress(m), onWait: (t) => ctx.progress(t) });
             } catch (err) {
                 if (!err.number || err.setupProblem) throw err;
                 ctx.progress(`Backup failed (${sqlErrorText(err)}); retrying and skipping damaged pages (CONTINUE_AFTER_ERROR)`);
-                await P.run(target.id, safety(true), { timeoutMs: 0, onInfo: (m) => ctx.progress(m) });
+                await P.run(target.id, safety(true), { timeoutMs: 0, onInfo: (m) => ctx.progress(m), onWait: (t) => ctx.progress(t) });
             }
             const bs = await inspect.backupsetByPath(target.id, db.name, sqlPathOf(relPath));
             if (!bs) throw new Error(`SQL Server on ${target.name} has no record of the safety backup to ${relPath}`);

@@ -8,7 +8,7 @@ import { retentionProblem } from './retention.js';
 
 /*
  * Card fields:
- *   { key, label, unit, min, step?, hint? }      a number, with its unit after the box
+ *   { key, label, unit, min, max?, step?, hint? } a number, with its unit after the box
  *   { key, label, type: 'switch', hint? }         an on/off switch
  *   { group: 'Legend', fields: [...] }            short number fields side by side
  */
@@ -34,6 +34,20 @@ const CARDS = [
             { key: 'health.interval_seconds', label: 'Check server health every', unit: 'seconds', min: 5, hint: 'Connectivity, version and the state of every database.' },
             { key: 'restore.poll_seconds', label: 'Look for logs to restore every', unit: 'seconds', min: 5, hint: 'Secondaries also restore right after each backup; this is the fallback.' },
             { key: 'discovery.interval_seconds', label: 'Look for new databases every', unit: 'seconds', min: 30 },
+        ],
+    },
+    {
+        id: 'load',
+        title: 'Load on the SQL Servers',
+        intro: 'Health checks and other short queries have their own connections and never wait.',
+        fields: [
+            {
+                key: 'servers.max_parallel',
+                label: 'Backups and restores at a time, per server',
+                min: 1,
+                max: 10,
+                hint: 'The default; a server can have its own (edit the server). More over the limit wait their turn, in order: a long FULL backup can hold up LOG backups and restores on the same server. Failovers and rollbacks never wait.',
+            },
         ],
     },
     {
@@ -92,6 +106,7 @@ function settingField(f, values) {
         name: f.key,
         value: String(values[f.key]),
         min: String(f.min ?? 0),
+        max: f.max === undefined ? null : String(f.max),
         step: String(f.step ?? 1),
         required: true,
         inputmode: f.step === 'any' ? 'decimal' : 'numeric',

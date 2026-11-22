@@ -148,24 +148,26 @@ function stopAtFor(log, at, restoringServerId) {
  * in ctx.state.restored[key].
  * Returns { position, reached, logIds } (logIds: the logs actually restored).
  */
-async function restoreToMoment(ctx, { key, server, name, files, at, moves, replace = false, mustNotExist = false, logIds = null }) {
+async function restoreToMoment(ctx, { key, server, name, files, at, moves, replace = false, mustNotExist = false, logIds = null, priority = false }) {
     const get = () => ctx.state.restored?.[key] ?? {};
     const mark = (patch) => ctx.save({ restored: { ...(ctx.state.restored ?? {}), [key]: { ...get(), ...patch } } });
     const sqlPath = (f) => translatePath(f.rel_path, server, pathOpts('rel', 'sql'));
     const onInfo = (m) => ctx.progress(`${server.name}: ${m}`);
+    // A rollback (priority) never waits for a free connection on the server; a copy takes its turn.
+    const runOpts = { timeoutMs: 0, onInfo, onWait: (t) => ctx.progress(t), priority };
     const t = new Date(at).getTime();
 
     if (!get().full) {
         if (!(await confirmOnDisk(files.full))) throw new Error(`Backup file ${files.full.rel_path} is missing from the backup share`);
         ctx.progress(`${server.name}: restoring ${files.full.rel_path}`);
         await assertSameBackup(server, files.full, sqlPath(files.full));
-        await P.run(server.id, P.restoreDatabase({ db: name, path: sqlPath(files.full), moves, replace, mustNotExist }), { timeoutMs: 0, onInfo });
+        await P.run(server.id, P.restoreDatabase({ db: name, path: sqlPath(files.full), moves, replace, mustNotExist }), runOpts);
         mark({ full: true });
     }
     if (files.diff && !get().diff) {
         ctx.progress(`${server.name}: restoring ${files.diff.rel_path}`);
         await assertSameBackup(server, files.diff, sqlPath(files.diff));
-        await P.run(server.id, P.restoreDatabase({ db: name, path: sqlPath(files.diff) }), { timeoutMs: 0, onInfo });
+        await P.run(server.id, P.restoreDatabase({ db: name, path: sqlPath(files.diff) }), runOpts);
         mark({ diff: true });
     }
 
@@ -196,7 +198,7 @@ async function restoreToMoment(ctx, { key, server, name, files, at, moves, repla
         ctx.progress(`${server.name}: restoring ${log.rel_path}${mayHold ? ' up to the moment' : ''}`);
         await assertSameBackup(server, log, sqlPath(log));
         mark({ attempting: log.id, before: position });
-        await P.run(server.id, P.restoreLog({ db: name, path: sqlPath(log), stopAt: mayHold ? stopAtFor(log, at, server.id) : null }), { timeoutMs: 0, onInfo });
+        await P.run(server.id, P.restoreLog({ db: name, path: sqlPath(log), stopAt: mayHold ? stopAtFor(log, at, server.id) : null }), runOpts);
         applied.add(log.id);
         mark({ logs: [...applied], attempting: null });
         position = await live();
@@ -261,9 +263,9 @@ function copySteps({ db, target, params }) {
                 const live = await inspect.dbRestoreState(target.id, name);
                 return live?.state === 'ONLINE' && !live.restoring && !(await inspect.dbBackupState(target.id, name))?.ownedByService ? `${name} is already online` : false;
             },
-            run: async () => {
+            run: async (ctx) => {
                 const owner = databases.get(db.id);
-                const r = await P.run(target.id, P.recover({ db: name, ownerSid: owner?.owner_sid, ownerName: owner?.owner_name }), { timeoutMs: 0 });
+                const r = await P.run(target.id, P.recover({ db: name, ownerSid: owner?.owner_sid, ownerName: owner?.owner_name }), { timeoutMs: 0, onWait: (t) => ctx.progress(t) });
                 const note = ownerNote(db, target, owner, r.recordset[0], { name, category: 'restore', record: false, whose: `the owner of ${db.name}` });
                 return `${name} is online on ${target.name}; ${note}`;
             },
@@ -399,7 +401,7 @@ function rollbackSteps({ db, primaryServer, params, holder }) {
                 const files = planFiles(ctx);
                 const moves = ctx.state.moves?.primary ?? (await placeInPlace(primaryServer, db.name, files.full));
                 ctx.save({ moves: { ...(ctx.state.moves ?? {}), primary: moves } });
-                const r = await restoreToMoment(ctx, { key: 'primary', server: primaryServer, name: db.name, files, at, moves, replace: true });
+                const r = await restoreToMoment(ctx, { key: 'primary', server: primaryServer, name: db.name, files, at, moves, replace: true, priority: true });
                 ctx.save({ stoppedAt: r.position, usedLogIds: r.logIds });
                 return `${r.logIds.length} log backup(s) restored; stopped at LSN ${r.position}`;
             },
@@ -419,6 +421,7 @@ function rollbackSteps({ db, primaryServer, params, holder }) {
                 const r = await P.run(primaryServer.id, P.recover({ db: db.name, ownerSid: owner?.owner_sid, ownerName: owner?.owner_name }), {
                     timeoutMs: 0,
                     onInfo: (m) => ctx.progress(m),
+                    priority: true, // a rollback never waits for a free connection
                 });
                 const l = await live(primaryServer);
                 if (l?.state !== 'ONLINE') throw new Error(`${db.name} is ${l?.state ?? 'missing'} on ${primaryServer.name} after recovery`);
@@ -478,7 +481,7 @@ async function rollbackSecondaries(ctx, db, at) {
                 if (!health.getHealth(server.id)?.ok) return { r, ok: false, why: `${server.name} is unreachable` };
                 try {
                     const moves = await placeInPlace(server, db.name, files.full);
-                    const res = await restoreToMoment(ctx, { key, server, name: db.name, files, at, moves, replace: true, logIds: ctx.state.usedLogIds });
+                    const res = await restoreToMoment(ctx, { key, server, name: db.name, files, at, moves, replace: true, logIds: ctx.state.usedLogIds, priority: true });
                     const l = await inspect.dbRestoreState(server.id, db.name);
                     const off = lineageProblem({ position: l?.position, forkGuid: l?.forkGuid, lineage });
                     if (off) return { r, ok: false, why: off };

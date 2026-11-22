@@ -399,6 +399,31 @@ test('5e. a readable secondary stays readable after it is reinitialized', async 
     await shipTo(secondary); // back to not readable for the tests that follow
 });
 
+test('5f. a server limited to one backup or restore at a time runs them one after the other', async () => {
+    const primary = await primaryName();
+    const url = `/api/servers/${ids[primary]}`;
+    try {
+        assert.equal((await api.put(url, { max_parallel: 1 })).work.limit, 1);
+        await insertRow(primary, 'one at a time');
+        // A LOG backup may run during a FULL backup of the same database; the limit makes it wait.
+        const full = (await api.post(`/api/databases/${dbId}/backups`, { type: 'FULL' })).operation.id;
+        const log = (await api.post(`/api/databases/${dbId}/backups`, { type: 'LOG' })).operation.id;
+        await succeeded(api.waitOp(full));
+        await succeeded(api.waitOp(log));
+        // SQL Server's own record: the LOG backup started only once the FULL backup had finished.
+        const rows = await q(primary, 'SELECT b.description, b.backup_start_date AS started, b.backup_finish_date AS finished FROM msdb.dbo.backupset AS b WHERE b.description IN (@full, @log);', {
+            full: `mostly-on op:${full}`,
+            log: `mostly-on op:${log}`,
+        });
+        const at = Object.fromEntries(rows.map((r) => [r.description, r]));
+        assert.ok(at[`mostly-on op:${log}`].started >= at[`mostly-on op:${full}`].finished, `LOG started ${at[`mostly-on op:${log}`].started.toISOString()}, FULL finished ${at[`mostly-on op:${full}`].finished.toISOString()}`);
+        // Health checks have their own connections: the server stayed reachable throughout.
+        assert.equal((await api.get(url)).health.ok, true);
+    } finally {
+        assert.equal((await api.put(url, { max_parallel: null })).work.limit, 2, 'back to the default');
+    }
+});
+
 test('6. one notification per problem, none re-sent after a restart', async () => {
     const unreachable = (m) => m.message.includes('Server sql2 is unreachable') && !m.message.includes('RESOLVED');
     const resolved = (m) => m.message.includes('RESOLVED') && m.message.includes('Server sql2 is unreachable');

@@ -220,6 +220,7 @@ function recoverStep(db, target) {
             const owner = databases.get(db.id);
             const r = await P.run(target.id, P.recover({ db: db.name, ownerSid: owner?.owner_sid, ownerName: owner?.owner_name }), {
                 timeoutMs: 0,
+                priority: true, // failovers never wait for a free connection
                 onInfo: (m) => ctx.progress(m),
             });
             const live = await inspect.dbRestoreState(target.id, db.name);
@@ -257,7 +258,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
             label: `Restore every available log on ${target.name}`,
             guidance: `Nothing has changed on ${oldServer.name}; it is still the primary. Fix the cause (if a log backup file is missing, put it back and press Try again on the database page), then resume.`,
             run: async (ctx) => {
-                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
+                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m), priority: true });
                 if (r.status !== 'caught_up') throw new Error(r.reason || `Restore stopped (${r.status})`);
                 return `${r.restored} log backup(s) restored on ${target.name}`;
             },
@@ -308,7 +309,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
             },
             run: async (ctx) => {
                 const tail = backups.get(ctx.state.tailFileId);
-                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
+                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m), priority: true });
                 if (!r.position || L.lt(r.position, tail.last_lsn)) {
                     throw new Error(`${target.name} could not restore all of the tail-log backup: ${r.reason || r.status} (at LSN ${r.position}, needs ${tail.last_lsn})`);
                 }
@@ -449,7 +450,7 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
             label: `Restore every available log on ${target.name}`,
             guidance: `Nothing has been recovered yet. Fix the cause and resume, or mark the operation resolved.`,
             run: async (ctx) => {
-                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m) });
+                const r = await applyAll({ db, server: target, mode: 'norecovery', operationId: ctx.op.id, onProgress: (m) => ctx.progress(m), priority: true });
                 if (!['caught_up', 'broken'].includes(r.status)) throw new Error(r.reason || `Restore stopped (${r.status}); resume to try again`);
                 const files = backups.all(db.id);
                 const landed = lag({ files, position: r.position, lineage: forks.lineage(db.id) }).lastRestored;

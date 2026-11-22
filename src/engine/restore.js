@@ -84,8 +84,11 @@ export async function assertSameBackup(server, file, sqlPath = translatePath(fil
  * @param {{db:object, server:object, file:object, operationId?:number|null, mode?:'norecovery'|'standby',
  *          undo?:string|null, moves?:{from:string,to:string}[], replace?:boolean, onInfo?:(m:string)=>void}} p
  *   undo: the STANDBY undo file (restore-plan.js standbyUndoFile(); the restore loop picks it).
+ *   priority, abortWhen, onWait: how it waits for a free connection on the server
+ *   (privileged.js run()); one that gave way while waiting throws with
+ *   restoreKind 'gave_way' (nothing was restored).
  */
-export async function restoreFile({ db, server, file, operationId = null, mode = 'norecovery', undo = null, moves = [], replace = false, onInfo }) {
+export async function restoreFile({ db, server, file, operationId = null, mode = 'norecovery', undo = null, moves = [], replace = false, onInfo, priority = false, abortWhen = null, onWait = null }) {
     const sqlPath = translatePath(file.rel_path, server, pathOpts('rel', 'sql'));
     let c;
     if (file.type === 'LOG') {
@@ -99,11 +102,12 @@ export async function restoreFile({ db, server, file, operationId = null, mode =
     const restoreId = restores.start({ backupFileId: file.id, databaseId: db.id, serverId: server.id, operationId });
     try {
         await assertSameBackup(server, file, sqlPath);
-        await P.run(server.id, c, { timeoutMs: 0, onInfo });
+        await P.run(server.id, c, { timeoutMs: 0, onInfo, onWait, priority, abortWhen });
     } catch (err) {
-        const kind = err.restoreKind ?? classifyRestoreError(err);
-        // "In use": someone reconnected between the disconnect and the restore. Nothing was restored.
-        if (kind === 'in_use') restores.discard(restoreId);
+        const kind = err.restoreKind ?? (err.gaveWay ? 'gave_way' : classifyRestoreError(err));
+        // "In use": someone reconnected between the disconnect and the restore. "Gave way": it never
+        // started (a failover or rollback needed the database). Either way nothing was restored.
+        if (kind === 'in_use' || kind === 'gave_way') restores.discard(restoreId);
         else restores.finish(restoreId, kind === 'already_applied' ? 'already_applied' : 'failed', sqlErrorText(err));
         err.restoreKind = kind;
         throw err;

@@ -10,7 +10,7 @@ import * as P from '../sql/privileged.js';
 import { sqlErrorText } from '../sql/pool.js';
 import { backupRelPath, backupRelDir, translatePath } from '../paths.js';
 import { pathOpts } from './context.js';
-import { tryAcquire, BusyError } from './locks.js';
+import { tryAcquire, BusyError, exclusiveWaiting } from './locks.js';
 import { createOperation, runOperation } from './operations.js';
 import { publish } from '../bus.js';
 import { log } from '../log.js';
@@ -90,7 +90,7 @@ export function effectiveType(requested, state, db) {
  * created; `done` settles when the backup has finished (or failed).
  * @returns {Promise<{operation:object, type:string, done:Promise<{operation:object, file:object|null}>}>}
  */
-export async function startBackup(databaseId, requestedType, { trigger = 'manual', parentId = null } = {}) {
+export async function startBackup(databaseId, requestedType, { trigger = 'manual', parentId = null, priority = false } = {}) {
     if (!BACKUP_TYPES.includes(requestedType)) throw fail(400, `Unknown backup type ${requestedType}`);
     const db = databases.get(databaseId);
     if (!db || db.status !== 'managed') throw fail(404, 'Database is not managed');
@@ -126,7 +126,7 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
         ensureDir(server, backupRelDir(db.name, type));
         const relPath = uniqueRelPath(db, type, server);
         const sqlPath = translatePath(relPath, server, pathOpts('rel', 'sql'));
-        const stepDefs = backupSteps({ db, server, type, relPath, sqlPath });
+        const stepDefs = backupSteps({ db, server, type, relPath, sqlPath, trigger, priority });
         operation = createOperation({
             type: 'backup',
             databaseId: db.id,
@@ -165,7 +165,14 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
     }
 }
 
-function backupSteps({ db, server, type, relPath, sqlPath }) {
+/**
+ * priority: part of a failover or rollback, so it never waits for a free
+ * connection on the server. Scheduled and manual backups still waiting for one
+ * give way when a failover or rollback needs the database (they have not
+ * started; the schedule runs them again a minute later).
+ */
+function backupSteps({ db, server, type, relPath, sqlPath, trigger = 'manual', priority = false }) {
+    const mayGiveWay = trigger === 'schedule' || trigger === 'manual';
     return [
         {
             name: 'backup',
@@ -173,11 +180,31 @@ function backupSteps({ db, server, type, relPath, sqlPath }) {
             // After a crash: the backup may have completed even though the step did not finish.
             check: async () => ((await inspect.backupsetByPath(server.id, db.name, sqlPath)) ? 'SQL Server already has this backup on record' : false),
             run: async (ctx) => {
-                await P.run(
-                    server.id,
-                    P.takeBackup({ db: db.name, type, path: sqlPath, name: `Mostly-On ${type}`, description: `mostly-on op:${ctx.op.id}` }),
-                    { timeoutMs: 0, onInfo: (m) => ctx.progress(m) },
-                );
+                try {
+                    await P.run(
+                        server.id,
+                        P.takeBackup({ db: db.name, type, path: sqlPath, name: `Mostly-On ${type}`, description: `mostly-on op:${ctx.op.id}` }),
+                        {
+                            timeoutMs: 0,
+                            onInfo: (m) => ctx.progress(m),
+                            onWait: (t) => ctx.progress(t),
+                            priority,
+                            abortWhen: mayGiveWay ? () => exclusiveWaiting(db.id) && `a failover or rollback of ${db.name} needed the database first` : null,
+                        },
+                    );
+                } catch (err) {
+                    if (err.gaveWay) {
+                        // Nothing was backed up: not a failure to alert about (operations.failedBackups skips it).
+                        ctx.save({ gaveWay: true });
+                        events.add('info', 'backup', `The ${type} backup of ${db.name} did not start: ${err.message}. ${trigger === 'schedule' ? 'The schedule runs it again shortly.' : 'Start it again once that is done.'}`, {
+                            databaseId: db.id,
+                            serverId: server.id,
+                            operationId: ctx.op.id,
+                        });
+                        err.quiet = true;
+                    }
+                    throw err;
+                }
                 return sqlPath;
             },
         },

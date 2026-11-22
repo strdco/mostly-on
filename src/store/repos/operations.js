@@ -103,7 +103,8 @@ export function failedBackups() {
                  SELECT o.id, o.database_id, json_extract(o.params, '$.type') AS backup_type, o.error, o.status, o.created_at,
                         ROW_NUMBER() OVER (PARTITION BY o.database_id, json_extract(o.params, '$.type') ORDER BY o.id DESC) AS rn
                  FROM operations AS o JOIN databases AS d ON d.id=o.database_id AND d.status='managed'
-                 WHERE o.type='backup' AND o.status IN ('failed', 'interrupted'))
+                 WHERE o.type='backup' AND o.status IN ('failed', 'interrupted')
+                   AND json_extract(o.ctx, '$.gaveWay') IS NULL)
              SELECT f.id, f.database_id, f.backup_type, f.error, f.status, f.created_at
              FROM failed AS f
              WHERE f.rn=1

@@ -5,6 +5,7 @@ export const DEFAULTS = Object.freeze({
     'health.interval_seconds': 30,
     'discovery.interval_seconds': 300,
     'restore.poll_seconds': 30,
+    'servers.max_parallel': 2, // backups and restores at a time per SQL Server (a server can have its own)
     'alerts.interval_seconds': 30,
     'alerts.lag_threshold_minutes': 30,
     'alerts.reminder_hours': 4, // 0 = no reminders
@@ -39,7 +40,14 @@ const MINIMUMS = {
     'retention.diff_days': 1,
     'retention.log_days': 1,
     'msdb_history.keep_days': 1,
+    'servers.max_parallel': 1,
 };
+
+// Upper bounds, and settings that must be whole numbers.
+export const MAXIMUMS = {
+    'servers.max_parallel': 10,
+};
+const WHOLE = new Set(['servers.max_parallel']);
 
 export function get(key) {
     if (!(key in DEFAULTS)) throw new Error(`Unknown setting ${key}`);
@@ -65,6 +73,8 @@ export function check(key, value) {
     const kind = typeof DEFAULTS[key];
     if (!VALIDATORS[kind](value)) throw new Error(`Setting ${key} must be a ${kind}`);
     if (key in MINIMUMS && value < MINIMUMS[key]) throw new Error(`Setting ${key} must be at least ${MINIMUMS[key]}`);
+    if (key in MAXIMUMS && value > MAXIMUMS[key]) throw new Error(`Setting ${key} must be at most ${MAXIMUMS[key]}`);
+    if (WHOLE.has(key) && !Number.isInteger(value)) throw new Error(`Setting ${key} must be a whole number`);
 }
 
 export function set(key, value) {

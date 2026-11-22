@@ -109,7 +109,7 @@ export async function runOperation(opId, stepDefs, { quiet = false } = {}) {
             st.error = message;
             st.finished_at = nowIso();
             persist({ steps, status: 'failed', error: `${def.label || def.name}: ${message}`, finished_at: nowIso() });
-            if (!quiet || err.alwaysReport) {
+            if ((!quiet && !err.quiet) || err.alwaysReport) {
                 events.add('error', op.type, `Operation #${op.id} (${op.type}) failed at step "${def.label || def.name}": ${message}`, {
                     databaseId: op.database_id,
                     serverId: op.server_id,

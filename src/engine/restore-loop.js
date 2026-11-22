@@ -143,6 +143,9 @@ export function checkLive(db, server, live) {
  * @param {{db:object, server:object, mode?:'norecovery'|'standby', operationId?:number|null, onProgress?:(t:string)=>void, honorDelay?:boolean}} p
  *   mode overrides the replica's restore mode (failovers always use NORECOVERY).
  *   Every log restore disconnects anyone reading a STANDBY copy first.
+ *   priority (failovers and rollbacks): never wait for a free connection on the
+ *   server. yieldToExclusive (the restore loop): while waiting for one, give
+ *   way to a failover or rollback of the database ('yield').
  *   honorDelay (the restore loop only): stop at a log younger than the
  *   replica's restore delay ('delayed', with dueAt) or while it is paused
  *   ('paused'). Failovers leave it off: a failover restores every log there is.
@@ -150,7 +153,7 @@ export function checkLive(db, server, live) {
  *           position:string|null, forkGuid:string|null, lastFile:object|null}>}
  *   Throws on errors that are worth retrying (connection, unexpected SQL errors).
  */
-export async function applyAvailableLogs({ db, server, mode = null, operationId = null, onProgress, yieldToExclusive = false, honorDelay = false }) {
+export async function applyAvailableLogs({ db, server, mode = null, operationId = null, onProgress, yieldToExclusive = false, honorDelay = false, priority = false }) {
     let lastFileId = null;
     let lastFile = null;
     let restored = 0;
@@ -213,9 +216,21 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
             if (undo !== rep.standby_undo_file) rep = databases.updateReplica(db.id, server.id, { standby_undo_file: undo });
         }
         try {
-            await restoreFile({ db, server, file, operationId, mode: restoreMode, undo });
+            await restoreFile({
+                db,
+                server,
+                file,
+                operationId,
+                mode: restoreMode,
+                undo,
+                priority,
+                onWait: onProgress,
+                abortWhen: yieldToExclusive ? () => exclusiveWaiting(db.id) && `a failover or rollback of ${db.name} needs the database` : null,
+            });
         } catch (err) {
             if (err.restoreKind === 'already_applied') continue;
+            // Still waiting for a free connection when a failover asked for the database: it restores the rest itself.
+            if (err.restoreKind === 'gave_way') return result('yield', at);
             // Someone reconnected in the instant between the disconnect and the restore: try again shortly.
             if (err.restoreKind === 'in_use') return result('readers', { ...at, reason: `Someone reconnected to ${db.name} on ${server.name} just as the restore started` }); // position is re-read; the guard above stops a loop
             if (err.restoreKind === 'too_recent') return result('broken', { ...at, reason: `SQL Server refused ${file.rel_path} as too recent: ${sqlErrorText(err)}` });

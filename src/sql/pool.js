@@ -1,7 +1,14 @@
 // Connections to managed SQL Servers.
 //
-// One mssql ConnectionPool per server (database context: master). Short
-// statements use the default 30 s request timeout; BACKUP/RESTORE pass
+// Two mssql ConnectionPools per server (database context: master):
+//  - control: health checks and every short query (metadata, state, file
+//    headers). Backups and restores never use it, so a busy server is never
+//    mistaken for an unreachable one.
+//  - work: BACKUP and RESTORE statements. How many run at once is decided by
+//    sql/slots.js (the per-server limit), not by this pool: it is sized above
+//    the highest limit, so failovers and rollbacks (which skip the line)
+//    still get a connection, and waits for one do not time out after 30 s.
+// Short statements use the default 30 s request timeout; BACKUP/RESTORE pass
 // { timeoutMs: 0 } for no timeout. withDedicated() opens a private single
 // connection for batches that must not share a session with anything else
 // (SINGLE_USER + tail-log backup).
@@ -13,7 +20,11 @@ import * as serversRepo from '../store/repos/servers.js';
 import { log } from '../log.js';
 
 let secretKey = null;
-const pools = new Map(); // serverId -> Promise<ConnectionPool>
+const POOLS = {
+    control: { max: 4 },
+    work: { max: 16, acquireTimeoutMillis: 10 * 60_000 },
+};
+const pools = { control: new Map(), work: new Map() }; // kind -> serverId -> Promise<ConnectionPool>
 
 export function initPools(key) {
     secretKey = key;
@@ -34,7 +45,7 @@ export const T = {
     lsn: (v) => ({ type: sql.VarChar(25), value: v }),
 };
 
-export function poolConfig(s, { connectTimeoutMs = 15000, max = 6 } = {}) {
+export function poolConfig(s, { connectTimeoutMs = 15000, max = POOLS.control.max, acquireTimeoutMillis } = {}) {
     return {
         server: s.host,
         // A named instance is found through the SQL Server Browser (UDP 1434); the driver then must not get a port.
@@ -52,7 +63,7 @@ export function poolConfig(s, { connectTimeoutMs = 15000, max = 6 } = {}) {
             useUTC: true,
             abortTransactionOnError: true,
         },
-        pool: { max, min: 0, idleTimeoutMillis: 60000 },
+        pool: { max, min: 0, idleTimeoutMillis: 60000, ...(acquireTimeoutMillis ? { acquireTimeoutMillis } : {}) },
     };
 }
 
@@ -62,36 +73,41 @@ function loadServer(serverId) {
     return s;
 }
 
-export async function getPool(serverId) {
-    let p = pools.get(serverId);
+/** kind: 'control' (short queries, health checks) or 'work' (BACKUP/RESTORE). */
+export async function getPool(serverId, kind = 'control') {
+    const byServer = pools[kind];
+    let p = byServer.get(serverId);
     if (!p) {
         const s = loadServer(serverId);
-        const pool = new sql.ConnectionPool(poolConfig(s));
-        pool.on('error', (err) => log.warn('SQL pool error', { serverId, err }));
+        const pool = new sql.ConnectionPool(poolConfig(s, POOLS[kind]));
+        pool.on('error', (err) => log.warn('SQL pool error', { serverId, pool: kind, err }));
         p = pool.connect().catch((err) => {
-            pools.delete(serverId);
+            byServer.delete(serverId);
             throw err;
         });
-        pools.set(serverId, p);
+        byServer.set(serverId, p);
     }
     return p;
 }
 
-/** Drop a server's pool (after its settings change or on connection failure). */
+/** Drop a server's pools (after its settings change or on connection failure). */
 export async function resetPool(serverId) {
-    const p = pools.get(serverId);
-    pools.delete(serverId);
-    if (p) {
-        try {
-            (await p).close();
-        } catch {
-            /* already broken */
+    for (const byServer of Object.values(pools)) {
+        const p = byServer.get(serverId);
+        byServer.delete(serverId);
+        if (p) {
+            try {
+                (await p).close();
+            } catch {
+                /* already broken */
+            }
         }
     }
 }
 
 export async function closeAll() {
-    await Promise.allSettled([...pools.keys()].map((id) => resetPool(id)));
+    const ids = new Set(Object.values(pools).flatMap((m) => [...m.keys()]));
+    await Promise.allSettled([...ids].map((id) => resetPool(id)));
 }
 
 function isConnectionError(err) {
@@ -109,10 +125,10 @@ function bind(request, params) {
  * @param {number} serverId
  * @param {string} text   T-SQL with @named parameters
  * @param {object} [params]  { name: T.xxx(value) }
- * @param {{timeoutMs?:number, onInfo?:(msg:string)=>void}} [opts]
+ * @param {{timeoutMs?:number, onInfo?:(msg:string)=>void, pool?:'control'|'work'}} [opts]
  */
 export async function query(serverId, text, params = {}, opts = {}) {
-    const pool = await getPool(serverId);
+    const pool = await getPool(serverId, opts.pool ?? 'control');
     const req = new sql.Request(pool, opts.timeoutMs !== undefined ? { requestTimeout: opts.timeoutMs } : undefined);
     if (opts.onInfo) req.on('info', (m) => opts.onInfo(m.message));
     bind(req, params);

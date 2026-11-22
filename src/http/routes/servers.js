@@ -7,6 +7,7 @@ import { evaluateSoon } from '../../notify/alerts.js';
 import * as health from '../../engine/health.js';
 import { resetPool, testConnection, sqlErrorText } from '../../sql/pool.js';
 import { setupScriptFor } from '../../sql/setup-script.js';
+import { slotStatus } from '../../sql/slots.js';
 
 const ROLE_WORDS = { primary: ['primary copy', 'primary copies'], secondary: ['secondary copy', 'secondary copies'], diverged: ['out-of-sync copy', 'out-of-sync copies'] };
 
@@ -43,6 +44,7 @@ function withHealth(s) {
     return {
         ...s,
         remove_blocker: s.removed_at ? null : removeBlocker(s.id),
+        work: slotStatus(s.id), // backups and restores: the limit, running now, waiting
         health: h
             ? { ok: h.ok, checkedAt: h.checkedAt, error: h.error, warnings: h.warnings, info: h.info, databases: h.databases, setup: h.setup }
             : null,
@@ -108,8 +110,11 @@ export function serverRoutes(router, { cfg }) {
             if (taken?.removed_at) throw new HttpError(409, `${v.name} is the name of a removed server, whose backup files still carry it. Choose another name, or register that server again under it.`);
             if (taken) throw new HttpError(409, `A server named ${v.name} already exists`);
         }
+        const reconnect = v.password !== undefined || serversRepo.changedConnectionSettings(before, v).length > 0;
         serversRepo.update(id, v, cfg.secretKeyBytes);
-        await resetPool(id);
+        // New connection details: reconnect. Anything else (a name, folders, the limit) keeps the
+        // connections, so running backups and restores are not cut off.
+        if (reconnect) await resetPool(id);
         events.add('info', 'server', `Server ${before.name} updated`, { serverId: id, data: { fields: Object.keys(v).filter((k) => k !== 'password') } });
         await health.checkServer(id);
         evaluateSoon(); // e.g. a setup alert, now that the check has the new settings

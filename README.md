@@ -245,6 +245,10 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 ## How it works
 
 - **Backups.** Each managed database has a FULL, DIFF and LOG schedule (by default: FULL weekly, DIFF daily, LOG every 5 minutes), editable on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression).
+- **Load on each SQL Server.** At most **2 backups and restores run at a time** on each SQL Server, counting all its databases, as primary and as secondary. Change the default under Settings (**Load on the SQL Servers**), or give a server its own value (edit the server, **More options**).
+  - More wait their turn, first come first served; the operation shows "Waiting for a free connection to sql1" meanwhile.
+  - Health checks and other short queries have their own connections and never wait, so a busy server is never reported unreachable.
+  - Failovers and rollbacks never wait. A scheduled backup or a restore that is still waiting when a failover or rollback needs its database gives way, and runs again later.
 - **Shipping.** After every log backup, each secondary restores it (`WITH NORECOVERY`, or `STANDBY` for a readable copy). Readers of a readable copy are disconnected when a restore is due, so the copy stays current. "Behind" on the dashboard is how old the newest data on a secondary is.
 - **Stopped shipping.** If a log backup a secondary needs is missing, or SQL Server refuses it, Mostly-On stops shipping to that secondary and tells you why. It never skips ahead or guesses. Put the file back and press **Try again**, or **Reinitialize** the secondary (a fresh copy from the primary).
 - **Delayed secondaries.** A secondary can be kept behind on purpose, so you can look at the data as it was before a problem: set its **Restore delay** in minutes.
@@ -395,6 +399,7 @@ It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards 
 - **No automatic failover, no login sync, no client redirection.** These are out of scope by design; see the top of this file.
 - **The controller is a single point of failure.** While it is down, no backups are taken and nothing ships. The databases themselves keep running, and everything catches up when it returns.
 - **SQL Server 2019 or newer only.** Readable (STANDBY) secondaries need the same major version as the primary, and a secondary cannot run an older major version than its primary.
+- **A long backup can hold up others on the same server.** Work waits in order, so with the default of 2, two long FULL backups on one server make its LOG backups and restores wait until one of them finishes, and the secondaries fall behind meanwhile. Give the FULL backups of large databases different times, or raise the limit for that server.
 - **A short window during a failover with a tail-log backup.** Between disconnecting everyone (`SINGLE_USER`) and taking the tail-log backup, another program can grab the one allowed connection. The step then fails with "database is in use"; **Resume** tries again.
 - **Backup times around daylight-saving changes.** SQL Server records backup times in the server's local time. Mostly-On converts them with the server's current UTC offset, so in the hour around a DST change, lag and "last backup" times can be off by an hour. Backups and restores themselves are not affected.
 - **Delayed readable secondaries are not readable for a while after reinitializing or a rollback.** Those restores cannot leave the copy readable, so it stays `RESTORING` until its next log backup is old enough (up to the delay plus one log backup interval). Around a DST change, a delay can also be an hour longer or shorter, for the reason above.

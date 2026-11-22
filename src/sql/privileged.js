@@ -3,19 +3,25 @@
 // so the SQL login Mostly-On uses never needs sysadmin. Read-only queries stay
 // in tsql.js / inspect.js.
 //
-// Each builder returns { text, params } for query() or a dedicated connection;
-// run()/runOn() add the readiness check and turn "procedure missing" errors
-// into a plain explanation.
+// Each builder returns { text, params, work } for query() or a dedicated
+// connection; run()/runOn() add the readiness check and turn "procedure
+// missing" errors into a plain explanation. `work` marks BACKUP and RESTORE
+// statements: run() gives them the server's work connections and takes a
+// place in its line (sql/slots.js, at most N at a time per server).
 import { query, T } from './pool.js';
+import { acquireSlot } from './slots.js';
 import * as health from '../engine/health.js';
 import * as serversRepo from '../store/repos/servers.js';
 
 /** The helper procedure version this controller needs (helper_version() in the script). */
 export const HELPER_VERSION = 4;
 
+// The helpers that back up or restore, and so count against a server's limit.
+const WORK = new Set(['take_backup', 'restore_database', 'restore_log', 'recover']);
+
 function call(proc, params) {
     const names = Object.keys(params);
-    return { text: `EXEC master.mostly_on.${proc}${names.length ? ' ' : ''}${names.map((n) => `@${n}=@${n}`).join(', ')};`, params };
+    return { text: `EXEC master.mostly_on.${proc}${names.length ? ' ' : ''}${names.map((n) => `@${n}=@${n}`).join(', ')};`, params, work: WORK.has(proc) };
 }
 
 /** FULL, DIFF or LOG; copyOnly for safety backups of out-of-sync copies. */
@@ -116,9 +122,34 @@ function explain(err, serverId) {
     });
 }
 
-/** Runs a built call on the server's pool. */
-export async function run(serverId, c, opts) {
+/**
+ * Runs a built call on the server. A backup or restore (c.work) waits for its
+ * turn on that server first (at most N at a time), unless opts.priority (a
+ * failover or rollback: never waits). Other calls run right away.
+ * @param {{timeoutMs?:number, onInfo?:(m:string)=>void, priority?:boolean,
+ *          abortWhen?:()=>string|false, onWait?:(text:string)=>void}} [opts]
+ *   abortWhen: while still waiting, a reason to give way (throws with err.gaveWay).
+ *   onWait: progress text while waiting ("Waiting for a free connection to ...").
+ */
+export async function run(serverId, c, opts = {}) {
     assertReady(serverId);
+    const { priority = false, abortWhen = null, onWait = null, ...queryOpts } = opts;
+    if (!c.work) return runQuery(serverId, c, queryOpts);
+    if (priority) return runQuery(serverId, c, { ...queryOpts, pool: 'work' });
+    const name = serversRepo.get(serverId)?.name ?? `server ${serverId}`;
+    const release = await acquireSlot(serverId, {
+        abortWhen,
+        onWait: onWait && ((s) => onWait(`Waiting for a free connection to ${name}: ${s.running} of ${s.limit} in use${s.ahead ? `, ${s.ahead} ahead in line` : ''}`)),
+    });
+    try {
+        assertReady(serverId); // the setup may have changed while it waited
+        return await runQuery(serverId, c, { ...queryOpts, pool: 'work' });
+    } finally {
+        release();
+    }
+}
+
+async function runQuery(serverId, c, opts) {
     try {
         return await query(serverId, c.text, c.params, opts);
     } catch (err) {

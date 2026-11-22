@@ -20,7 +20,7 @@ export function healthBadge(s) {
 
 const NAME_CHARS = /[^A-Za-z0-9_.-]/g;
 
-function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
+function serverFields(s = {}, { backupRoot = '/backup', maxParallel = 2 } = {}) {
     const isEdit = !!s.id;
     // The name ends up in backup file names, so only the characters that are safe there are accepted;
     // spaces become dashes as you type.
@@ -74,6 +74,11 @@ function serverFields(s = {}, { backupRoot = '/backup' } = {}) {
                     'Folder for undo files of read-only copies (optional)',
                     h('input', { type: 'text', name: 'standby_root', value: s.standby_root || '', placeholder: s.default_data_path || '(the server’s data folder)', spellcheck: 'false', autocapitalize: 'none' }),
                     'A path on this SQL Server. Only used by readable (STANDBY) secondaries.' + (isEdit ? ' If you change it, run this server’s setup script again.' : ''),
+                ),
+                field(
+                    'Backups and restores at a time (optional)',
+                    h('input', { type: 'number', name: 'max_parallel', min: 1, max: 10, step: 1, inputmode: 'numeric', value: s.max_parallel ?? '', placeholder: `${maxParallel} (default)` }),
+                    `Leave empty to use the default (${maxParallel}, Settings). More wait their turn, in order. Health checks do not count, and failovers and rollbacks never wait.`,
                 ),
                 field('Encrypt connection', h('input', { type: 'checkbox', name: 'encrypt', checked: isEdit ? s.encrypt : true })),
                 field(
@@ -385,6 +390,8 @@ export function serverDetailView(id) {
                     h('dt', 'Default data path'), h('dd.mono', s.default_data_path || '–'),
                     h('dt', 'Default log path'), h('dd.mono', s.default_log_path || '–'),
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
+                    h('dt', 'Backups and restores at a time'),
+                    h('dd', s.work ? `${s.work.limit}${s.max_parallel == null ? ' (default)' : ''}: ${s.work.running} running now${s.work.waiting ? `, ${s.work.waiting} waiting` : ''}` : '–'),
                 ),
             ),
             h('h2', 'Setup'),
