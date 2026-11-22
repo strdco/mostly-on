@@ -335,3 +335,22 @@ test('6. one notification per problem, none re-sent after a restart', async () =
     assert.equal(all.filter(resolved).length, 1, 'resolved once');
     assert.equal(all.filter(unreachable).length, 1, 'still only one alert for sql2');
 });
+
+// Last, as it leaves shipping stopped (and alerts about it).
+test('7. a backup file replaced after it was taken is never restored', async () => {
+    const primary = await primaryName();
+    const secondary = primary === 'sql1' ? 'sql2' : 'sql1';
+    // Pause the secondary, so the file can be replaced before it is restored.
+    await api.put(`/api/servers/${ids[secondary]}`, { enabled: false });
+    await insertRow(primary, 'in the replaced log');
+    const { operation } = await api.post(`/api/databases/${dbId}/backups`, { type: 'LOG' });
+    const relPath = (await succeeded(api.waitOp(operation.id))).ctx.relPath;
+    // Anyone allowed to back up the database can write another backup under the same, predictable name.
+    await q(primary, `BACKUP LOG ${DB} TO DISK=@path WITH COPY_ONLY, INIT, FORMAT;`, { path: `/var/opt/mssql/backup/${relPath}` });
+
+    await api.put(`/api/servers/${ids[secondary]}`, { enabled: true });
+    await waitFor('shipping to stop', async () => (await replica(secondary)).chain_state === 'broken', { timeout: 120_000 });
+    assert.match((await replica(secondary)).chain_reason, /no longer holds the backup Mostly-On took/);
+    const rows = await api.get(`/api/databases/${dbId}/restores?limit=20`);
+    assert.ok(!rows.some((r) => r.server_name === secondary && r.rel_path === relPath && r.outcome === 'success'), 'the replaced file was not restored');
+});

@@ -168,6 +168,7 @@ export async function fileList(serverId, sqlPath) {
 export async function headerOnly(serverId, sqlPath) {
     const r = await P.run(serverId, P.headerOnly({ path: sqlPath }), { timeoutMs: 120_000 });
     return r.recordset.map((h) => ({
+        position: h.Position,
         backupSetGuid: guid(h.BackupSetGUID),
         familyGuid: guid(h.FamilyGUID),
         firstRecoveryForkGuid: guid(h.FirstRecoveryForkID),

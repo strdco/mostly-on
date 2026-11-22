@@ -4,6 +4,7 @@ import * as serversRepo from '../store/repos/servers.js';
 import * as backups from '../store/repos/backups.js';
 import * as restores from '../store/repos/restores.js';
 import * as P from '../sql/privileged.js';
+import * as inspect from '../sql/inspect.js';
 import { sqlErrorText } from '../sql/pool.js';
 import { translatePath } from '../paths.js';
 import { pathOpts } from './context.js';
@@ -48,6 +49,31 @@ export async function confirmOnDisk(file, { attempts = 6, delayMs = 1000 } = {})
 }
 
 /**
+ * Why a file whose RESTORE HEADERONLY gave `headers` is not the backup the
+ * catalog recorded for it, or null if it is. RESTORE uses the first backup set
+ * in a file, and its GUID must be the one msdb gave that backup.
+ */
+export function wrongBackupReason(file, headers) {
+    const expected = inspect.guid(file.backup_set_uuid);
+    if (!expected) return null;
+    const found = headers.find((h) => h.position === 1)?.backupSetGuid ?? null;
+    if (found === expected) return null;
+    return `${file.rel_path} no longer holds the backup Mostly-On took (backup set ${expected}; the file now holds ${found ?? 'no backup'}). Something replaced the file after the backup was taken. Put the original file back.`;
+}
+
+/**
+ * Throws (err.restoreKind 'wrong_file') unless the file still holds the backup
+ * the catalog recorded. Backup file names are predictable, and anyone allowed
+ * to back up a database on a server that writes to the share could overwrite
+ * one; restoring it would quietly restore something else.
+ */
+export async function assertSameBackup(server, file, sqlPath = translatePath(file.rel_path, server, pathOpts('rel', 'sql'))) {
+    if (!file.backup_set_uuid) return;
+    const reason = wrongBackupReason(file, await inspect.headerOnly(server.id, sqlPath));
+    if (reason) throw Object.assign(new Error(reason), { restoreKind: 'wrong_file' });
+}
+
+/**
  * Runs one RESTORE of a cataloged backup file on `server` and records it in
  * the restores table. FULL and DIFF are always restored WITH NORECOVERY; a
  * LOG WITH NORECOVERY or STANDBY depending on `mode`.
@@ -71,9 +97,10 @@ export async function restoreFile({ db, server, file, operationId = null, mode =
 
     const restoreId = restores.start({ backupFileId: file.id, databaseId: db.id, serverId: server.id, operationId });
     try {
+        await assertSameBackup(server, file, sqlPath);
         await P.run(server.id, c, { timeoutMs: 0, onInfo });
     } catch (err) {
-        const kind = classifyRestoreError(err);
+        const kind = err.restoreKind ?? classifyRestoreError(err);
         // "In use": someone reconnected between the disconnect and the restore. Nothing was restored.
         if (kind === 'in_use') restores.discard(restoreId);
         else restores.finish(restoreId, kind === 'already_applied' ? 'already_applied' : 'failed', sqlErrorText(err));

@@ -198,6 +198,7 @@ export async function applyAvailableLogs({ db, server, mode = null, operationId 
             if (err.restoreKind === 'in_use') return result('readers', { ...at, reason: `Someone reconnected to ${db.name} on ${server.name} just as the restore started` }); // position is re-read; the guard above stops a loop
             if (err.restoreKind === 'too_recent') return result('broken', { ...at, reason: `SQL Server refused ${file.rel_path} as too recent: ${sqlErrorText(err)}` });
             if (err.restoreKind === 'wrong_fork') return result('reseed', { ...at, reason: `SQL Server refused ${file.rel_path} as being on another recovery path: ${sqlErrorText(err)}` });
+            if (err.restoreKind === 'wrong_file') return result('broken', { ...at, reason: `${err.message} Or reinitialize ${server.name}.` });
             if (err.restoreKind === 'cannot_open' && !(await confirmOnDisk(file))) {
                 return result('broken', { ...at, reason: `The next log backup ${file.rel_path} is missing from the backup volume.` });
             }

@@ -38,7 +38,7 @@ import { BusyError } from '../locks.js';
 import { nudgeDatabase } from '../restore-loop.js';
 import { startBackup, ensureDir, uniqueRelPath } from '../backup.js';
 import { restorableRange, pointInTimePlan, stopReached, stopAtLocal, lineageProblem } from '../chain.js';
-import { confirmOnDisk, fileOnDisk } from '../restore.js';
+import { confirmOnDisk, fileOnDisk, assertSameBackup } from '../restore.js';
 import { copyMoves, inPlaceMoves } from '../restore-plan.js';
 import { translatePath, backupRelDir } from '../../paths.js';
 import { pathOpts } from '../context.js';
@@ -158,11 +158,13 @@ async function restoreToMoment(ctx, { key, server, name, files, at, moves, repla
     if (!get().full) {
         if (!(await confirmOnDisk(files.full))) throw new Error(`Backup file ${files.full.rel_path} is missing from the backup share`);
         ctx.progress(`${server.name}: restoring ${files.full.rel_path}`);
+        await assertSameBackup(server, files.full, sqlPath(files.full));
         await P.run(server.id, P.restoreDatabase({ db: name, path: sqlPath(files.full), moves, replace, mustNotExist }), { timeoutMs: 0, onInfo });
         mark({ full: true });
     }
     if (files.diff && !get().diff) {
         ctx.progress(`${server.name}: restoring ${files.diff.rel_path}`);
+        await assertSameBackup(server, files.diff, sqlPath(files.diff));
         await P.run(server.id, P.restoreDatabase({ db: name, path: sqlPath(files.diff) }), { timeoutMs: 0, onInfo });
         mark({ diff: true });
     }
@@ -192,6 +194,7 @@ async function restoreToMoment(ctx, { key, server, name, files, at, moves, repla
         // so servers in other time zones never stop too early.
         const mayHold = !log.backup_finish || new Date(log.backup_finish).getTime() + SECOND_MS >= t;
         ctx.progress(`${server.name}: restoring ${log.rel_path}${mayHold ? ' up to the moment' : ''}`);
+        await assertSameBackup(server, log, sqlPath(log));
         mark({ attempting: log.id, before: position });
         await P.run(server.id, P.restoreLog({ db: name, path: sqlPath(log), stopAt: mayHold ? stopAtFor(log, at, server.id) : null }), { timeoutMs: 0, onInfo });
         applied.add(log.id);
