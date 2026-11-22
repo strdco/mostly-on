@@ -95,6 +95,15 @@ export function badge(text, kind = '') {
     return h(`span.badge${kind ? '.' + kind : ''}`, text);
 }
 
+/**
+ * A badge that explains itself: a button whose only job is to show `help` as a
+ * tooltip (on hover, focus, click or tap). Returns [button, tip] for one cell.
+ */
+export function tipBadge(text, kind, help) {
+    const button = h(`button.badge.has-tip${kind ? '.' + kind : ''}`, { type: 'button' }, text);
+    return [button, tooltip(button, help, { toggle: true }).tip];
+}
+
 export function toast(message, kind = '') {
     const box = document.getElementById('toasts');
     const t = h(`div.toast${kind ? '.' + kind : ''}`, message);
@@ -134,27 +143,29 @@ export function ago(iso) {
     return `${(s / 86400).toFixed(1)}d ago`;
 }
 
-/** Modal dialog built from a form. Resolves with FormData values or null on dismiss. */
-export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit }) {
+/**
+ * Modal dialog built from a form. Resolves with FormData values or null on dismiss.
+ * onOpen({ form, submit }) runs before it opens, e.g. to set aria-disabled on the
+ * submit button while the form cannot be sent (it stays focusable; the form refuses it).
+ */
+export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit, onOpen }) {
     return new Promise((resolve) => {
         const titleId = `dlg-${Math.random().toString(36).slice(2, 9)}`;
         const err = h('p.error-text', { role: 'alert' });
+        const submit = h(danger ? 'button.danger' : 'button.primary', { type: 'submit', value: 'ok' }, submitLabel);
         const form = h(
             'form.stack',
             { method: 'dialog' },
             fields,
             err,
-            h(
-                'div.actions',
-                h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, cancelLabel),
-                h(danger ? 'button.danger' : 'button.primary', { type: 'submit', value: 'ok' }, submitLabel),
-            ),
+            h('div.actions', h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, cancelLabel), submit),
         );
         const dlg = h('dialog', { 'aria-labelledby': titleId }, h('h2', { id: titleId }, title), form);
         document.body.append(dlg);
         form.addEventListener('submit', async (e) => {
             if (e.submitter?.value !== 'ok') return; // Cancel: let method=dialog close it
             e.preventDefault();
+            if (submit.getAttribute('aria-disabled') === 'true') return;
             err.textContent = '';
             const values = Object.fromEntries(new FormData(form));
             for (const cb of form.querySelectorAll('input[type=checkbox]')) values[cb.name] = cb.checked;
@@ -170,6 +181,7 @@ export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 
             if (dlg.returnValue !== 'ok') resolve(null);
             dlg.remove();
         });
+        onOpen?.({ form, submit });
         dlg.showModal();
     });
 }
@@ -197,11 +209,15 @@ let tipSeq = 0;
  * Escape; the pointer can move onto it without it closing. It is a manual
  * popover (top layer, so table wrappers never clip it) positioned by script,
  * and is the trigger's accessible description even while hidden.
+ * With toggle (a button whose only job is the tooltip, see tipBadge()), a click
+ * or tap shows it too, and the trigger's aria-expanded says whether it is open
+ * instead of the tooltip being its description.
  * Returns { tip, show }: put `tip` right after the trigger in the DOM.
  */
-export function tooltip(trigger, text) {
+export function tooltip(trigger, text, { toggle = false } = {}) {
     const tip = h('div.tooltip', { id: `tip-${++tipSeq}`, role: 'tooltip', popover: 'manual' }, text);
-    trigger.setAttribute('aria-describedby', [trigger.getAttribute('aria-describedby'), tip.id].filter(Boolean).join(' '));
+    if (toggle) trigger.setAttribute('aria-expanded', 'false');
+    else trigger.setAttribute('aria-describedby', [trigger.getAttribute('aria-describedby'), tip.id].filter(Boolean).join(' '));
     const popover = typeof tip.showPopover === 'function';
     let hideTimer = null;
 
@@ -223,6 +239,7 @@ export function tooltip(trigger, text) {
         tip.classList.add('open');
         if (popover && !tip.matches(':popover-open')) tip.showPopover();
         place();
+        if (toggle) trigger.setAttribute('aria-expanded', 'true');
         document.addEventListener('keydown', onKey);
     }
     function hide(delay = 150) {
@@ -230,9 +247,11 @@ export function tooltip(trigger, text) {
         hideTimer = setTimeout(() => {
             tip.classList.remove('open');
             if (popover && tip.matches(':popover-open')) tip.hidePopover();
+            if (toggle) trigger.setAttribute('aria-expanded', 'false');
             document.removeEventListener('keydown', onKey);
         }, delay);
     }
+    if (toggle) trigger.addEventListener('click', show);
     trigger.addEventListener('mouseenter', show);
     trigger.addEventListener('mouseleave', () => hide());
     trigger.addEventListener('focus', show);

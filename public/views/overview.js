@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formDialog, toast, ago, tooltip } from '../dom.js';
+import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, formatTime, tooltip } from '../dom.js';
 import { get, post } from '../api.js';
 import { activeAlertsCallout } from './alerts.js';
 import { stopManagingBlocker, stopManagingDialog } from './database.js';
@@ -23,10 +23,48 @@ export function stateText(live, role) {
     return STATE_TEXT[live.state] || live.state.toLowerCase();
 }
 
+function stateExpected(live, role) {
+    return role === 'primary' ? live.state === 'ONLINE' && !live.isInStandby : live.state === 'RESTORING' || live.isInStandby;
+}
+
 export function stateBadge(live, role) {
     if (!live) return badge('unknown');
-    const expected = role === 'primary' ? live.state === 'ONLINE' : live.state === 'RESTORING' || live.isInStandby;
-    return badge(stateText(live, role), expected ? 'ok' : 'err');
+    return badge(stateText(live, role), stateExpected(live, role) ? 'ok' : 'err');
+}
+
+/** What a copy's state means, for its role (role: primary, secondary or diverged). */
+export function stateHelp(live, role) {
+    if (!live) return 'Mostly-On could not read the state of this copy: the server is unreachable, or the database is missing there.';
+    if (live.isInStandby) return 'A read-only copy: people can run read-only queries (reports) on it between restores. Everyone using it is disconnected each time a log backup is restored.';
+    switch (live.state) {
+        case 'ONLINE':
+            if (role === 'primary') return 'Online: your applications can read and write it. This is how the primary should be.';
+            if (role === 'diverged') return 'Online and writable: applications may be writing to this old copy instead of the primary (split brain). Take it offline or reinitialize it.';
+            return 'Online and writable, so it no longer receives log backups from the primary. A secondary should be receiving (RESTORING). Reinitialize it.';
+        case 'RESTORING':
+            if (role === 'primary') return 'Not online: applications cannot use the database. A failover or restore may have stopped halfway; check Operations.';
+            if (role === 'diverged') return 'Restoring and not in use. Reinitialize it to make it a secondary again.';
+            return 'Receiving: SQL Server restores the primary\'s log backups into this copy. Nobody can query it; it is ready to take over in a failover. This is how a secondary should be.';
+        case 'OFFLINE':
+            if (role === 'diverged') return 'Offline, so nothing can write to this old copy. Reinitialize it to make it a secondary again.';
+            return 'Offline: nobody can use this copy. To bring it back, run ALTER DATABASE … SET ONLINE on that server.';
+        case 'RECOVERING':
+            return 'Starting up: SQL Server is bringing the database online. This usually takes a moment.';
+        case 'RECOVERY_PENDING':
+            return 'SQL Server cannot start the database, often because a data or log file is missing or cannot be opened. Check the SQL Server error log.';
+        case 'SUSPECT':
+            return 'SQL Server found damage and will not open the database. Check the SQL Server error log; fail over, or restore from a backup.';
+        case 'EMERGENCY':
+            return 'Emergency mode: only sysadmins can read it, for repairs.';
+        default:
+            return `SQL Server reports the state ${live.state}.`;
+    }
+}
+
+/** stateBadge() with its meaning as a tooltip. */
+export function stateTipBadge(live, role) {
+    if (!live) return tipBadge('unknown', '', stateHelp(live, role));
+    return tipBadge(stateText(live, role), stateExpected(live, role) ? 'ok' : 'err', stateHelp(live, role));
 }
 
 /** Age badge for a last-backup timestamp against an expected interval (minutes). */
@@ -78,11 +116,38 @@ export function chainBadge(r) {
  * log backup), plus log backups still waiting, coloured against the database's
  * lag limits (lag.js: its LOG interval plus the alert threshold).
  */
+function lagKind(lag, limits) {
+    return lag.seconds > limits.alert ? 'err' : lag.seconds > limits.warn ? 'warn' : 'ok';
+}
+
+function lagText(lag) {
+    const waiting = lag.files ? ` · ${lag.files} log backup${lag.files === 1 ? '' : 's'} to restore` : '';
+    return `${formatDuration(lag.seconds)} behind${waiting}`;
+}
+
 export function lagBadge(lag, limits) {
     if (!lag || lag.seconds === null) return badge('behind: unknown');
-    const kind = lag.seconds > limits.alert ? 'err' : lag.seconds > limits.warn ? 'warn' : 'ok';
-    const waiting = lag.files ? ` · ${lag.files} log backup${lag.files === 1 ? '' : 's'} to restore` : '';
-    return badge(`${formatDuration(lag.seconds)} behind${waiting}`, kind);
+    return badge(lagText(lag), lagKind(lag, limits));
+}
+
+const minutesText = (m) => (m < 60 ? `${m} min` : `${+(m / 60).toFixed(1)} h`);
+
+/** lagBadge() with what it means as a tooltip: where the data ends, and when it counts as too far behind. */
+export function lagTipBadge(lag, limits) {
+    if (!lag || lag.seconds === null) {
+        return tipBadge('behind: unknown', '', 'Mostly-On cannot tell yet how far behind this copy is: no log backup has been restored on it yet.');
+    }
+    const parts = [];
+    const finish = lag.lastRestored?.backup_finish;
+    parts.push(
+        finish
+            ? `The newest data on this copy is from ${formatTime(finish)}: when the last log backup restored here was taken.`
+            : `The newest data on this copy is ${formatDuration(lag.seconds)} old.`,
+    );
+    parts.push(lag.files ? `${lag.files} newer log backup${lag.files === 1 ? ' is' : 's are'} waiting to be restored.` : 'Every log backup taken so far has been restored here.');
+    const normal = limits.logMinutes ? `Up to ${minutesText(limits.logMinutes)} is normal (the time between log backups). ` : '';
+    parts.push(`${normal}It turns amber after ${minutesText(limits.warn / 60)}, and red with an alert after ${minutesText(limits.alert / 60)}.`);
+    return tipBadge(lagText(lag), lagKind(lag, limits), parts.join(' '));
 }
 
 export function expectedMinutes(schedule) {
@@ -262,14 +327,28 @@ export function overviewView() {
     }
 
     async function manage(d) {
+        const warningId = `warn-${Math.random().toString(36).slice(2, 9)}`;
+        const understand = h('input', { type: 'checkbox', name: 'understand', required: true, 'aria-describedby': warningId });
+        const validity = () => understand.setCustomValidity(understand.checked ? '' : 'Tick "I understand" to confirm that no other tool takes log backups of this database.');
+        validity();
+        understand.addEventListener('change', validity);
         const res = await formDialog({
             title: `Manage ${d.name}?`,
             fields: [
                 h('p', `${d.server_name} becomes the primary for ${d.name}. Mostly-On takes a FULL backup right away and then runs the default schedules (FULL weekly, DIFF daily, LOG every 5 minutes).`),
                 h(
-                    'p.muted',
-                    'From now on, Mostly-On takes all backups of this database. If another tool (a maintenance plan, a backup agent) also takes log backups, the secondaries miss them and shipping stops. ' +
-                        'Backups that tools take with the COPY_ONLY option are fine.',
+                    'div.callout.warn.ack',
+                    h(
+                        'div',
+                        { id: warningId },
+                        h('p', h('strong', 'From now on, only Mostly-On may take log backups of this database.')),
+                        h(
+                            'p',
+                            'If another tool (a maintenance plan, a backup agent) also takes log backups, the secondaries never get the changes in them, and shipping stops until you reinitialize them. ' +
+                                'Backups taken with the COPY_ONLY option are fine.',
+                        ),
+                    ),
+                    field('I understand', understand),
                 ),
             ],
             submitLabel: 'Manage',
@@ -297,8 +376,7 @@ export function overviewView() {
                 alertsBox,
                 h(
                     'p.muted',
-                    'Every user database on your servers. The switch before a name turns management by Mostly-On on or off. ' +
-                        'Only databases in the FULL recovery model can be managed (log shipping needs it).',
+                    'User databases on your servers. Only databases in FULL recovery model can be managed.',
                 ),
                 listBox,
             );

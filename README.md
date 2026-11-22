@@ -67,7 +67,7 @@ The included `docker-compose.yml` starts two SQL Server Express containers (`sql
    | SQL login / Password | `mostly_on` / your `MOSTLY_ON_SQL_PASSWORD` | same |
    | Shared backup folder, as this SQL Server sees it | `/var/opt/mssql/backup` | same |
 
-6. Create a database on `sql1` (any tool; it must use the FULL recovery model). It appears in the **Databases** list on the **Overview** with its switch off. Turn the switch on (**Manage**), then on the database's page press **Add secondary** and pick `sql2`.
+6. Create a database on `sql1` (any tool; it must use FULL recovery model). It appears in the **Databases** list on the **Overview** with its switch off. Turn the switch on (**Manage**), then on the database's page press **Add secondary** and pick `sql2`.
 
    To stop managing a database, turn its switch off. That needs its secondaries removed first (database page, Replicas table, **Remove**), so no copy is left waiting for log backups that never come. Databases in the SIMPLE or BULK_LOGGED recovery model show a greyed-out switch with the command to switch them to FULL.
 

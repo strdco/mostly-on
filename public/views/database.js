@@ -1,6 +1,6 @@
 import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, formatTime, tooltip, menuButton } from '../dom.js';
 import { get, post, put } from '../api.js';
-import { stateBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagBadge, formatDuration, busyText } from './overview.js';
+import { stateTipBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagTipBadge, formatDuration, busyText } from './overview.js';
 import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
@@ -81,14 +81,27 @@ async function seedDialog(db) {
     );
 
 
+    // "Add secondary" stays unusable until the check says the server can take a secondary;
+    // it keeps focus and points at the status text, which says why.
+    let submit = null;
+    let blocked = true;
+    const setBlocked = (b) => {
+        blocked = b;
+        if (!submit) return;
+        if (b) submit.setAttribute('aria-disabled', 'true');
+        else submit.removeAttribute('aria-disabled');
+    };
+
     let check = 0;
     const preflight = async () => {
         const mine = ++check;
         status.textContent = 'Checking the server…';
+        setBlocked(true);
         overwrite.hidden = true;
         try {
             const pf = await get(`/api/databases/${db.id}/seed-preflight?server_id=${target.value}`);
             if (mine !== check) return;
+            setBlocked(!pf.compat.ok);
             const notes = [];
             if (!pf.compat.ok) notes.push(pf.compat.reason);
             else if (pf.compat.reason) notes.push(pf.compat.reason);
@@ -131,12 +144,17 @@ async function seedDialog(db) {
                 'fieldset.choices',
                 h('legend', 'Start from'),
                 radio('source', 'new_full', 'A new FULL backup, taken now (recommended)', true),
-                radio('source', 'latest', 'The newest FULL (and DIFF) backup already taken: quicker, no extra load on the primary'),
+                radio('source', 'latest', 'The most recent FULL (and DIFF) backup already taken'),
             ),
             ...rm.fields,
             overwrite,
         ],
         submitLabel: 'Add secondary',
+        onOpen: ({ submit: button }) => {
+            submit = button;
+            submit.setAttribute('aria-describedby', statusId);
+            setBlocked(blocked);
+        },
         onSubmit: (v) =>
             post(`/api/databases/${db.id}/secondaries`, {
                 server_id: Number(v.server_id),
@@ -266,7 +284,7 @@ function reseedDialog(db, r) {
                 'fieldset.choices',
                 h('legend', 'Start from'),
                 radio('source', 'new_full', 'A new FULL backup, taken now (recommended)', true),
-                radio('source', 'latest', 'The newest FULL (and DIFF) backup already taken: quicker, no extra load on the primary'),
+                radio('source', 'latest', 'The most recent FULL (and DIFF) backup already taken'),
             ),
             ...rm.fields,
             field(`Type ${db.name} to confirm`, confirmNameInput('confirm')),
@@ -381,8 +399,8 @@ async function pointInTimeDialog(db) {
     const lost = h('strong');
     const copyGroup = h(
         'fieldset.plain',
-        field('Restore it on', serverSelect, 'The copy is a new database next to everything else on that server. Nothing that exists is changed.'),
-        field('Name of the copy', nameInput, 'Letters, digits, _ and -. Mostly-On does not back up the copy: drop it when you are done with it.'),
+        field('Restore to', serverSelect, ''),
+        field('Name of the restored database', nameInput, 'Letters, digits, _ and -.'),
     );
     const secondaries = range.secondaries.map((s) => s.name);
     const rollbackGroup = h(
@@ -406,8 +424,8 @@ async function pointInTimeDialog(db) {
     const modes = h(
         'fieldset.choices',
         h('legend', 'What to do'),
-        radio('mode', 'copy', 'Restore a copy under a new name (safe: nothing existing changes)', true),
-        radio('mode', 'rollback', `Roll back ${db.name} itself to that moment, on ${primaryName} and every secondary`),
+        radio('mode', 'copy', 'Restore a fresh copy (existing database is unchanged)', true),
+        radio('mode', 'rollback', `Roll back ${db.name} to that point in time on all replicas`),
     );
 
     const sync = () => {
@@ -426,8 +444,8 @@ async function pointInTimeDialog(db) {
     sync();
 
     const span = range.untilNow
-        ? `any moment from ${formatTime(range.from)} until now. For a moment after the newest log backup, Mostly-On takes a log backup first.`
-        : `any moment from ${formatTime(range.from)} to ${formatTime(range.to ?? range.from)}. ${primaryName} is not reachable, so later moments are not available.`;
+        ? `any point in time from ${formatTime(range.from)} until now.`
+        : `any point in time from ${formatTime(range.from)}, but no later than ${formatTime(range.to ?? range.from)} because ${primaryName} is not reachable.`;
 
     return formDialog({
         title: `Restore ${db.name}`,
@@ -578,7 +596,7 @@ function retentionForm(db, settings, reload) {
     });
     return [
         h('h2', 'Backup retention'),
-        h('p.muted', `Leave a field empty to use the default (Settings). FULL backups must be kept at least as long as DIFF and LOG backups. Files a secondary still needs, and the newest complete set, are always kept.`),
+        h('p.muted', `Leave fields empty to use the defaults.`),
         form,
     ];
 }
@@ -752,17 +770,13 @@ export function databaseView(id) {
                 : null,
             db.busy.length ? h('p', badge(`Running now: ${busyText(db.busy, db.replicas)}`)) : null,
             h('h2', 'Replicas'),
-            h(
-                'p.muted',
-                'The primary is the copy your applications use. Secondaries receive its log backups and can take over if it fails (Failover). "Behind" is how old the newest data on a secondary is.',
-            ),
             dataTable({
                 caption: 'Replicas',
                 rows: db.replicas,
                 columns: [
                     { label: 'Server', header: true, cell: (r) => h('a', { href: `#/servers/${r.server_id}` }, r.server_name) },
                     { label: 'Role', cell: (r) => ROLE_TEXT[r.role] || r.role },
-                    { label: 'State', cell: (r) => stateBadge(r.live, r.role) },
+                    { label: 'State', cell: (r) => stateTipBadge(r.live, r.role) },
                     { label: 'Reachable', cell: (r) => (r.reachable ? badge('yes', 'ok') : badge('no', 'err')) },
                     {
                         label: 'Shipping',
@@ -778,7 +792,7 @@ export function databaseView(id) {
                         label: 'Copy',
                         cell: (r) => (r.role === 'secondary' ? modeText(r) : ''),
                     },
-                    { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagBadge(r.lag, lagLimits(db.schedules.find((s) => s.backup_type === 'LOG'), threshold)) : '') },
+                    { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagTipBadge(r.lag, lagLimits(db.schedules.find((s) => s.backup_type === 'LOG'), threshold)) : '') },
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },
                 ],
             }),

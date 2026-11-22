@@ -1,6 +1,6 @@
 import { h, clear, dataTable, badge, formDialog, field, toast, ago, tooltip, formatTime } from '../dom.js';
 import { get, post, put, del } from '../api.js';
-import { stateText, chainBadge } from './overview.js';
+import { stateText, stateBadge, chainBadge } from './overview.js';
 
 /** host:port, or host\INSTANCE for a named instance. */
 export function serverAddress(s) {
@@ -306,6 +306,40 @@ function removeButton(s) {
     return [button, tip?.tip];
 }
 
+/**
+ * Every user database on the server, managed or not, by name. Managed ones
+ * (roles) link to their page and show their role; the rest say "unmanaged".
+ * State, recovery model and access come from the server's last health check.
+ */
+function serverDatabasesTable(roles, hh) {
+    const key = (name) => name.toLowerCase(); // SQL Server names ignore case by default
+    const live = new Map((hh?.ok ? hh.databases : []).map((d) => [key(d.name), d]));
+    const rows = roles.map((r) => ({ name: r.database_name, role: r, live: live.get(key(r.database_name)) ?? null }));
+    const managed = new Set(rows.map((x) => key(x.name)));
+    for (const d of live.values()) if (!managed.has(key(d.name))) rows.push({ name: d.name, role: null, live: d });
+    rows.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    const roleBadge = (r) => (r ? badge(r.role === 'diverged' ? 'old primary, out of sync' : r.role, r.role === 'diverged' ? 'err' : '') : badge('unmanaged'));
+    const stateCell = ({ role, live: d }) => {
+        if (!d) return hh?.ok ? badge('not found', 'err') : badge('unknown');
+        if (role) return stateBadge(d, role.role);
+        return badge(stateText(d, d.state === 'RESTORING' ? 'secondary' : 'primary'), d.state === 'ONLINE' || d.state === 'RESTORING' ? 'ok' : 'warn');
+    };
+    return dataTable({
+        caption: 'Databases on this server',
+        rows,
+        empty: hh?.ok ? 'No user databases on this server.' : 'Not available while the server is unreachable.',
+        columns: [
+            { label: 'Database', header: true, cell: (x) => (x.role ? h('a', { href: `#/databases/${x.role.database_id}` }, x.name) : x.name) },
+            { label: 'Role', cell: (x) => roleBadge(x.role) },
+            { label: 'Shipping', cell: (x) => (x.role?.role === 'secondary' ? chainBadge(x.role) : '') },
+            { label: 'State', cell: stateCell },
+            { label: 'Recovery model', cell: (x) => x.live?.recoveryModel ?? '' },
+            { label: 'Access', cell: (x) => x.live?.userAccess ?? '' },
+        ],
+    });
+}
+
 export function serverDetailView(id) {
     let root;
     let timer;
@@ -355,39 +389,18 @@ export function serverDetailView(id) {
             h('h2', 'Setup'),
             h(
                 'p.muted',
-                `Mostly-On does not need a sysadmin login. Its backups, restores and failovers run through signed helper procedures in master, which a sysadmin installs once with this server's setup script. `
-                    + 'Run the script again whenever this page says it is out of date; running it again is always safe.',
+                `Mostly-On uses a non-privileged service login (without sysadmin). Backups, restores and failovers run through signed helper procedures in master, which are installed through the setup script. `,
             ),
             h(
                 'p',
                 setupBadge(hh?.setup),
                 ' ',
-                hh?.setup?.login ? h('span.muted', `Mostly-On connects as ${hh.setup.login}.`) : null,
+                hh?.setup?.login ? h('span.muted', `Mostly-On uses the login "${hh.setup.login}".`) : null,
             ),
             h('p', h(hh?.setup?.ready ? 'a.button' : 'a.button.primary', { href: `/api/servers/${id}/setup-script`, download: '' }, 'Download setup script')),
-            h('h2', 'Managed databases on this server'),
-            dataTable({
-                caption: 'Roles of this server',
-                rows: roles,
-                empty: 'This server holds no managed replicas.',
-                columns: [
-                    { label: 'Database', header: true, cell: (r) => h('a', { href: `#/databases/${r.database_id}` }, r.database_name) },
-                    { label: 'Role', cell: (r) => badge(r.role === 'diverged' ? 'old primary, out of sync' : r.role, r.role === 'diverged' ? 'err' : '') },
-                    { label: 'Shipping', cell: (r) => (r.role === 'secondary' ? chainBadge(r) : '') },
-                ],
-            }),
-            h('h2', 'Databases on this instance'),
-            dataTable({
-                caption: 'User databases (from sys.databases)',
-                rows: hh?.databases || [],
-                empty: hh?.ok ? 'No user databases.' : 'Not available while the server is unreachable.',
-                columns: [
-                    { label: 'Database', header: true, cell: (d) => d.name },
-                    { label: 'State', cell: (d) => badge(stateText(d, d.state === 'RESTORING' ? 'secondary' : 'primary'), d.state === 'ONLINE' || d.state === 'RESTORING' ? 'ok' : 'warn') },
-                    { label: 'Recovery model', cell: (d) => d.recoveryModel },
-                    { label: 'Access', cell: (d) => d.userAccess },
-                ],
-            }),
+            h('h2', 'Databases on this server'),
+            serverDatabasesTable(roles, hh),
+            hh && !hh.ok ? h('p.muted', 'The server is unreachable, so only the databases Mostly-On manages are listed.') : null,
         ].filter((x) => x !== null));
     }
     return {
