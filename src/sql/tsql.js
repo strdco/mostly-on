@@ -13,7 +13,18 @@
 // Converts a server-local datetime column to UTC datetime2(3).
 const utc = (col) => `CONVERT(datetime2(3), SWITCHOFFSET(TODATETIMEOFFSET(${col}, DATEPART(TZOFFSET, SYSDATETIMEOFFSET())), 0))`;
 
+// Also where it runs: the host (sys.dm_os_host_info) and whether that is a
+// container (sys.dm_os_sys_info.container_type_desc: NONE, LINUX CONTAINER ...).
+// Read through sp_executesql, so an older version without them still answers.
 export const SERVER_INFO = `
+SET NOCOUNT ON;
+DECLARE @platform nvarchar(256)=NULL, @distribution nvarchar(256)=NULL, @release nvarchar(256)=NULL, @container nvarchar(60)=NULL;
+IF (OBJECT_ID(N'sys.dm_os_host_info') IS NOT NULL)
+    EXEC sys.sp_executesql N'SELECT @p=h.host_platform, @d=h.host_distribution, @r=h.host_release FROM sys.dm_os_host_info AS h;',
+        N'@p nvarchar(256) OUTPUT, @d nvarchar(256) OUTPUT, @r nvarchar(256) OUTPUT', @p=@platform OUTPUT, @d=@distribution OUTPUT, @r=@release OUTPUT;
+IF (COL_LENGTH(N'sys.dm_os_sys_info', N'container_type_desc') IS NOT NULL)
+    EXEC sys.sp_executesql N'SELECT @c=i.container_type_desc FROM sys.dm_os_sys_info AS i;', N'@c nvarchar(60) OUTPUT', @c=@container OUTPUT;
+
 SELECT CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion')) AS product_version,
        CONVERT(nvarchar(128), SERVERPROPERTY(N'Edition')) AS edition,
        CONVERT(int, SERVERPROPERTY(N'EngineEdition')) AS engine_edition,
@@ -21,7 +32,11 @@ SELECT CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion')) AS product_vers
        CONVERT(nvarchar(260), SERVERPROPERTY(N'InstanceDefaultLogPath')) AS default_log_path,
        CONVERT(nvarchar(128), @@SERVERNAME) AS server_name,
        SYSUTCDATETIME() AS utc_now,
-       DATEPART(TZOFFSET, SYSDATETIMEOFFSET()) AS tz_offset_minutes;`;
+       DATEPART(TZOFFSET, SYSDATETIMEOFFSET()) AS tz_offset_minutes,
+       @platform AS host_platform,
+       @distribution AS host_distribution,
+       @release AS host_release,
+       @container AS container_type;`;
 
 // The files of a database as they are on this server (for RESTORE ... REPLACE in place).
 export const DB_FILES = `
