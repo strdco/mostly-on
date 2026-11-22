@@ -91,6 +91,7 @@ export function serverRoutes(router, { cfg }) {
         const s = existing ? serversRepo.revive(existing.id, v, cfg.secretKeyBytes) : serversRepo.create(v, cfg.secretKeyBytes);
         events.add('info', 'server', `Server ${s.name} ${existing ? 'registered again' : 'registered'} (${s.host}:${s.port})`, { serverId: s.id });
         await health.checkServer(s.id);
+        evaluateSoon();
         ctx.status = 201;
         return withHealth(serversRepo.get(s.id));
     });
@@ -111,6 +112,7 @@ export function serverRoutes(router, { cfg }) {
         await resetPool(id);
         events.add('info', 'server', `Server ${before.name} updated`, { serverId: id, data: { fields: Object.keys(v).filter((k) => k !== 'password') } });
         await health.checkServer(id);
+        evaluateSoon(); // e.g. a setup alert, now that the check has the new settings
         return withHealth(serversRepo.get(id));
     });
 
@@ -132,6 +134,7 @@ export function serverRoutes(router, { cfg }) {
         const id = idParam(ctx.params.id);
         if (mustGet(id).removed_at) throw new HttpError(409, 'This server was removed');
         await health.checkServer(id);
+        evaluateSoon(); // a setup alert the check found fixed clears right away
         return withHealth(serversRepo.get(id));
     });
 

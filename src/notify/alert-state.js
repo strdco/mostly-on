@@ -8,7 +8,9 @@
 //   absent for resolveMs         -> resolved, "resolved" notice (only if the
 //                                   "new" notice had been delivered); kinds in
 //                                   instantKinds resolve at once (a person
-//                                   cleared them, so they cannot flap)
+//                                   cleared them, so they cannot flap), and so
+//                                   do keys in clearedKeys (a check has just
+//                                   shown them fixed)
 //   resolved, notice not yet delivered -> "resolved" notice again (retry)
 // A notice counts as delivered when the caller records last_notified_at;
 // a pending resolved notice is last_notified_at < resolved_at.
@@ -27,9 +29,10 @@ const ms = (iso) => (iso ? new Date(iso).getTime() : null);
  * @param {{presentSince: Map, absentSince: Map}} a.memo  mutated
  * @param {number} a.now  epoch ms
  * @param {Set<string>} [a.instantKinds]  kinds that resolve without the resolve debounce
+ * @param {Set<string>} [a.clearedKeys]   condition keys a check has just shown to be fixed: they resolve without the debounce too
  * @returns {{ writes: object[], notices: object[] }}
  */
-export function decide({ conditions, rows, memo, now, reminderMs, confirmMs, resolveMs, instantKinds = new Set() }) {
+export function decide({ conditions, rows, memo, now, reminderMs, confirmMs, resolveMs, instantKinds = new Set(), clearedKeys = new Set() }) {
     const writes = [];
     const notices = [];
     const iso = (t) => new Date(t).toISOString();
@@ -75,7 +78,7 @@ export function decide({ conditions, rows, memo, now, reminderMs, confirmMs, res
         if (row.status === 'active') {
             const since = memo.absentSince.get(row.key) ?? now;
             memo.absentSince.set(row.key, since);
-            if (now - since < (instantKinds.has(row.kind) ? 0 : resolveMs)) continue;
+            if (now - since < (instantKinds.has(row.kind) || clearedKeys.has(row.key) ? 0 : resolveMs)) continue;
             memo.absentSince.delete(row.key);
             const resolved = { ...row, status: 'resolved', resolved_at: iso(now) };
             writes.push(resolved);

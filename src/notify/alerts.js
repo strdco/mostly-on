@@ -4,6 +4,7 @@
 //
 // Conditions (stable keys):
 //   server:<srv>          an enabled server is unreachable
+//   setup:<srv>           its setup script is missing or out of date (resolves as soon as a check finds it ready)
 //   dbstate:<db>:<srv>    not ONLINE on the primary / not RESTORING (or STANDBY) on a secondary
 //   chain:<db>:<srv>      shipping stopped: chain broken or reseed needed
 //   lag:<db>:<srv>        a secondary is further behind than its LOG interval plus alerts.lag_threshold_minutes
@@ -178,6 +179,21 @@ export function collectConditions() {
     return out;
 }
 
+/**
+ * Keys of conditions a successful check has just shown to be fixed, so their
+ * alerts resolve without the debounce: a server whose setup script is in
+ * place. (A setup alert that is only absent because the server cannot be
+ * reached keeps the debounce.)
+ */
+export function confirmedFixed() {
+    const out = new Set();
+    for (const s of serversRepo.list()) {
+        const h = health.getHealth(s.id);
+        if (s.enabled && h?.ok && h.setup?.ready) out.add(`setup:${s.id}`);
+    }
+    return out;
+}
+
 function noticeLink(n, link) {
     if (n.link) return n;
     if (n.kind === 'operation') return { ...n, link: link.ops };
@@ -200,6 +216,7 @@ export async function tick(now = Date.now()) {
         confirmMs: debounceMs,
         resolveMs: debounceMs,
         instantKinds: INSTANT_KINDS,
+        clearedKeys: confirmedFixed(),
     });
 
     if (writes.length) {

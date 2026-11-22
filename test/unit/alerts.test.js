@@ -171,3 +171,20 @@ test('alerts a person clears (resolved operation, acknowledged backup) resolve w
     assert.deepEqual(run(T0 + MIN, [op]), ['new:op:18']);
     assert.deepEqual(run(T0 + MIN + 1000, []), ['resolved:op:18'], 'gone at the next evaluation');
 });
+
+test('an alert a check has just shown fixed (setup script in place) resolves without the debounce', () => {
+    const rows = new Map();
+    const memo = createMemo();
+    const setup = { ...cond('setup:2'), kind: 'setup' };
+    const run = (now, conditions, clearedKeys = new Set()) => {
+        const out = decide({ conditions: new Map(conditions.map((c) => [c.key, c])), rows: new Map(rows), memo, now, ...opts, clearedKeys });
+        for (const w of out.writes) rows.set(w.key, { ...w, last_notified_at: new Date(now).toISOString() });
+        return out.notices.map((n) => `${n.type}:${n.key}`);
+    };
+    run(T0, [setup]);
+    assert.deepEqual(run(T0 + MIN, [setup]), ['new:setup:2']);
+    // Gone only because the server cannot be reached: the debounce still applies.
+    assert.deepEqual(run(T0 + MIN + 1000, []), [], 'not resolved without a check that found it fixed');
+    // The next check reaches the server and finds the script in place.
+    assert.deepEqual(run(T0 + MIN + 2000, [], new Set(['setup:2'])), ['resolved:setup:2'], 'resolved at once');
+});
