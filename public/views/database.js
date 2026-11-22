@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formDialog, field, toast, formatBytes, formatTime, tooltip, menuButton } from '../dom.js';
+import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, formatBytes, formatTime, tooltip, menuButton } from '../dom.js';
 import { get, post, put } from '../api.js';
 import { stateTipBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagTipBadge, formatDuration, busyText } from './overview.js';
 import { operationsTable } from './operations.js';
@@ -47,12 +47,29 @@ function restoreModeFields({ mode = 'norecovery' } = {}) {
     return { select, fields: [modeField] };
 }
 
-/** The mode description for tables, with a restore delay and pause. */
-function modeText(r) {
-    const mode = r.restore_mode === 'standby' ? `${MODE_LABEL.standby}; readers are disconnected at each restore` : MODE_LABEL.norecovery;
-    if (!(r.restore_delay_minutes > 0)) return mode;
-    const paused = restoresPaused(r) ? `; restores paused until ${formatTime(r.restores_paused_until)}` : '';
-    return `${mode}; kept ${delayText(r.restore_delay_minutes)} behind${paused}`;
+/**
+ * The copy's restore mode as a neutral tag (it is a choice, not a problem),
+ * with what it means in a tooltip. Delay and pause show in the Behind column.
+ */
+function modeTag(r) {
+    const delayed = r.restore_delay_minutes > 0;
+    const never = delayed ? ' It is kept behind on purpose (restore delay), so it never takes over in a failover.' : '';
+    if (r.restore_mode !== 'standby') {
+        return tipBadge(
+            'norecovery',
+            '',
+            `Not readable (NORECOVERY): nobody can query this copy. It only receives the primary's log backups${delayed ? '.' : ', ready to take over if the primary fails.'}${never}`,
+        );
+    }
+    // Reinitializing or a rollback leaves it RESTORING; the next log restore makes it readable again.
+    const notNow =
+        r.live?.state === 'RESTORING' && !r.live.isInStandby ? ' Not readable right now: it becomes readable again with its next log restore.' : '';
+    return tipBadge(
+        'standby',
+        '',
+        'Readable between restores (STANDBY): people can run read-only queries (reports) on this copy and see the data as of its last restore. ' +
+            `Each time a log backup is restored, everyone using it is disconnected and their running queries are cancelled.${notNow}${never}`,
+    );
 }
 
 const MAX_DELAY_MINUTES = 7 * 24 * 60; // src/engine/restore-plan.js MAX_RESTORE_DELAY_MINUTES
@@ -848,7 +865,7 @@ export function databaseView(id) {
                     },
                     {
                         label: 'Copy',
-                        cell: (r) => (r.role === 'secondary' ? modeText(r) : ''),
+                        cell: (r) => (r.role === 'secondary' ? modeTag(r) : ''),
                     },
                     { label: 'Behind', cell: (r) => (r.role === 'secondary' && r.position_lsn ? lagTipBadge(r.lag, lagLimits(db.schedules.find((s) => s.backup_type === 'LOG'), threshold, r.restore_delay_minutes), r) : '') },
                     { label: 'Actions', cell: (r) => replicaActions(db, r, load) },

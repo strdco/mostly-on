@@ -17,7 +17,7 @@ import { hashPassword } from '../../src/crypto.js';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 export const PROJECT = process.env.IT_PROJECT || 'mostly-on-it';
-export const PORTS = { controller: 18080, sql1: 24331, sql2: 24332, mock: 19911 };
+export const PORTS = { controller: 18080, sql1: 24331, sql2: 24332, sql3: 24333, mock: 19911 };
 const BASE = `http://localhost:${PORTS.controller}`;
 const MOCK = `http://localhost:${PORTS.mock}`;
 const STATE_FILE = path.join(os.tmpdir(), `${PROJECT}.json`); // secrets of the current stack, for IT_REUSE
@@ -41,6 +41,7 @@ async function newSecrets() {
         CONTROLLER_PORT: PORTS.controller,
         SQL1_PORT: PORTS.sql1,
         SQL2_PORT: PORTS.sql2,
+        SQL3_PORT: PORTS.sql3, // the compose file has a sql3; keep it off the dev stack's port
         MOCK_PUSHOVER_PORT: PORTS.mock,
         LOG_LEVEL: 'info',
         TZ: 'UTC',

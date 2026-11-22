@@ -120,9 +120,11 @@ export function chainBadge(r) {
  * How far behind the primary a secondary's data is (age of the newest restored
  * log backup), plus log backups still waiting, coloured against its lag limits
  * (lag.js: its LOG interval, its restore delay, plus the alert threshold).
- * rep: the replica, for its pause. Paused or catching up: behind on purpose, no colour.
+ * rep: the replica, for its pause. Paused: amber, so a pause is not forgotten
+ * (the badge also says "paused"). Catching up afterwards: behind on purpose, no colour.
  */
 function lagKind(lag, limits, rep) {
+    if (restoresPaused(rep)) return 'warn';
     if (rep?.restores_paused_until) return '';
     return lag.seconds > limits.alert ? 'err' : lag.seconds > limits.warn ? 'warn' : 'ok';
 }
