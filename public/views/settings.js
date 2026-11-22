@@ -39,14 +39,16 @@ const CARDS = [
     {
         id: 'load',
         title: 'Load on the SQL Servers',
-        intro: 'Health checks and other short queries have their own connections and never wait.',
+        intro:
+            'Backups and restores over the limit wait their turn, in order, so a long FULL backup can hold up LOG backups and restores on the same server. ' +
+            'Failovers and rollbacks never wait, and health checks have their own connections.',
         fields: [
             {
                 key: 'servers.max_parallel',
                 label: 'Backups and restores at a time, per server',
                 min: 1,
                 max: 10,
-                hint: 'The default; a server can have its own (edit the server). More over the limit wait their turn, in order: a long FULL backup can hold up LOG backups and restores on the same server. Failovers and rollbacks never wait.',
+                hint: 'Server settings can override this value.',
             },
         ],
     },
@@ -233,6 +235,7 @@ export function settingsView() {
                     'div.settings-grid',
                     cards.alerts,
                     cards.monitoring,
+                    cards.load,
                     cards.retention,
                     h(
                         'section.settings-card',
