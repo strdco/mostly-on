@@ -18,7 +18,7 @@ export const DEFAULTS = Object.freeze({
     'msdb_history.purge_enabled': false,
     'msdb_history.keep_days': 90,
     'schedule.default_full': { kind: 'weekly', weekday: 0, at_time: '01:00' },
-    'schedule.default_diff': { kind: 'daily', at_time: '01:30' },
+    'schedule.default_diff': { kind: 'daily', at_time: '01:30', enabled: false }, // DIFF backups are optional; only this default can be off
     'schedule.default_log': { kind: 'interval', interval_minutes: 5 },
 });
 

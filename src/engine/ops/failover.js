@@ -37,6 +37,7 @@ import { fail, errText, lockHolder, recordFork, ownerNote, firstLogStep, catalog
 import { reachable, lineageProblem, lag, onLineage } from '../chain.js';
 import { restoreCompatibility } from '../../sqlversion.js';
 import { translatePath, backupRelDir } from '../../paths.js';
+import { isBackupOnly, dbLabel } from '../backup-rules.js';
 import { pathOpts } from '../context.js';
 import { publish } from '../../bus.js';
 
@@ -56,6 +57,7 @@ async function applyAll(args) {
 function loadTopology(databaseId, targetServerId) {
     const db = databases.get(databaseId);
     if (!db || db.status !== 'managed') throw fail(404, 'Database is not managed');
+    if (isBackupOnly(db)) throw fail(409, `Mostly-On only backs up ${dbLabel(db)}: it has no secondaries to fail over to.`);
     const primary = databases.primaryOf(db.id);
     if (!primary) throw fail(409, `${db.name} has no primary`);
     const target = serversRepo.get(targetServerId);

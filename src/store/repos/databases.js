@@ -2,19 +2,47 @@
 import { getDb, nowIso, tx } from '../db.js';
 import * as settings from './settings.js';
 import { nextRun } from '../../engine/schedule-math.js';
+import { dbLabel, isSystemName, manageKind } from '../../engine/backup-rules.js';
+
+// backup_only_server_id is set for a backups-only database (see engine/backup-rules.js):
+// it belongs to that one server. NULL = log shipped, identified by name on every server.
+const DB_COLS = `d.id, d.name, d.family_guid, d.status, d.owner_sid, d.owner_name, d.owner_fallback,
+    d.retention_full_days, d.retention_diff_days, d.retention_log_days, d.created_at, d.updated_at,
+    d.backup_only_server_id, bs.name AS backup_only_server_name`;
+const DB_FROM = 'databases AS d LEFT JOIN servers AS bs ON bs.id=d.backup_only_server_id';
 
 export function list({ includeUnmanaged = false } = {}) {
     return getDb()
-        .prepare(`SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, retention_full_days, retention_diff_days, retention_log_days, created_at, updated_at FROM databases ${includeUnmanaged ? '' : "WHERE status='managed'"} ORDER BY name`)
+        .prepare(`SELECT ${DB_COLS} FROM ${DB_FROM} ${includeUnmanaged ? '' : "WHERE d.status='managed'"} ORDER BY d.name, bs.name`)
         .all();
 }
 
 export function get(id) {
-    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, retention_full_days, retention_diff_days, retention_log_days, created_at, updated_at FROM databases WHERE id=?').get(id);
+    return getDb().prepare(`SELECT ${DB_COLS} FROM ${DB_FROM} WHERE d.id=?`).get(id);
 }
 
-export function getByName(name) {
-    return getDb().prepare('SELECT id, name, family_guid, status, owner_sid, owner_name, owner_fallback, retention_full_days, retention_diff_days, retention_log_days, created_at, updated_at FROM databases WHERE name=?').get(name);
+/**
+ * The catalog row for a name: the log-shipped database (backupOnlyServerId
+ * null), or the backups-only one on that server. Managed or not.
+ */
+export function find(name, backupOnlyServerId = null) {
+    return getDb().prepare(`SELECT ${DB_COLS} FROM ${DB_FROM} WHERE d.name=? AND d.backup_only_server_id IS ?`).get(name, backupOnlyServerId);
+}
+
+/** "master on sql1" for a backups-only database, else its name. */
+export const label = dbLabel;
+
+/**
+ * Names that count as managed on a server: every log-shipped database (a name
+ * is one database on every server), plus the backups-only ones of that server.
+ */
+export function namesManagedOn(serverId) {
+    return new Set(
+        getDb()
+            .prepare("SELECT name FROM databases WHERE status='managed' AND (backup_only_server_id IS NULL OR backup_only_server_id=?)")
+            .pluck()
+            .all(serverId),
+    );
 }
 
 /** Sets a database's own retention days (null = use the global value). */
@@ -78,7 +106,7 @@ export function replica(databaseId, serverId) {
 export function replicasOnServer(serverId) {
     return getDb()
         .prepare(
-            `SELECT ${REPLICA_COLS}, d.name AS database_name FROM database_replicas AS r
+            `SELECT ${REPLICA_COLS}, d.name AS database_name, d.backup_only_server_id FROM database_replicas AS r
              JOIN servers AS s ON s.id=r.server_id JOIN databases AS d ON d.id=r.database_id
              WHERE r.server_id=? AND d.status='managed' ORDER BY d.name`,
         )
@@ -171,42 +199,61 @@ export function removeReplica(databaseId, serverId) {
     return getDb().prepare("DELETE FROM database_replicas WHERE database_id=? AND server_id=? AND role!='primary'").run(databaseId, serverId).changes > 0;
 }
 
-function defaultSchedules(databaseId) {
+export const DEFAULT_SCHEDULE_KEYS = Object.freeze([
+    ['FULL', 'schedule.default_full'],
+    ['DIFF', 'schedule.default_diff'],
+    ['LOG', 'schedule.default_log'],
+]);
+
+/**
+ * Gives a database the default schedules (all of each schedule, also when it
+ * was managed before). Only the DIFF default can be off; a stored default
+ * without `enabled` is on, as it was before that switch existed.
+ * fullOnly: master, which SQL Server only allows FULL backups of.
+ */
+function defaultSchedules(databaseId, { fullOnly = false } = {}) {
     const now = new Date();
     const ins = getDb().prepare(
         `INSERT INTO schedules (database_id, backup_type, enabled, kind, interval_minutes, at_time, weekday, next_run_at)
-         VALUES (@database_id, @backup_type, 1, @kind, @interval_minutes, @at_time, @weekday, @next_run_at)
-         ON CONFLICT (database_id, backup_type) DO UPDATE SET enabled=1, next_run_at=excluded.next_run_at`,
+         VALUES (@database_id, @backup_type, @enabled, @kind, @interval_minutes, @at_time, @weekday, @next_run_at)
+         ON CONFLICT (database_id, backup_type) DO UPDATE SET enabled=excluded.enabled, kind=excluded.kind,
+             interval_minutes=excluded.interval_minutes, at_time=excluded.at_time, weekday=excluded.weekday, next_run_at=excluded.next_run_at`,
     );
-    for (const [type, key] of [['FULL', 'schedule.default_full'], ['DIFF', 'schedule.default_diff'], ['LOG', 'schedule.default_log']]) {
+    for (const [type, key] of fullOnly ? DEFAULT_SCHEDULE_KEYS.slice(0, 1) : DEFAULT_SCHEDULE_KEYS) {
         const d = settings.get(key);
+        const enabled = type !== 'DIFF' || d.enabled !== false;
         const sched = { kind: d.kind, interval_minutes: d.interval_minutes ?? null, at_time: d.at_time ?? null, weekday: d.weekday ?? null };
-        ins.run({ database_id: databaseId, backup_type: type, ...sched, next_run_at: nextRun(sched, now).toISOString() });
+        ins.run({ database_id: databaseId, backup_type: type, enabled: enabled ? 1 : 0, ...sched, next_run_at: enabled ? nextRun(sched, now).toISOString() : null });
     }
+    if (fullOnly) getDb().prepare("DELETE FROM schedules WHERE database_id=? AND backup_type!='FULL'").run(databaseId);
 }
 
 /**
  * Start managing a database with the given primary. Re-managing a previously
  * unmanaged database keeps its history but resets its replicas.
+ * backupOnly: backed up on this server only (system databases, and databases
+ * not in FULL recovery); fullOnly: master (a FULL schedule only).
  */
-export function manage({ name, familyGuid, primaryServerId }) {
+export function manage({ name, familyGuid, primaryServerId, backupOnly = false, fullOnly = false }) {
     return tx(() => {
         const now = nowIso();
-        let row = getByName(name);
+        let row = find(name, backupOnly ? primaryServerId : null);
         if (row) {
             getDb().prepare("UPDATE databases SET status='managed', family_guid=?, updated_at=? WHERE id=?").run(familyGuid, now, row.id);
             getDb().prepare('DELETE FROM database_replicas WHERE database_id=?').run(row.id);
         } else {
             const info = getDb()
-                .prepare("INSERT INTO databases (name, family_guid, status, created_at, updated_at) VALUES (?, ?, 'managed', ?, ?)")
-                .run(name, familyGuid, now, now);
+                .prepare("INSERT INTO databases (name, family_guid, status, created_at, updated_at, backup_only_server_id) VALUES (?, ?, 'managed', ?, ?, ?)")
+                .run(name, familyGuid, now, now, backupOnly ? primaryServerId : null);
             row = { id: Number(info.lastInsertRowid) };
         }
         getDb()
             .prepare("INSERT INTO database_replicas (database_id, server_id, role, chain_state, updated_at) VALUES (?, ?, 'primary', 'ok', ?)")
             .run(row.id, primaryServerId, now);
-        defaultSchedules(row.id);
-        getDb().prepare('DELETE FROM discovered_databases WHERE name=?').run(name);
+        defaultSchedules(row.id, { fullOnly });
+        // A log-shipped name is managed on every server; a backups-only one only on its own.
+        if (backupOnly) getDb().prepare('DELETE FROM discovered_databases WHERE name=? AND server_id=?').run(name, primaryServerId);
+        else getDb().prepare('DELETE FROM discovered_databases WHERE name=?').run(name);
         return get(row.id);
     });
 }
@@ -275,7 +322,10 @@ export function discovered({ includeDismissed = false } = {}) {
              ORDER BY dd.name, s.name`,
         )
         .all()
-        .map((r) => ({ ...r, has_log_chain: !!r.has_log_chain, shippable: r.recovery_model === 'FULL' }));
+        .map((r) => {
+            const manageAs = manageKind({ name: r.name, recoveryModel: r.recovery_model });
+            return { ...r, has_log_chain: !!r.has_log_chain, system: isSystemName(r.name), manage_as: manageAs, shippable: manageAs === 'shipped' };
+        });
 }
 
 export function getDiscovered(serverId, name) {

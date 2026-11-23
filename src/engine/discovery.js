@@ -14,6 +14,7 @@ import { translatePath } from '../paths.js';
 import { pathOpts } from './context.js';
 import { subscribe, publish } from '../bus.js';
 import { log } from '../log.js';
+import { isBackupOnly, dbLabel, SYSTEM_DATABASE_IDS } from './backup-rules.js';
 
 const FOREIGN_SCAN_MS = 60_000;
 const LOOKBACK_MS = 3 * 86400_000;
@@ -25,15 +26,16 @@ let scanning = false;
 export function syncFromHealth(serverId) {
     const h = health.getHealth(serverId);
     if (!h?.ok) return;
-    const managed = new Set(databases.list().map((d) => d.name));
+    const managed = databases.namesManagedOn(serverId);
     const candidates = h.databases.filter((d) => d.state === 'ONLINE' && !managed.has(d.name));
     const added = databases.syncDiscovered(serverId, candidates);
     const server = serversRepo.get(serverId);
     for (const d of added) {
+        if (SYSTEM_DATABASE_IDS.includes(d.databaseId)) continue; // every server has them: no news
         if (d.recoveryModel === 'FULL') {
             events.add('info', 'discovery', `Database ${d.name} on ${server.name} is in FULL recovery and can be managed`, { serverId });
         } else {
-            events.add('info', 'discovery', `Database ${d.name} on ${server.name} is in ${d.recoveryModel} recovery and cannot be log shipped`, { serverId });
+            events.add('info', 'discovery', `Database ${d.name} on ${server.name} is in ${d.recoveryModel} recovery: it can be managed for backups only (no secondaries)`, { serverId });
         }
     }
     if (added.length) publish('discovery.changed', { serverId });
@@ -67,7 +69,12 @@ export async function scanForeign(db) {
         }
         if (bs.is_copy_only) continue; // copy-only backups do not affect the chain
 
+        // Other tools often back up system databases too. For a backups-only
+        // database (no secondaries) only a LOG backup matters: restoring past
+        // it needs that file. A FULL or DIFF is noted, without an alert.
+        const local = isBackupOnly(db);
         const isNew = foreign.record({
+            acknowledged: local && bs.type !== 'LOG',
             uuid: bs.backup_set_uuid,
             databaseId: db.id,
             serverId: server.id,
@@ -79,7 +86,14 @@ export async function scanForeign(db) {
         changed = true;
         const where = `${bs.devices.join(', ')} at ${bs.backup_finish}`;
         const refs = { databaseId: db.id, serverId: server.id, data: { uuid: bs.backup_set_uuid, devices: bs.devices, firstLsn: bs.first_lsn, lastLsn: bs.last_lsn } };
-        if (bs.type === 'LOG') {
+        if (local) {
+            if (bs.type === 'LOG') {
+                events.add('warn', 'foreign-backup', `A LOG backup of ${dbLabel(db)} was taken outside Mostly-On (${where}). Restoring it past that point also needs that file. Stop the other tool, or make it use COPY_ONLY.`, refs);
+                publish('foreign.detected', { databaseId: db.id, type: 'LOG' });
+            } else {
+                events.add('info', 'foreign-backup', `A ${bs.type} backup of ${dbLabel(db)} was taken outside Mostly-On (${where}). Another tool still backs it up; turn that job off if Mostly-On should be the only one.`, refs);
+            }
+        } else if (bs.type === 'LOG') {
             events.add('error', 'foreign-backup', `A LOG backup of ${db.name} was taken outside Mostly-On, on ${server.name} (${where}). The secondaries never get the changes in it, so shipping stops. Stop the other tool (or make it use COPY_ONLY), then reinitialize the secondaries.`, refs);
             publish('foreign.detected', { databaseId: db.id, type: 'LOG' });
         } else if (bs.type === 'FULL') {

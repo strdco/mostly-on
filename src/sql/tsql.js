@@ -44,7 +44,8 @@ SELECT mf.name AS logical_name, mf.physical_name, mf.type_desc
 FROM sys.master_files AS mf
 WHERE mf.database_id=DB_ID(@db);`;
 
-// One row per user database with everything the health/shipping logic needs.
+// One row per database (the system databases too, but never tempdb or a
+// database snapshot) with everything the health/shipping logic needs.
 // redo_start_lsn/redo_start_fork_guid are only populated while RESTORING.
 export const DATABASES_STATE = `
 SELECT d.name,
@@ -67,7 +68,8 @@ OUTER APPLY (
     FROM sys.master_files AS mf
     WHERE mf.database_id=d.database_id
     ) AS files
-WHERE d.database_id>4
+WHERE d.database_id!=2
+  AND d.source_database_id IS NULL
 ORDER BY d.name;`;
 
 export { utc };
@@ -78,6 +80,8 @@ export { utc };
 // differential_base_* identify the FULL a DIFF taken now would be based on.
 export const DB_BACKUP_STATE = `
 SELECT d.name,
+       d.database_id,
+       d.source_database_id,
        d.state_desc,
        d.recovery_model_desc,
        d.is_read_only,

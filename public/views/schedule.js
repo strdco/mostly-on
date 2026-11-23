@@ -4,8 +4,10 @@ import { h, formDialog, field } from '../dom.js';
 
 export const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+const isOn = (s) => s.enabled !== 0 && s.enabled !== false; // a default schedule stored without `enabled` is on
+
 export function describeSchedule(s) {
-    if (s.enabled === 0 || s.enabled === false) return 'disabled';
+    if (!isOn(s)) return 'disabled';
     if (s.kind === 'interval') return `every ${s.interval_minutes} min`;
     if (s.kind === 'daily') return `daily at ${s.at_time}`;
     return `${WEEKDAYS[s.weekday]}s at ${s.at_time}`;
@@ -37,7 +39,13 @@ export function scheduleDialog({ title, schedule: s, withEnabled = true, onSubmi
     sync();
     return formDialog({
         title,
-        fields: [withEnabled ? field('Enabled', h('input', { type: 'checkbox', name: 'enabled', checked: !!s.enabled })) : null, field('Repeat', kind), interval, time, weekday],
+        fields: [
+            withEnabled ? field('Enabled', h('input.switch', { type: 'checkbox', switch: true, role: 'switch', name: 'enabled', checked: isOn(s) })) : null,
+            field('Repeat', kind),
+            interval,
+            time,
+            weekday,
+        ],
         onSubmit: (v) => {
             const out = { kind: v.kind };
             if (withEnabled) out.enabled = v.enabled;

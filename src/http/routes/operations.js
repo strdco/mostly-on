@@ -8,7 +8,7 @@ const STATUSES = ['queued', 'running', 'succeeded', 'failed', 'interrupted', 're
 
 function withNames(op) {
     const db = op.database_id ? databases.get(op.database_id) : null;
-    return { ...op, database_name: db?.name ?? null, resumable: canResume(op), resolvable: canResolve(op) };
+    return { ...op, database_name: db ? databases.label(db) : null, resumable: canResume(op), resolvable: canResolve(op) };
 }
 
 export function operationRoutes(router) {

@@ -32,7 +32,8 @@ function targetProblem(databaseId, to) {
     return null;
 }
 
-const primariesOn = (fromId) => databases.replicasOnServer(fromId).filter((r) => r.role === 'primary');
+// Backups-only databases (engine/backup-rules.js) never move: they belong to their server.
+const primariesOn = (fromId) => databases.replicasOnServer(fromId).filter((r) => r.role === 'primary' && r.backup_only_server_id == null);
 
 /**
  * The servers the primaries on `fromId` can fail over to: every other server

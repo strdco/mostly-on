@@ -130,3 +130,84 @@ test('settings have defaults and validate types', () => {
     assert.throws(() => settings.set('nope', 1));
     closeDb();
 });
+
+test('backups-only databases: one per server and name, next to a log-shipped database of the same name', () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const mk = (name) => servers.create(servers.validate({ name, host: name, username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const [a, b, c] = [mk('a'), mk('b'), mk('c')];
+    const seen = (serverId, name, recovery_model = 'SIMPLE') => ({ name, recoveryModel: recovery_model, state: 'ONLINE', lastLogBackupLsn: null });
+    databases.syncDiscovered(a.id, [seen(a.id, 'master'), seen(a.id, 'Util')]);
+    databases.syncDiscovered(b.id, [seen(b.id, 'master'), seen(b.id, 'Util'), seen(b.id, 'Sales', 'FULL')]);
+
+    const m1 = databases.manage({ name: 'master', familyGuid: 'g1', primaryServerId: a.id, backupOnly: true, fullOnly: true });
+    const m2 = databases.manage({ name: 'master', familyGuid: 'g2', primaryServerId: b.id, backupOnly: true, fullOnly: true });
+    assert.notEqual(m1.id, m2.id);
+    assert.equal(databases.label(m1), 'master on a');
+    assert.equal(m2.backup_only_server_name, 'b');
+    assert.deepEqual(getDb().prepare('SELECT backup_type FROM schedules WHERE database_id=?').pluck().all(m1.id), ['FULL'], 'master: FULL only');
+    // Managing master on a removed only a's discovered row.
+    assert.deepEqual(databases.discovered().map((d) => `${d.server_name}:${d.name}`), ['b:Sales', 'a:Util', 'b:Util']);
+
+    const shipped = databases.manage({ name: 'Sales', familyGuid: null, primaryServerId: b.id });
+    assert.equal(databases.label(shipped), 'Sales');
+    assert.equal(databases.find('Sales').id, shipped.id);
+    const util = databases.manage({ name: 'Sales', familyGuid: null, primaryServerId: c.id, backupOnly: true });
+    assert.notEqual(util.id, shipped.id, 'a backups-only database may share a log-shipped name');
+    assert.equal(databases.find('Sales', c.id).id, util.id);
+
+    // Which names count as managed on each server (discovery hides them).
+    assert.deepEqual([...databases.namesManagedOn(a.id)].sort(), ['Sales', 'master']);
+    assert.deepEqual([...databases.namesManagedOn(c.id)].sort(), ['Sales']);
+
+    // Managing it again reuses the row of that server.
+    databases.unmanage(m1.id);
+    assert.equal(databases.manage({ name: 'master', familyGuid: 'g1', primaryServerId: a.id, backupOnly: true, fullOnly: true }).id, m1.id);
+
+    // A server that backups-only databases belong to is kept (retired), like one with history.
+    assert.match(removeBlocker(a.id), /backs up 1 database only on this server.*Stop managing it first/);
+    databases.unmanage(m1.id);
+    assert.equal(removeBlocker(a.id), null);
+    assert.equal(servers.removeOrRetire(a.id), 'removed');
+    closeDb();
+});
+
+test('discovered databases say how they would be managed', () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const a = servers.create(servers.validate({ name: 'a', host: 'a', username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    databases.syncDiscovered(a.id, [
+        { name: 'msdb', recoveryModel: 'SIMPLE', state: 'ONLINE' },
+        { name: 'model', recoveryModel: 'FULL', state: 'ONLINE' },
+        { name: 'Sales', recoveryModel: 'FULL', state: 'ONLINE' },
+        { name: 'Stage', recoveryModel: 'BULK_LOGGED', state: 'ONLINE' },
+    ]);
+    const by = Object.fromEntries(databases.discovered().map((d) => [d.name, [d.manage_as, d.system, d.shippable]]));
+    assert.deepEqual(by, {
+        msdb: ['backup_only', true, false],
+        model: ['backup_only', true, false],
+        Sales: ['shipped', false, true],
+        Stage: ['backup_only', false, false],
+    });
+    closeDb();
+});
+
+test('default schedules: DIFF is off unless switched on; a stored DIFF default from before the switch stays on', () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const a = servers.create(servers.validate({ name: 'a', host: 'a', username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const sched = (id) => Object.fromEntries(getDb().prepare('SELECT backup_type, enabled, next_run_at FROM schedules WHERE database_id=?').all(id).map((r) => [r.backup_type, [r.enabled, r.next_run_at !== null]]));
+    const one = databases.manage({ name: 'One', familyGuid: null, primaryServerId: a.id });
+    assert.deepEqual(sched(one.id), { FULL: [1, true], DIFF: [0, false], LOG: [1, true] });
+
+    settings.set('schedule.default_diff', { kind: 'daily', at_time: '02:00' }); // stored before `enabled` existed
+    const two = databases.manage({ name: 'Two', familyGuid: null, primaryServerId: a.id });
+    assert.deepEqual(sched(two.id).DIFF, [1, true]);
+
+    // Managing again takes the whole default, not just the next run.
+    getDb().prepare("UPDATE schedules SET kind='interval', interval_minutes=1, at_time=NULL WHERE database_id=? AND backup_type='DIFF'").run(one.id);
+    databases.unmanage(one.id);
+    databases.manage({ name: 'One', familyGuid: null, primaryServerId: a.id });
+    assert.deepEqual(getDb().prepare("SELECT enabled, kind, at_time FROM schedules WHERE database_id=? AND backup_type='DIFF'").get(one.id), { enabled: 1, kind: 'daily', at_time: '02:00' });
+    closeDb();
+});

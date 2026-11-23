@@ -21,6 +21,8 @@ import { sqlErrorText } from '../../sql/pool.js';
 import { evaluateSoon } from '../../notify/alerts.js';
 import { syncFromHealth } from '../../engine/discovery.js';
 import { publish } from '../../bus.js';
+import { dbFolder } from '../../paths.js';
+import { isBackupOnly, isSystemName, manageKind, skippedTypes, dbLabel, SYSTEM_DATABASE_IDS, MASTER_ID } from '../../engine/backup-rules.js';
 
 function mustGet(id) {
     const db = databases.get(id);
@@ -42,12 +44,29 @@ function summary(db) {
             lag: lags.get(r.server_id) || null,
         };
     });
+    const primary = replicas.find((r) => r.role === 'primary') || null;
+    const primaryLive = primary ? health.dbState(primary.server_id, db.name) : null;
+    const backupOnly = isBackupOnly(db);
+    const system = primaryLive?.databaseId != null ? SYSTEM_DATABASE_IDS.includes(primaryLive.databaseId) : backupOnly && isSystemName(db.name);
+    const recoveryModel = primaryLive?.recoveryModel ?? null;
     return {
         id: db.id,
         name: db.name,
+        label: dbLabel(db),
         family_guid: db.family_guid,
         created_at: db.created_at,
-        primary: replicas.find((r) => r.role === 'primary') || null,
+        // Backups only: on this one server, never shipped, failed over or restored (engine/backup-rules.js).
+        backup_only: backupOnly,
+        server_name: backupOnly ? db.backup_only_server_name : null,
+        folder: backupOnly ? dbFolder(db.name, db.backup_only_server_name) : null, // under the backup share
+        system,
+        recovery_model: recoveryModel,
+        // Types that do not apply right now ({ DIFF: why, LOG: why }); their schedules are skipped.
+        skipped: backupOnly ? skippedTypes(db, { recoveryModel, databaseId: primaryLive?.databaseId ?? null }, primary?.server_name) : {},
+        // A backups-only user database now in FULL recovery could be log shipped (stop managing it, then manage it again).
+        can_ship: backupOnly && !system && recoveryModel === 'FULL',
+        latest_foreign: backupOnly ? (foreign.list(db.id)[0] ?? null) : null,
+        primary,
         replicas,
         latest: backups.latestByType(db.id),
         schedules: schedules.list(db.id),
@@ -69,7 +88,7 @@ export function databaseRoutes(router) {
         return {
             ...summary(db),
             foreignBackups: foreign.list(db.id),
-            operations: ops.list({ databaseId: db.id, limit: 20 }).map((op) => ({ ...op, database_name: db.name, resumable: canResume(op), resolvable: canResolve(op) })),
+            operations: ops.list({ databaseId: db.id, limit: 20 }).map((op) => ({ ...op, database_name: dbLabel(db), resumable: canResume(op), resolvable: canResolve(op) })),
         };
     });
 
@@ -81,14 +100,16 @@ export function databaseRoutes(router) {
     });
 
     // Start managing a database discovered on a server; it becomes the primary.
+    // A system database, or one not in FULL recovery, is managed as backups
+    // only, on this server (engine/backup-rules.js); any other is log shipped.
     router.post('/api/databases', async (ctx) => {
         const serverId = idParam(ctx.body?.server_id, 'server_id');
         const name = ctx.body?.name;
         if (typeof name !== 'string' || !name || name.length > 128) throw new HttpError(400, 'name is required');
         const server = serversRepo.get(serverId);
         if (!server) throw new HttpError(404, 'Server not found');
-        const existing = databases.getByName(name);
-        if (existing?.status === 'managed') throw new HttpError(409, `${name} is already managed`);
+        // A log-shipped name is one database on every server.
+        if (databases.find(name)?.status === 'managed') throw new HttpError(409, `${name} is already managed`);
 
         let state;
         try {
@@ -97,15 +118,37 @@ export function databaseRoutes(router) {
             throw new HttpError(503, `Cannot reach ${server.name}: ${sqlErrorText(err)}`);
         }
         if (!state) throw new HttpError(404, `Database ${name} does not exist on ${server.name}`);
+        if (state.databaseId === 2) throw new HttpError(409, 'Mostly-On never backs up tempdb: SQL Server creates it again at every start.');
+        if (state.isSnapshot) throw new HttpError(409, `${name} on ${server.name} is a database snapshot, which cannot be backed up.`);
         if (state.state !== 'ONLINE') throw new HttpError(409, `Database ${name} is ${state.state} on ${server.name}`);
-        if (state.recoveryModel !== 'FULL') {
-            throw new HttpError(409, `Database ${name} uses the ${state.recoveryModel} recovery model and cannot be log shipped. Switch it to FULL first.`);
+
+        const realName = state.name; // the server's own spelling, as health checks report it
+        const backupOnly = manageKind({ databaseId: state.databaseId, recoveryModel: state.recoveryModel }) === 'backup_only';
+        if (databases.find(realName)?.status === 'managed') throw new HttpError(409, `${realName} is already managed`);
+        if (databases.find(realName, serverId)?.status === 'managed') {
+            throw new HttpError(
+                409,
+                backupOnly
+                    ? `${realName} on ${server.name} is already managed`
+                    : `${realName} on ${server.name} is managed as backups only. To log ship it, stop managing it first, then manage it again.`,
+            );
         }
 
-        const db = databases.manage({ name, familyGuid: state.familyGuid, primaryServerId: serverId });
+        const db = databases.manage({
+            name: realName,
+            familyGuid: state.familyGuid,
+            primaryServerId: serverId,
+            backupOnly,
+            fullOnly: state.databaseId === MASTER_ID,
+        });
         forks.reset(db.id, state.recoveryForkGuid);
         databases.noteOwner(db.id, state);
-        events.add('info', 'database', `Started managing ${name} with primary ${server.name}`, { databaseId: db.id, serverId });
+        events.add(
+            'info',
+            'database',
+            backupOnly ? `Started backing up ${realName} on ${server.name} (backups only: no secondaries, no restores)` : `Started managing ${realName} with primary ${server.name}`,
+            { databaseId: db.id, serverId },
+        );
         publish('database.changed', { databaseId: db.id });
 
         // A FULL backup starts the controller's chain immediately.
@@ -129,7 +172,7 @@ export function databaseRoutes(router) {
         if (holders(db.id).length) throw new HttpError(409, `${db.name} is busy (${holders(db.id).join(', ')})`);
         const primary = databases.primaryOf(db.id);
         databases.unmanage(db.id);
-        events.add('warn', 'database', `Stopped managing ${db.name}. Backups and schedules for it have stopped; files on disk are kept.`, { databaseId: db.id });
+        events.add('warn', 'database', `Stopped managing ${dbLabel(db)}. Backups and schedules for it have stopped; files on disk are kept.`, { databaseId: db.id });
         // List it as unmanaged right away rather than at the next health check.
         if (primary) syncFromHealth(primary.server_id);
         publish('database.changed', { databaseId: db.id });
@@ -149,9 +192,12 @@ export function databaseRoutes(router) {
         const db = mustGet(idParam(ctx.params.id));
         const type = ctx.params.type;
         if (!BACKUP_TYPES.includes(type)) throw new HttpError(400, 'Invalid backup type');
+        if (!schedules.list(db.id).some((x) => x.backup_type === type)) {
+            throw new HttpError(409, db.name === 'master' && isBackupOnly(db) ? 'SQL Server only allows full backups of master.' : `${dbLabel(db)} has no ${type} schedule`);
+        }
         const v = validateSchedule(ctx.body || {});
         const s = schedules.update(db.id, type, v);
-        events.add('info', 'schedule', `${type} schedule of ${db.name} changed`, { databaseId: db.id, data: v });
+        events.add('info', 'schedule', `${type} schedule of ${dbLabel(db)} changed`, { databaseId: db.id, data: v });
         publish('database.changed', { databaseId: db.id });
         return s;
     });
@@ -189,7 +235,7 @@ export function databaseRoutes(router) {
         const problem = checkRetention(effective);
         if (problem) throw new HttpError(400, problem);
         const updated = databases.setRetention(db.id, own);
-        events.add('info', 'retention', `Backup retention of ${db.name}: FULL ${effective.full}, DIFF ${effective.diff}, LOG ${effective.log} days`, { databaseId: db.id, data: own });
+        events.add('info', 'retention', `Backup retention of ${dbLabel(db)}: FULL ${effective.full}, DIFF ${effective.diff}, LOG ${effective.log} days`, { databaseId: db.id, data: own });
         publish('database.changed', { databaseId: db.id });
         return summary(updated);
     });

@@ -31,6 +31,7 @@ import * as notifier from './notifier.js';
 import { getDb } from '../store/db.js';
 import { holders } from '../engine/locks.js';
 import { lagOf } from '../engine/restore-loop.js';
+import { isBackupOnly, dbLabel, skippedTypes } from '../engine/backup-rules.js';
 import * as schedules from '../store/repos/schedules.js';
 import { lagLimits } from '../../public/views/lag.js';
 import { engineConfig } from '../engine/context.js';
@@ -85,6 +86,7 @@ export function collectConditions() {
     }
 
     const thresholdMinutes = settings.get('alerts.lag_threshold_minutes');
+    const skippedNow = new Map(); // backups-only database id -> types that do not apply right now
     for (const db of databases.list()) {
         const logSchedule = schedules.get(db.id, 'LOG');
         const reps = databases.replicas(db.id);
@@ -100,8 +102,10 @@ export function collectConditions() {
 
             if (r.role === 'primary') {
                 if (up && !busy && (!live || live.state !== 'ONLINE' || live.isInStandby)) {
-                    add(ref(r, { key: `dbstate:${db.id}:${r.server_id}`, kind: 'db_state', severity: 'error', message: `${db.name} is ${stateText} on its primary ${r.server_name}` }));
+                    const message = isBackupOnly(db) ? `${dbLabel(db)} is ${stateText}, so it cannot be backed up` : `${db.name} is ${stateText} on its primary ${r.server_name}`;
+                    add(ref(r, { key: `dbstate:${db.id}:${r.server_id}`, kind: 'db_state', severity: 'error', message }));
                 }
+                if (isBackupOnly(db) && live) skippedNow.set(db.id, skippedTypes(db, live, r.server_name));
                 continue;
             }
 
@@ -143,8 +147,10 @@ export function collectConditions() {
         }
     }
 
-    const dbNames = new Map(databases.list().map((d) => [d.id, d.name]));
+    const dbNames = new Map(databases.list().map((d) => [d.id, dbLabel(d)]));
     for (const f of ops.failedBackups()) {
+        // A DIFF or LOG that does not apply now (the database left FULL recovery): its old failure no longer matters.
+        if (skippedNow.get(f.database_id)?.[f.backup_type]) continue;
         add({
             key: `backup:${f.database_id}:${f.backup_type}`,
             kind: 'backup_failed',
@@ -156,11 +162,14 @@ export function collectConditions() {
     }
 
     for (const f of foreign.allUnacknowledged()) {
+        const local = f.backup_only_server_id != null; // no secondaries: only restoring by hand needs the file
         add({
             key: `foreign:${f.backup_set_uuid}`,
             kind: 'foreign_backup',
-            severity: f.type === 'LOG' ? 'error' : 'warn',
-            message: `A ${f.type} backup of ${f.database_name} was taken outside Mostly-On, on ${f.server_name} (${f.device})${f.type === 'LOG' ? '. The secondaries never get the changes in it, so shipping stops' : ''}`,
+            severity: f.type === 'LOG' && !local ? 'error' : 'warn',
+            message: local
+                ? `A ${f.type} backup of ${f.database_name} on ${f.server_name} was taken outside Mostly-On (${f.device})${f.type === 'LOG' ? '. Restoring it past that point also needs that file' : ''}`
+                : `A ${f.type} backup of ${f.database_name} was taken outside Mostly-On, on ${f.server_name} (${f.device})${f.type === 'LOG' ? '. The secondaries never get the changes in it, so shipping stops' : ''}`,
             databaseId: f.database_id,
             serverId: f.server_id,
             link: link.db(f.database_id),

@@ -188,3 +188,43 @@ test('an alert a check has just shown fixed (setup script in place) resolves wit
     // The next check reaches the server and finds the script in place.
     assert.deepEqual(run(T0 + MIN + 2000, [], new Set(['setup:2'])), ['resolved:setup:2'], 'resolved at once');
 });
+
+test('backups-only databases: plain labels, a LOG taken elsewhere is a warning, and a failure of a type that no longer applies stays quiet', async () => {
+    const crypto = await import('node:crypto');
+    const { openDb, closeDb } = await import('../../src/store/db.js');
+    const servers = await import('../../src/store/repos/servers.js');
+    const databases = await import('../../src/store/repos/databases.js');
+    const ops = await import('../../src/store/repos/operations.js');
+    const foreign = await import('../../src/store/repos/foreign.js');
+    const health = await import('../../src/engine/health.js');
+    const { setEngineConfig } = await import('../../src/engine/context.js');
+    const { collectConditions } = await import('../../src/notify/alerts.js');
+    openDb(':memory:');
+    setEngineConfig({ publicUrl: 'http://mo.test' });
+    const s1 = servers.create(servers.validate({ name: 'sql1', host: 'sql1', username: 'u', password: 'p', sql_backup_root: '/b' }), crypto.randomBytes(32));
+    const util = databases.manage({ name: 'Util', familyGuid: null, primaryServerId: s1.id, backupOnly: true });
+    const live = (recoveryModel) => health._setForTests(s1.id, { ok: true, databases: [{ name: 'Util', databaseId: 9, state: 'ONLINE', recoveryModel, isInStandby: false }] });
+
+    ops.create({ type: 'backup', databaseId: util.id, serverId: s1.id, params: { type: 'LOG' }, status: 'failed' });
+    ops.create({ type: 'backup', databaseId: util.id, serverId: s1.id, params: { type: 'FULL' }, status: 'failed' });
+    foreign.record({ uuid: 'u1', databaseId: util.id, serverId: s1.id, type: 'LOG', finishAt: null, device: '/x/u.trn' });
+    foreign.record({ uuid: 'u2', databaseId: util.id, serverId: s1.id, type: 'FULL', finishAt: null, device: '/x/u.bak', acknowledged: true });
+
+    live('FULL');
+    let c = collectConditions();
+    assert.match(c.get(`backup:${util.id}:FULL`).message, /^FULL backup of Util on sql1 failed/);
+    assert.ok(c.has(`backup:${util.id}:LOG`), 'in FULL recovery a failed LOG counts');
+    assert.equal(c.get('foreign:u1').severity, 'warn');
+    assert.match(c.get('foreign:u1').message, /LOG backup of Util on sql1 was taken outside Mostly-On \(\/x\/u\.trn\)\. Restoring it past that point also needs that file/);
+    assert.equal(c.has('foreign:u2'), false, 'a FULL taken elsewhere is only noted');
+
+    live('SIMPLE');
+    c = collectConditions();
+    assert.equal(c.has(`backup:${util.id}:LOG`), false, 'LOG backups do not apply in SIMPLE recovery');
+    assert.ok(c.has(`backup:${util.id}:FULL`));
+
+    health._setForTests(s1.id, { ok: true, databases: [] });
+    assert.match(collectConditions().get(`dbstate:${util.id}:${s1.id}`).message, /^Util on sql1 is missing, so it cannot be backed up/);
+    health.forget(s1.id);
+    closeDb();
+});

@@ -63,6 +63,8 @@ export async function dbBackupState(serverId, dbName) {
     if (!d) return null;
     return {
         name: d.name,
+        databaseId: d.database_id,
+        isSnapshot: d.source_database_id != null,
         state: d.state_desc,
         recoveryModel: d.recovery_model_desc,
         isReadOnly: !!d.is_read_only,

@@ -1,6 +1,6 @@
 import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, formatBytes, formatTime, tooltip, menuButton } from '../dom.js';
 import { get, post, put } from '../api.js';
-import { stateTipBadge, stateText, ageBadge, expectedMinutes, chainBadge, lagTipBadge, formatDuration, busyText } from './overview.js';
+import { stateTipBadge, stateText, chainBadge, lagTipBadge, formatDuration, busyText, backupOnlyTag, typeNotApplicable, lastBackupBadge } from './overview.js';
 import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
@@ -691,7 +691,7 @@ export function stopManagingBlocker(db) {
 /** "Stop managing": typed-name confirmation; resolves to the API result, or null if cancelled. */
 export function stopManagingDialog(db) {
     return formDialog({
-        title: `Stop managing ${db.name}?`,
+        title: `Stop managing ${db.label ?? db.name}?`,
         fields: [
             h('p', 'Schedules stop and no more backups or restores run. Nothing is changed on the servers and backup files stay on disk.'),
             field(`Type ${db.name} to confirm`, h('input', { type: 'text', name: 'confirm', required: true, autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false' })),
@@ -717,14 +717,40 @@ export function databaseView(id) {
     }
 
     // DIFF and LOG backups build on a FULL: until Mostly-On has one, they are greyed out.
+    // A backups-only database takes them only in FULL recovery, and master never.
     function backupMenu(db) {
         const noFull = !db.latest.FULL;
-        const needsFull = noFull ? 'needs a full backup first' : null;
-        return menuButton('Backup', [
-            { label: 'Full backup', onSelect: () => backupNow('FULL') },
-            { label: 'Differential backup', hint: needsFull, disabled: noFull, onSelect: () => backupNow('DIFF') },
-            { label: 'Log backup', hint: needsFull, disabled: noFull, onSelect: () => backupNow('LOG') },
-        ]);
+        const item = (label, type) => {
+            const why = typeNotApplicable(db, type);
+            const hint = why ? (db.backup_only && db.name === 'master' ? 'master: full backups only' : 'only in FULL recovery') : noFull ? 'needs a full backup first' : null;
+            return { label, hint, disabled: !!why || noFull, onSelect: () => backupNow(type) };
+        };
+        return menuButton('Backup', [{ label: 'Full backup', onSelect: () => backupNow('FULL') }, item('Differential backup', 'DIFF'), item('Log backup', 'LOG')]);
+    }
+
+    /** Backups-only: the one server it lives on, instead of the Replicas table. */
+    function serverTable(db) {
+        return [
+            h('h2', 'Server'),
+            dataTable({
+                caption: 'The server it is backed up on',
+                rows: db.primary ? [db.primary] : [],
+                empty: 'No server.',
+                columns: [
+                    { label: 'Server', header: true, cell: (r) => h('a', { href: `#/servers/${r.server_id}` }, r.server_name) },
+                    { label: 'State', cell: (r) => stateTipBadge(r.live, 'primary') },
+                    { label: 'Reachable', cell: (r) => (r.reachable ? badge('yes', 'ok') : badge('no', 'err')) },
+                    { label: 'Recovery model', cell: () => db.recovery_model ?? '–' },
+                ],
+            }),
+        ];
+    }
+
+    /** Backups-only: what another tool did lately (noted only; a LOG is in the callout above). */
+    function latestForeignLine(db) {
+        const f = db.latest_foreign;
+        if (!f || !f.acknowledged_at) return null;
+        return h('p.small.muted', `Also backed up by another tool: ${f.type}, ${formatTime(f.finish_at)}, to `, h('span.mono', f.device), '. Turn that job off if Mostly-On should be the only one.');
     }
 
     // Disabled (but focusable, with its reason as a tooltip) while other copies exist.
@@ -755,24 +781,30 @@ export function databaseView(id) {
         // Native append() would render null as the text "null"; h() skips it.
         clear(root).append(
             ...[
-            h('h1', db.name),
+            h('h1', db.label ?? db.name, db.backup_only ? [' ', backupOnlyTag({ ...db, managed: true })] : null),
+            // Backups only: never shipped or restored, so no Restore… and no Add secondary.
             h(
                 'div.actions',
                 backupMenu(db),
-                dialogButton('Restore…', () => pointInTimeDialog(db)),
-                h(
-                    'button.primary',
-                    {
-                        type: 'button',
-                        onclick: async () => {
-                            const r = await seedDialog(db).catch((err) => toast(err.message, 'err'));
-                            if (r?.operation) toast(`Setting up the secondary (operation #${r.operation.id})`, 'ok');
-                        },
-                    },
-                    'Add secondary',
-                ),
+                db.backup_only ? null : dialogButton('Restore…', () => pointInTimeDialog(db)),
+                db.backup_only
+                    ? null
+                    : h(
+                          'button.primary',
+                          {
+                              type: 'button',
+                              onclick: async () => {
+                                  const r = await seedDialog(db).catch((err) => toast(err.message, 'err'));
+                                  if (r?.operation) toast(`Setting up the secondary (operation #${r.operation.id})`, 'ok');
+                              },
+                          },
+                          'Add secondary',
+                      ),
                 stopButton(db),
             ),
+            db.can_ship
+                ? h('div.callout', h('p', `${db.name} is in FULL recovery now. To give it secondaries, stop managing it, then manage it again: it is then log shipped.`))
+                : null,
             stopped.length
                 ? h(
                       'div.callout.err',
@@ -814,10 +846,12 @@ export function databaseView(id) {
                 : null,
             unacked.length
                 ? h(
-                      'div.callout.err',
+                      db.backup_only ? 'div.callout.warn' : 'div.callout.err',
                       h('strong', 'Backups taken outside Mostly-On were found. '),
                       'Another tool (a maintenance plan, a backup agent, someone running BACKUP by hand) backed up this database. ' +
-                          'A LOG backup like that holds transactions the secondaries never receive, so shipping stops. A FULL backup changes what DIFF backups are based on. ' +
+                          (db.backup_only
+                              ? 'Restoring it to a point after a LOG backup like that also needs that file. '
+                              : 'A LOG backup like that holds transactions the secondaries never receive, so shipping stops. A FULL backup changes what DIFF backups are based on. ') +
                           'Stop the other tool, or make it use COPY_ONLY. Acknowledge each one once you have dealt with it.',
                       h(
                           'ul',
@@ -843,9 +877,10 @@ export function databaseView(id) {
                       ),
                   )
                 : null,
+            db.backup_only ? latestForeignLine(db) : null,
             db.busy.length ? h('p', badge(`Running now: ${busyText(db.busy, db.replicas)}`)) : null,
-            h('h2', 'Replicas'),
-            dataTable({
+            ...(db.backup_only ? serverTable(db) : [h('h2', 'Replicas')]),
+            db.backup_only ? null : dataTable({
                 caption: 'Replicas',
                 rows: db.replicas,
                 columns: [
@@ -877,9 +912,18 @@ export function databaseView(id) {
                 rows: db.schedules,
                 columns: [
                     { label: 'Type', header: true, cell: (s) => s.backup_type },
-                    { label: 'Schedule', cell: (s) => describeSchedule(s) },
-                    { label: 'Last backup', cell: (s) => ageBadge(db.latest[s.backup_type]?.backup_finish, expectedMinutes(s)) },
-                    { label: 'Last run', cell: (s) => (s.last_status ? [formatTime(s.last_run_at), ' ', badge(s.last_status, s.last_status.startsWith('ok') ? 'ok' : 'err')] : '–') },
+                    {
+                        label: 'Schedule',
+                        cell: (s) => (s.enabled && db.skipped?.[s.backup_type] ? [describeSchedule(s), ' ', tipBadge('only in FULL recovery', '', db.skipped[s.backup_type])] : describeSchedule(s)),
+                    },
+                    { label: 'Last backup', cell: (s) => lastBackupBadge(db, s.backup_type) },
+                    {
+                        label: 'Last run',
+                        cell: (s) =>
+                            s.last_status
+                                ? [formatTime(s.last_run_at), ' ', badge(s.last_status, s.last_status.startsWith('ok') ? 'ok' : s.last_status.startsWith('skipped') ? '' : 'err')]
+                                : '–',
+                    },
                     { label: 'Next run', cell: (s) => formatTime(s.next_run_at) },
                     {
                         label: 'Actions',
@@ -897,6 +941,7 @@ export function databaseView(id) {
                     },
                 ],
             }),
+            db.backup_only && db.name === 'master' ? h('p.small.muted', 'SQL Server only allows full backups of master, so it has no DIFF or LOG schedule.') : null,
             ...retentionForm(db, settings, load),
             // Failed or interrupted operations stay in view: they are resumed from here.
             stuckOps.length ? h('h2', 'Needs your attention') : null,
@@ -910,7 +955,7 @@ export function databaseView(id) {
                         e.target.querySelector('.more-label').textContent = moreOpen ? 'Show less' : 'Show more…';
                     },
                 },
-                h('summary', h('span.more-label', moreOpen ? 'Show less' : 'Show more…'), h('span.small.muted', ' Backup and restore history, operations, events')),
+                h('summary', h('span.more-label', moreOpen ? 'Show less' : 'Show more…'), h('span.small.muted', db.backup_only ? ' Backup history, operations, events' : ' Backup and restore history, operations, events')),
                 h('h2', 'Backup history'),
                 dataTable({
                     caption: '100 most recent backup files',
@@ -925,8 +970,8 @@ export function databaseView(id) {
                         { label: 'Status', cell: (f) => badge(...(FILE_STATUS[f.file_status] || [f.file_status, ''])) },
                     ],
                 }),
-                h('h2', 'Restore history'),
-                dataTable({
+                db.backup_only ? null : h('h2', 'Restore history'),
+                db.backup_only ? null : dataTable({
                     caption: '50 most recent restores on secondaries',
                     rows: restoreRows,
                     limit: 10,

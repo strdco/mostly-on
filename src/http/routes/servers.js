@@ -25,9 +25,14 @@ function copyCounts(reps) {
  * copy of a managed database, or an unfinished operation involves it.
  */
 export function removeBlocker(id) {
-    const reps = databases.replicasOnServer(id);
+    const all = databases.replicasOnServer(id);
+    const reps = all.filter((r) => r.backup_only_server_id == null);
+    const backupOnly = all.length - reps.length;
     if (reps.length) {
         return `It still holds ${copyCounts(reps)} of managed databases (listed on its page). Fail over or remove them first.`;
+    }
+    if (backupOnly) {
+        return `Mostly-On backs up ${backupOnly === 1 ? '1 database' : `${backupOnly} databases`} only on this server (listed on its page). Stop managing ${backupOnly === 1 ? 'it' : 'them'} first.`;
     }
     const involves = (op) => op.server_id === id || Object.entries(op.params || {}).some(([k, v]) => /ServerId$/.test(k) && v === id);
     const op = [...ops.unfinished(), ...ops.needingAttention()].find(involves);

@@ -40,7 +40,8 @@ import { startBackup, ensureDir, uniqueRelPath } from '../backup.js';
 import { restorableRange, pointInTimePlan, stopReached, stopAtLocal, lineageProblem } from '../chain.js';
 import { confirmOnDisk, fileOnDisk, assertSameBackup } from '../restore.js';
 import { copyMoves, inPlaceMoves } from '../restore-plan.js';
-import { translatePath, backupRelDir } from '../../paths.js';
+import { translatePath, backupRelDir, dbFolder } from '../../paths.js';
+import { isBackupOnly, dbLabel } from '../backup-rules.js';
 import { pathOpts } from '../context.js';
 import { publish } from '../../bus.js';
 import { nowIso } from '../../store/db.js';
@@ -55,6 +56,9 @@ const SECOND_MS = 1000;
 function managedDb(databaseId) {
     const db = databases.get(databaseId);
     if (!db || db.status !== 'managed') throw fail(404, 'Database is not managed');
+    if (isBackupOnly(db)) {
+        throw fail(409, `Mostly-On only backs up ${dbLabel(db)}; it does not perform managed restores. Backup files live in ${dbFolder(db.name, db.backup_only_server_name)} on the backup share.`);
+    }
     const primary = databases.primaryOf(db.id);
     if (!primary) throw fail(409, `${db.name} has no primary`);
     return { db, primary, primaryServer: serversRepo.get(primary.server_id) };

@@ -14,7 +14,7 @@ import * as health from '../engine/health.js';
 import * as serversRepo from '../store/repos/servers.js';
 
 /** The helper procedure version this controller needs (helper_version() in the script). */
-export const HELPER_VERSION = 4;
+export const HELPER_VERSION = 5;
 
 // The helpers that back up or restore, and so count against a server's limit.
 const WORK = new Set(['take_backup', 'restore_database', 'restore_log', 'recover']);

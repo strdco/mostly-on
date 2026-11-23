@@ -17,7 +17,7 @@ import * as events from '../store/repos/events.js';
 import * as inspect from '../sql/inspect.js';
 import { translatePath } from '../paths.js';
 import { pathOpts } from './context.js';
-import { recordBackupFile } from './backup.js';
+import { recordBackupFile, folderServer } from './backup.js';
 import { nowIso } from '../store/db.js';
 import { sqlErrorText } from '../sql/pool.js';
 
@@ -50,17 +50,17 @@ async function reconcileBackup(op) {
     } catch (err) {
         // The periodic foreign-backup scan imports it later via its msdb description.
         finish(op, 'interrupted', `Controller restarted during the backup and ${server.name} is unreachable (${sqlErrorText(err)}). If the backup completed it will be imported when the server is reachable.`);
-        events.add('warn', 'backup', `Backup operation #${op.id} of ${db.name} was interrupted by a controller restart; outcome unknown until ${server.name} is reachable`, { databaseId: db.id, serverId: server.id, operationId: op.id });
+        events.add('warn', 'backup', `Backup operation #${op.id} of ${databases.label(db)} was interrupted by a controller restart; outcome unknown until ${server.name} is reachable`, { databaseId: db.id, serverId: server.id, operationId: op.id });
         return;
     }
     if (bs) {
         const file = recordBackupFile({ db, server, bs, relPath, operationId: op.id });
         ops.save(op.id, { ctx: { ...op.ctx, fileId: file.id } });
         finish(op, 'succeeded');
-        events.add('info', 'backup', `Backup operation #${op.id} of ${db.name} completed while the controller was down; recorded ${relPath}`, { databaseId: db.id, serverId: server.id, operationId: op.id });
+        events.add('info', 'backup', `Backup operation #${op.id} of ${databases.label(db)} completed while the controller was down; recorded ${relPath}`, { databaseId: db.id, serverId: server.id, operationId: op.id });
     } else {
         finish(op, 'interrupted', 'Controller restarted before the backup completed. Any partial file is left in place for inspection.');
-        events.add('warn', 'backup', `Backup operation #${op.id} of ${db.name} was interrupted by a controller restart and did not complete (file ${relPath} may be partial and is not used)`, { databaseId: db.id, serverId: server.id, operationId: op.id });
+        events.add('warn', 'backup', `Backup operation #${op.id} of ${databases.label(db)} was interrupted by a controller restart and did not complete (file ${relPath} may be partial and is not used)`, { databaseId: db.id, serverId: server.id, operationId: op.id });
     }
 }
 
@@ -100,7 +100,7 @@ export async function reconcileOnStartup() {
             ensureRootFork(db);
             reportDrift(db);
         } catch (err) {
-            events.add('error', 'controller', `Could not check ${db.name} against the servers: ${err.message}`, { databaseId: db.id });
+            events.add('error', 'controller', `Could not check ${databases.label(db)} against the servers: ${err.message}`, { databaseId: db.id });
         }
     }
     try {
@@ -115,7 +115,7 @@ function ensureRootFork(db) {
     const primary = databases.primaryOf(db.id);
     const live = primary ? health.dbState(primary.server_id, db.name) : null;
     if (live?.recoveryForkGuid && forks.ensureRoot(db.id, live.recoveryForkGuid)) {
-        events.add('info', 'controller', `Recorded recovery fork ${live.recoveryForkGuid} of ${db.name} as its root fork`, { databaseId: db.id });
+        events.add('info', 'controller', `Recorded recovery fork ${live.recoveryForkGuid} of ${databases.label(db)} as its root fork`, { databaseId: db.id });
     }
 }
 
@@ -148,7 +148,7 @@ function reportOrphans() {
         const known = new Set(backups.all(db.id).map((f) => f.rel_path));
         const orphans = [];
         for (const type of Object.keys(BACKUP_TYPES)) {
-            const relDir = backupRelDir(db.name, type);
+            const relDir = backupRelDir(db.name, type, folderServer(db));
             let names = [];
             try {
                 names = fs.readdirSync(path.join(root, relDir));
@@ -158,7 +158,7 @@ function reportOrphans() {
             for (const n of names) if (!known.has(`${relDir}/${n}`)) orphans.push(`${relDir}/${n}`);
         }
         if (orphans.length) {
-            events.add('warn', 'controller', `${orphans.length} file(s) in the backup folders of ${db.name} were not made by Mostly-On, or it has no record of them. They are left alone; delete them by hand if they are not needed.`, {
+            events.add('warn', 'controller', `${orphans.length} file(s) in the backup folders of ${databases.label(db)} were not made by Mostly-On, or it has no record of them. They are left alone; delete them by hand if they are not needed.`, {
                 databaseId: db.id,
                 data: { files: orphans.slice(0, 50) },
             });

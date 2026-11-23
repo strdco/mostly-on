@@ -1,15 +1,19 @@
 // Backups found in msdb that the controller did not take.
 import { getDb, nowIso } from '../db.js';
 
-/** Returns true if the backup set was not known before. */
-export function record({ uuid, databaseId, serverId, type, finishAt, device }) {
+/**
+ * Returns true if the backup set was not known before. acknowledged: noted
+ * only, nothing to act on (no alert, no callout).
+ */
+export function record({ uuid, databaseId, serverId, type, finishAt, device, acknowledged = false }) {
+    const now = nowIso();
     return (
         getDb()
             .prepare(
-                `INSERT INTO foreign_backups (backup_set_uuid, database_id, server_id, type, finish_at, device, detected_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (backup_set_uuid) DO NOTHING`,
+                `INSERT INTO foreign_backups (backup_set_uuid, database_id, server_id, type, finish_at, device, detected_at, acknowledged_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (backup_set_uuid) DO NOTHING`,
             )
-            .run(uuid, databaseId, serverId, type, finishAt, device, nowIso()).changes > 0
+            .run(uuid, databaseId, serverId, type, finishAt, device, now, acknowledged ? now : null).changes > 0
     );
 }
 
@@ -35,7 +39,7 @@ export function unacknowledged(databaseId) {
 export function allUnacknowledged() {
     return getDb()
         .prepare(
-            `SELECT f.backup_set_uuid, f.database_id, d.name AS database_name, f.server_id, s.name AS server_name, f.type, f.finish_at, f.device
+            `SELECT f.backup_set_uuid, f.database_id, d.name AS database_name, d.backup_only_server_id, f.server_id, s.name AS server_name, f.type, f.finish_at, f.device
              FROM foreign_backups AS f JOIN servers AS s ON s.id=f.server_id JOIN databases AS d ON d.id=f.database_id
              WHERE f.acknowledged_at IS NULL AND d.status='managed' ORDER BY f.finish_at`,
         )

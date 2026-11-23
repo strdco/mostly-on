@@ -14,6 +14,7 @@ import { tryAcquire, BusyError, exclusiveWaiting } from './locks.js';
 import { createOperation, runOperation } from './operations.js';
 import { publish } from '../bus.js';
 import { log } from '../log.js';
+import { isBackupOnly, backupTypeProblem } from './backup-rules.js';
 
 export const BACKUP_TYPES = ['FULL', 'DIFF', 'LOG'];
 
@@ -53,10 +54,13 @@ export function ensureDir(server, relDir) {
     }
 }
 
+/** The server a backups-only database's folder is named after (null for a log-shipped database). */
+export const folderServer = (db) => (isBackupOnly(db) ? db.backup_only_server_name : null);
+
 export function uniqueRelPath(db, type, server) {
     const now = new Date();
     for (let i = 1; i < 100; i++) {
-        const rel = backupRelPath(db.name, type, now, server.name, i === 1 ? '' : `_${i}`);
+        const rel = backupRelPath(db.name, type, now, server.name, i === 1 ? '' : `_${i}`, folderServer(db));
         if (backups.byRelPath(rel)) continue;
         if (fs.existsSync(translatePath(rel, server, pathOpts('rel', 'controller')))) continue;
         return rel;
@@ -113,9 +117,9 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
     }
     if (!db.family_guid && state.familyGuid) databases.setFamilyGuid(db.id, state.familyGuid);
     databases.noteOwner(db.id, state);
-    if (state.recoveryModel !== 'FULL' && requestedType !== 'FULL') {
-        throw fail(409, `Database ${db.name} is in ${state.recoveryModel} recovery on ${server.name}; log shipping needs FULL`);
-    }
+    // Before effectiveType(): it would turn a LOG of a database in SIMPLE recovery (no log chain) into a FULL.
+    const problem = backupTypeProblem(db, state, requestedType, server.name);
+    if (problem) throw Object.assign(fail(409, problem.message), problem.skip ? { notApplicable: true, skipStatus: problem.status } : {});
 
     const { type, reason } = effectiveType(requestedType, state, db);
     const release = tryAcquire(db.id, type.toLowerCase());
@@ -123,7 +127,7 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
 
     let operation;
     try {
-        ensureDir(server, backupRelDir(db.name, type));
+        ensureDir(server, backupRelDir(db.name, type, folderServer(db)));
         const relPath = uniqueRelPath(db, type, server);
         const sqlPath = translatePath(relPath, server, pathOpts('rel', 'sql'));
         const stepDefs = backupSteps({ db, server, type, relPath, sqlPath, trigger, priority });
@@ -137,7 +141,7 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
             stepDefs,
         });
         if (reason) {
-            events.add('info', 'backup', `Taking a FULL backup of ${db.name} instead of ${requestedType}: ${reason}`, { databaseId: db.id, serverId: server.id, operationId: operation.id });
+            events.add('info', 'backup', `Taking a FULL backup of ${databases.label(db)} instead of ${requestedType}: ${reason}`, { databaseId: db.id, serverId: server.id, operationId: operation.id });
         }
         const done = runOperation(operation.id, stepDefs)
             .then((op) => {

@@ -68,14 +68,14 @@ function retentionDaysFor(db) {
     const problem = checkRetention(effective);
     if (problem && !warnedInconsistent.has(db.id)) {
         warnedInconsistent.add(db.id);
-        events.add('warn', 'retention', `${db.name}: ${problem} Mostly-On keeps FULL backups ${Math.max(effective.diff, effective.log)} days instead until you fix the retention settings.`, { databaseId: db.id });
+        events.add('warn', 'retention', `${databases.label(db)}: ${problem} Mostly-On keeps FULL backups ${Math.max(effective.diff, effective.log)} days instead until you fix the retention settings.`, { databaseId: db.id });
     }
     const safe = safeRetention(effective);
     return { FULL: safe.full, DIFF: safe.diff, LOG: safe.log };
 }
 
 export function applyToDatabase(db, { dryRun = false } = {}) {
-    const result = { database: db.name, databaseId: db.id, deleted: [], kept: 0, blocked: null, errors: [], protected: [] };
+    const result = { database: databases.label(db), databaseId: db.id, deleted: [], kept: 0, blocked: null, errors: [], protected: [] };
     const release = tryAcquire(db.id, 'retention');
     if (!release) {
         result.blocked = 'skipped: a failover, reinitialization or new secondary is in progress';
@@ -134,13 +134,13 @@ export async function runAll({ dryRun = false } = {}) {
         const r = applyToDatabase(db, { dryRun });
         results.push(r);
         if (!dryRun && r.deleted.length) {
-            events.add('info', 'retention', `Retention removed ${r.deleted.length} backup file(s) of ${db.name}`, {
+            events.add('info', 'retention', `Retention removed ${r.deleted.length} backup file(s) of ${databases.label(db)}`, {
                 databaseId: db.id,
                 data: { files: r.deleted.map((d) => d.rel_path) },
             });
             publish('database.changed', { databaseId: db.id });
         }
-        for (const e of r.errors) events.add('error', 'retention', `Retention could not delete a file of ${db.name}: ${e}`, { databaseId: db.id });
+        for (const e of r.errors) events.add('error', 'retention', `Retention could not delete a file of ${databases.label(db)}: ${e}`, { databaseId: db.id });
     }
     if (!dryRun) {
         const purged = ops.purgeRoutine(new Date(Date.now() - 14 * 86400_000).toISOString());

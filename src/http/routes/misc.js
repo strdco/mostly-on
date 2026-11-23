@@ -6,11 +6,30 @@ import * as events from '../../store/repos/events.js';
 import * as sessions from '../../store/repos/sessions.js';
 import { validateSchedule } from '../../engine/schedule-math.js';
 import * as databases from '../../store/repos/databases.js';
+import { DEFAULT_SCHEDULE_KEYS } from '../../store/repos/databases.js';
 import { checkAllRetention, globalRetention } from '../../engine/retention-rules.js';
+
+/**
+ * A default schedule as stored. Only the DIFF default has an on/off switch
+ * (FULL and LOG backups are never optional); when the request leaves it out,
+ * the stored value stays (a value stored before the switch existed is on).
+ */
+export function defaultScheduleValue(key, v, previous) {
+    if (v === null || typeof v !== 'object') throw new Error(`Setting ${key} must be a schedule`);
+    const s = validateSchedule({ ...v, enabled: true });
+    const out = { kind: s.kind, interval_minutes: s.interval_minutes, at_time: s.at_time, weekday: s.weekday };
+    if (key === 'schedule.default_diff') out.enabled = typeof v.enabled === 'boolean' ? v.enabled : previous?.enabled !== false;
+    return out;
+}
 
 export function miscRoutes(router, { cfg }) {
     // Facts about this controller the dashboard shows (for example as placeholders).
-    router.get('/api/info', async () => ({ backupRoot: cfg.backupRoot, maxParallel: settings.get('servers.max_parallel') }));
+    router.get('/api/info', async () => ({
+        backupRoot: cfg.backupRoot,
+        maxParallel: settings.get('servers.max_parallel'),
+        // What a database gets when it starts being managed (the Manage dialog says so).
+        defaultSchedules: Object.fromEntries(DEFAULT_SCHEDULE_KEYS.map(([type, key]) => [type, settings.get(key)])),
+    }));
 
     router.get('/api/settings', async () => settings.all());
 
@@ -20,11 +39,7 @@ export function miscRoutes(router, { cfg }) {
         try {
             // Validate everything before storing anything, so a bad value saves nothing.
             const values = Object.entries(body).map(([k, v]) => {
-                if (k.startsWith('schedule.default_')) {
-                    if (v === null || typeof v !== 'object') throw new Error(`Setting ${k} must be a schedule`);
-                    const s = validateSchedule({ ...v, enabled: true });
-                    return [k, { kind: s.kind, interval_minutes: s.interval_minutes, at_time: s.at_time, weekday: s.weekday }];
-                }
+                if (k.startsWith('schedule.default_')) return [k, defaultScheduleValue(k, v, settings.get(k))];
                 return [k, v];
             });
             for (const [k, v] of values) settings.check(k, v);

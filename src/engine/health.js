@@ -31,6 +31,11 @@ export function forget(serverId) {
     state.delete(serverId);
 }
 
+/** Tests only: pretend a health check returned `h`. */
+export function _setForTests(serverId, h) {
+    state.set(serverId, h);
+}
+
 export async function checkServer(serverId) {
     const server = serversRepo.get(serverId);
     if (!server) return null;

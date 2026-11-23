@@ -31,6 +31,7 @@ import { buildMoves, undoFilePath } from '../restore-plan.js';
 import { checkLive, nudge } from '../restore-loop.js';
 import { restoreCompatibility } from '../../sqlversion.js';
 import { translatePath, backupRelDir } from '../../paths.js';
+import { isBackupOnly, isSystemName, dbLabel } from '../backup-rules.js';
 import { pathOpts } from '../context.js';
 import { publish } from '../../bus.js';
 import { nowIso } from '../../store/db.js';
@@ -50,14 +51,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * the checks the seed itself relies on. Throws (with an HTTP status) when
  * the seed is impossible.
  */
+/** Why a backups-only database cannot have secondaries, in plain words. */
+export function backupOnlyNoSecondaries(db) {
+    return isSystemName(db.name)
+        ? `${dbLabel(db)} is a system database: Mostly-On only backs it up, so it cannot have secondaries.`
+        : `${dbLabel(db)} is managed as backups only (it was not in FULL recovery when Mostly-On started managing it), so it cannot have secondaries. To log ship it, switch it to FULL recovery, stop managing it, then manage it again.`;
+}
+
 export async function seedPreflight(databaseId, targetServerId, { reseed = false } = {}) {
     const db = databases.get(databaseId);
     if (!db || db.status !== 'managed') throw fail(404, 'Database is not managed');
+    if (isBackupOnly(db)) throw fail(409, backupOnlyNoSecondaries(db));
     const primary = databases.primaryOf(db.id);
     if (!primary) throw fail(409, `${db.name} has no primary`);
     const target = serversRepo.get(targetServerId);
     if (!target) throw fail(404, 'Server not found');
     if (target.id === primary.server_id) throw fail(409, `${target.name} is the primary of ${db.name}`);
+    if (databases.find(db.name, target.id)?.status === 'managed') {
+        throw fail(409, `${target.name} has its own database called ${db.name}, which Mostly-On backs up there. A secondary would overwrite it.`);
+    }
     if (!target.enabled) throw fail(409, `Server ${target.name} is disabled`);
     const existing = databases.replica(db.id, target.id);
     if (existing?.role === 'diverged' && !reseed) {

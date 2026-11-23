@@ -204,7 +204,7 @@ export function settingsView() {
                                     const updated = await scheduleDialog({
                                         title: `Default ${type} schedule`,
                                         schedule: values[key],
-                                        withEnabled: false,
+                                        withEnabled: type === 'DIFF', // FULL and LOG backups are never optional
                                         onSubmit: (v) => put('/api/settings', { [key]: v }),
                                     });
                                     if (updated) {
@@ -241,7 +241,11 @@ export function settingsView() {
                         'section.settings-card',
                         { 'aria-labelledby': 'h-schedules' },
                         h('h2', { id: 'h-schedules' }, 'Default schedules'),
-                        h('p.muted.small', 'For databases you start managing. Existing databases keep their own (edit those on the database’s page). Times are the controller’s local time.'),
+                        h(
+                            'p.muted.small',
+                            'For databases you start managing. Existing databases keep their own (edit those on the database’s page). Times are the controller’s local time. ' +
+                                'DIFF backups are optional: they make restoring and reinitializing a secondary faster, at the cost of more backup files.',
+                        ),
                         schedulesBox,
                     ),
                     cards.msdb,

@@ -45,21 +45,34 @@ function stamp(date) {
 }
 
 /**
- * Relative path for a new backup file:
- *   <db>/<FULL|DIFF|LOG>/<db>_<type>_<yyyyMMdd_HHmmss>_<server>.<bak|trn>
- * Timestamps are UTC so that DST changes never produce duplicate names.
+ * The folder of a database under the backup root: <db> for a log-shipped
+ * database (its backups come from whichever server is the primary), and
+ * <db>@<server> for a backups-only database, which belongs to one server
+ * (every server has its own master). safeName() never produces "@", so the
+ * two kinds can never share a folder.
  */
-export function backupRelPath(dbName, type, date, serverName, suffix = '') {
+export function dbFolder(dbName, backupOnlyServerName = null) {
+    const db = safeName(dbName);
+    return backupOnlyServerName ? `${db}@${safeName(backupOnlyServerName)}` : db;
+}
+
+/**
+ * Relative path for a new backup file:
+ *   <folder>/<FULL|DIFF|LOG>/<db>_<type>_<yyyyMMdd_HHmmss>_<server>.<bak|trn>
+ * with <folder> from dbFolder(). Timestamps are UTC so that DST changes never
+ * produce duplicate names.
+ */
+export function backupRelPath(dbName, type, date, serverName, suffix = '', backupOnlyServerName = null) {
     const t = BACKUP_TYPES[type];
     if (!t) throw new Error(`Unknown backup type ${type}`);
     const db = safeName(dbName);
     const srv = safeName(serverName);
-    return posix.join(db, t.dir, `${db}_${type}_${stamp(date)}_${srv}${suffix}.${t.ext}`);
+    return posix.join(dbFolder(dbName, backupOnlyServerName), t.dir, `${db}_${type}_${stamp(date)}_${srv}${suffix}.${t.ext}`);
 }
 
 /** Relative directory holding backups of one type for a database. */
-export function backupRelDir(dbName, type) {
-    return posix.join(safeName(dbName), BACKUP_TYPES[type].dir);
+export function backupRelDir(dbName, type, backupOnlyServerName = null) {
+    return posix.join(dbFolder(dbName, backupOnlyServerName), BACKUP_TYPES[type].dir);
 }
 
 /** Validates and normalizes a relative path: no absolute paths, no escaping the root. */

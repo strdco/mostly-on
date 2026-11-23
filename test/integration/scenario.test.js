@@ -132,9 +132,15 @@ test('1a. a database with a secondary cannot stop being managed, nor its servers
 test('1b. the restricted login can only act through the helper procedures', async () => {
     await assert.rejects(asMostlyOn('sql1', `BACKUP DATABASE ${DB} TO DISK=N'/var/opt/mssql/backup/x.bak';`), /not able to access|permission|terminating abnormally/i, 'no direct BACKUP');
     await assert.rejects(asMostlyOn('sql1', `SELECT COUNT(*) AS n FROM ${DB}.dbo.orders;`), /not able to access/i, 'no access to the data');
+    // System databases: backed up (test 8), but never restored or changed; tempdb never touched.
+    const neverChanged = /never restores or changes them/;
+    await assert.rejects(asMostlyOn('sql1', "EXEC master.mostly_on.restore_database @db=N'master', @path=N'/var/opt/mssql/backup/m.bak', @replace=1;"), neverChanged);
+    await assert.rejects(asMostlyOn('sql1', "EXEC master.mostly_on.tail_log @db=N'model', @path=N'/var/opt/mssql/backup/m.trn', @name=N'x', @description=N'x', @mode='planned';"), neverChanged);
+    await assert.rejects(asMostlyOn('sql1', "EXEC master.mostly_on.set_state @db=N'msdb', @state='OFFLINE';"), neverChanged);
+    await assert.rejects(asMostlyOn('sql1', "EXEC master.mostly_on.take_backup @db=N'tempdb', @type='FULL', @path=N'/var/opt/mssql/backup/t.bak', @name=N'x', @description=N'x';"), /never touches tempdb/);
     await assert.rejects(
-        asMostlyOn('sql1', "EXEC master.mostly_on.take_backup @db=N'master', @type='FULL', @path=N'/var/opt/mssql/backup/m.bak', @name=N'x', @description=N'x';"),
-        /system databases/,
+        asMostlyOn('sql1', "EXEC master.mostly_on.take_backup @db=N'master', @type='LOG', @path=N'/var/opt/mssql/backup/m.trn', @name=N'x', @description=N'x';"),
+        /only allows full backups of master/,
     );
     await assert.rejects(
         asMostlyOn('sql1', `EXEC master.mostly_on.take_backup @db=N'${DB}', @type='FULL', @path=N'/tmp/x.bak', @name=N'x', @description=N'x';`),
@@ -465,4 +471,104 @@ test('7. a backup file replaced after it was taken is never restored', async () 
     assert.match((await replica(secondary)).chain_reason, /no longer holds the backup Mostly-On took/);
     const rows = await api.get(`/api/databases/${dbId}/restores?limit=20`);
     assert.ok(!rows.some((r) => r.server_name === secondary && r.rel_path === relPath && r.outcome === 'success'), 'the replaced file was not restored');
+});
+
+// Backups-only databases: separate databases and their own folders, so it does not
+// matter that test 7 left shipping of the test database stopped.
+test('8. system databases and SIMPLE databases are backed up on their own server only', async () => {
+    const SCRATCH = 'ItScratch';
+    const managed = [];
+    const conflict = (re) => (err) => err.status === 409 && re.test(err.message);
+    const dbOf = (id) => api.get(`/api/databases/${id}`);
+    const [{ model: modelWas }] = await q('sql2', "SELECT recovery_model_desc AS model FROM sys.databases WHERE name=N'model';");
+    try {
+        // Discovery lists master, model and msdb on every server, and never tempdb.
+        await waitFor('the system databases to be discovered', async () => {
+            const found = await api.get('/api/discovered?include_dismissed=1');
+            return ['sql1', 'sql2'].every((s) => ['master', 'model', 'msdb'].every((n) => found.some((x) => x.server_name === s && x.name === n && x.system && x.manage_as === 'backup_only')));
+        });
+        assert.ok(!(await api.get('/api/discovered?include_dismissed=1')).some((x) => x.name === 'tempdb'));
+
+        // master on both servers: two databases, each in a folder of its own server, FULL backups only.
+        const master = {};
+        for (const s of ['sql1', 'sql2']) {
+            const m = await api.post('/api/databases', { server_id: ids[s], name: 'master' });
+            master[s] = m.database.id;
+            managed.push(m.database.id);
+            assert.equal(m.database.backup_only, true);
+            assert.deepEqual(m.database.schedules.map((x) => x.backup_type), ['FULL']);
+            assert.match((await succeeded(api.waitOp(m.operation.id))).ctx.relPath, new RegExp(`^master@${s}/FULL/master_FULL_\\d{8}_\\d{6}_${s}\\.bak$`));
+        }
+        assert.notEqual(master.sql1, master.sql2);
+        await assert.rejects(api.post('/api/databases', { server_id: ids.sql1, name: 'master' }), conflict(/already managed/));
+        const opsBefore = (await dbOf(master.sql1)).operations.length;
+        await assert.rejects(api.post(`/api/databases/${master.sql1}/backups`, { type: 'DIFF' }), conflict(/only allows full backups of master/));
+        assert.equal((await dbOf(master.sql1)).operations.length, opsBefore, 'a refused DIFF leaves no operation behind');
+        await assert.rejects(api.put(`/api/databases/${master.sql1}/schedules/LOG`, { kind: 'interval', interval_minutes: 5 }), conflict(/only allows full backups of master/));
+
+        // A SIMPLE database of the same name on both servers.
+        for (const s of ['sql1', 'sql2']) {
+            await q(s, `IF DB_ID(N'${SCRATCH}') IS NULL CREATE DATABASE ${SCRATCH};`);
+            await q(s, `ALTER DATABASE ${SCRATCH} SET RECOVERY SIMPLE;`);
+        }
+        const scratch = {};
+        for (const s of ['sql1', 'sql2']) {
+            const m = await api.post('/api/databases', { server_id: ids[s], name: SCRATCH });
+            scratch[s] = m.database.id;
+            managed.push(m.database.id);
+            assert.deepEqual(Object.fromEntries(m.database.schedules.map((x) => [x.backup_type, x.enabled])), { FULL: true, DIFF: false, LOG: true }, 'DIFF is off by default');
+            await succeeded(api.waitOp(m.operation.id));
+        }
+        const id = scratch.sql1;
+        await assert.rejects(api.post(`/api/databases/${id}/backups`, { type: 'LOG' }), conflict(/is in SIMPLE recovery, so Mostly-On only takes FULL backups/));
+        // A LOG schedule is skipped quietly: no failed operation, no alert.
+        await api.put(`/api/databases/${id}/schedules/LOG`, { kind: 'interval', interval_minutes: 1, enabled: true });
+        await waitFor('the LOG schedule to be skipped', async () => (await dbOf(id)).schedules.find((x) => x.backup_type === 'LOG').last_status === 'skipped: SIMPLE recovery', {
+            timeout: 150_000,
+            interval: 3000,
+        });
+        assert.ok(!(await dbOf(id)).operations.some((o) => o.status === 'failed'), 'no failed operation');
+        assert.ok(!(await api.get('/api/alerts?status=active')).some((a) => a.database_id === id), 'no alert');
+        // Never shipped or restored.
+        await assert.rejects(api.post(`/api/databases/${id}/secondaries`, { server_id: ids.sql2, source: 'new_full', restore_mode: 'norecovery' }), conflict(/managed as backups only/));
+        await assert.rejects(api.get(`/api/databases/${id}/restore-range`), conflict(/never restores it/));
+
+        // Switched to FULL recovery, it gets LOG backups (the first one is a FULL, which starts the log chain).
+        await q('sql1', `ALTER DATABASE ${SCRATCH} SET RECOVERY FULL;`);
+        await waitFor('the health check to see FULL recovery', async () => (await dbOf(id)).recovery_model === 'FULL');
+        let started = await api.post(`/api/databases/${id}/backups`, { type: 'LOG' });
+        assert.equal(started.type, 'FULL');
+        await succeeded(api.waitOp(started.operation.id));
+        started = await api.post(`/api/databases/${id}/backups`, { type: 'LOG' });
+        assert.equal(started.type, 'LOG');
+        assert.match((await succeeded(api.waitOp(started.operation.id))).ctx.relPath, new RegExp(`^${SCRATCH}@sql1/LOG/`));
+        assert.equal((await dbOf(id)).can_ship, true, 'it could be log shipped now');
+        await q('sql1', `ALTER DATABASE ${SCRATCH} SET RECOVERY SIMPLE;`);
+        await waitFor('the health check to see SIMPLE recovery', async () => (await dbOf(id)).recovery_model === 'SIMPLE');
+        await assert.rejects(api.post(`/api/databases/${id}/backups`, { type: 'LOG' }), conflict(/SIMPLE recovery/));
+
+        // model in FULL recovery: LOG backups, like any database in FULL recovery.
+        await q('sql2', 'ALTER DATABASE model SET RECOVERY FULL;');
+        const model = await api.post('/api/databases', { server_id: ids.sql2, name: 'model' });
+        managed.push(model.database.id);
+        await succeeded(api.waitOp(model.operation.id));
+        started = await api.post(`/api/databases/${model.database.id}/backups`, { type: 'LOG' });
+        assert.match((await succeeded(api.waitOp(started.operation.id))).ctx.relPath, new RegExp(`^model@sql2/(LOG|FULL)/`));
+
+        // Another tool's FULL backup of master is noted on its page, without an alert.
+        await q('sql1', "BACKUP DATABASE master TO DISK=N'/var/opt/mssql/backup/outside-master.bak' WITH INIT;");
+        const noted = await waitFor('the outside backup to be noted', async () => (await dbOf(master.sql1)).latest_foreign, { timeout: 150_000, interval: 3000 });
+        assert.equal(noted.type, 'FULL');
+        assert.ok(noted.acknowledged_at, 'nothing to act on');
+        assert.ok(!(await api.get('/api/alerts?status=active')).some((a) => a.kind === 'foreign_backup' && a.database_id === master.sql1));
+
+        // Stop backing up master on sql2: it is offered there again, and sql1's master stays managed.
+        await api.post(`/api/databases/${master.sql2}/unmanage`, { confirm: 'master' });
+        assert.ok((await api.get('/api/discovered?include_dismissed=1')).some((x) => x.server_name === 'sql2' && x.name === 'master'));
+        assert.ok((await api.get('/api/databases')).some((d) => d.id === master.sql1));
+    } finally {
+        for (const id of managed) await api.post(`/api/databases/${id}/unmanage`, { confirm: (await dbOf(id).catch(() => null))?.name }).catch(() => {});
+        for (const s of ['sql1', 'sql2']) await q(s, `IF DB_ID(N'${SCRATCH}') IS NOT NULL DROP DATABASE ${SCRATCH};`).catch(() => {});
+        await q('sql2', `ALTER DATABASE model SET RECOVERY ${modelWas};`).catch(() => {});
+    }
 });

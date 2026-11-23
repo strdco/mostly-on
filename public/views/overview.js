@@ -3,6 +3,7 @@ import { get, post } from '../api.js';
 import { activeAlertsCallout } from './alerts.js';
 import { stopManagingBlocker, stopManagingDialog } from './database.js';
 import { lagLimits, delayText, restoresPaused } from './lag.js';
+import { describeSchedule } from './schedule.js';
 
 // Database states in words; the SQL Server name stays in brackets where it is a problem.
 const STATE_TEXT = {
@@ -72,9 +73,9 @@ export function stateTipBadge(live, role, delayMinutes = 0) {
     return tipBadge(stateText(live, role), stateExpected(live, role) ? 'ok' : 'err', stateHelp(live, role, delayMinutes));
 }
 
-/** Age badge for a last-backup timestamp against an expected interval (minutes). */
+/** Age badge for a last-backup timestamp against an expected interval (minutes; none expected: no colour). */
 export function ageBadge(iso, expectMinutes) {
-    if (!iso) return badge('never', 'warn');
+    if (!iso) return badge('never', expectMinutes ? 'warn' : '');
     const mins = (Date.now() - new Date(iso).getTime()) / 60000;
     const kind = !expectMinutes ? '' : mins > expectMinutes * 3 ? 'err' : mins > expectMinutes * 1.5 ? 'warn' : 'ok';
     return badge(ago(iso), kind);
@@ -172,6 +173,41 @@ export function lagTipBadge(lag, limits, rep = null) {
     return tipBadge(lagText(lag, limits, rep), lagKind(lag, limits, rep), parts.join(' '));
 }
 
+/**
+ * A neutral "backups only" tag (engine/backup-rules.js), with what it means as
+ * a tooltip. d: a managed database (summary) or a discovered one that would be
+ * managed that way (manage_as).
+ */
+export function backupOnlyTag(d) {
+    const what = d.system ? 'A system database' : `In ${d.recovery_model ?? 'SIMPLE'} recovery`;
+    const help = d.managed
+        ? `${d.system ? 'A system database, backed' : 'Backed'} up on ${d.server_name} only, in the folder ${d.folder} on the backup share. ` +
+          'No secondaries, no failover. Mostly-On cannot perform managed restores of system databases.' +
+          (d.can_ship ? ' Database is in FULL recovery now: to give it secondaries, stop managing it, then manage it again.' : '')
+        : `${what}: Mostly-On would back it up on ${d.server_name} only. No secondaries, no failover, and Mostly-On never restores it.`;
+    return tipBadge('backups only', '', help);
+}
+
+/**
+ * Why a backup type does not apply to a database right now (null if it does):
+ * a backups-only database not in FULL recovery, or master (FULL only).
+ */
+export function typeNotApplicable(d, type) {
+    if (d.skipped?.[type]) return d.skipped[type];
+    if (d.backup_only && !d.schedules.some((s) => s.backup_type === type)) return d.name === 'master' ? 'SQL Server only allows full backups of master.' : `${d.label} has no ${type} schedule.`;
+    return null;
+}
+
+/** The "Last FULL/DIFF/LOG" cell: its age against the schedule, or why there is none. */
+export function lastBackupBadge(d, type) {
+    const s = d.schedules.find((x) => x.backup_type === type);
+    const at = d.latest[type]?.backup_finish;
+    const why = typeNotApplicable(d, type);
+    if (why) return tipBadge(at ? ago(at) : 'n/a', '', why); // older backups, from before, stay listed
+    if (!s?.enabled && !at) return tipBadge('off', '', `${type} backups are off for this database. Turn them on in its ${type} schedule (database page, Schedules, Edit).`);
+    return ageBadge(at, expectedMinutes(s));
+}
+
 export function expectedMinutes(schedule) {
     if (!schedule?.enabled) return null;
     if (schedule.kind === 'interval') return schedule.interval_minutes;
@@ -203,6 +239,7 @@ export function dbHealth(d, alerts, thresholdMinutes) {
         }
     }
     for (const t of ['FULL', 'DIFF', 'LOG']) {
+        if (typeNotApplicable(d, t)) continue;
         const expect = expectedMinutes(d.schedules.find((s) => s.backup_type === t));
         const at = d.latest[t]?.backup_finish;
         if (!expect) continue;
@@ -214,7 +251,8 @@ export function dbHealth(d, alerts, thresholdMinutes) {
         if (mins > expect * 3) flag(2, `last ${t} backup ${ago(at)}`);
         else if (mins > expect * 1.5) flag(1, `last ${t} backup ${ago(at)}`);
     }
-    if (d.foreignLogBackups) flag(2, 'log backup taken outside Mostly-On');
+    // Without secondaries (backups only), a log backup taken elsewhere only matters for a restore by hand.
+    if (d.foreignLogBackups) flag(d.backup_only ? 1 : 2, 'log backup taken outside Mostly-On');
     const mine = alerts.filter((a) => a.database_id === d.id);
     if (mine.length) flag(mine.some((a) => a.severity === 'error') ? 2 : 1, `${mine.length} active alert${mine.length === 1 ? '' : 's'}`);
     return { kind: ['ok', 'warn', 'err'][level], label: ['healthy', 'warning', 'error'][level], reasons };
@@ -260,18 +298,21 @@ export function overviewView() {
         clear(alertsBox).append(...[activeAlertsCallout(alerts)].filter((x) => x !== null));
         const threshold = settings['alerts.lag_threshold_minutes'];
         const health = new Map(dbs.map((d) => [d.id, dbHealth(d, alerts, threshold)]));
-        const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-        // Managed databases first, then the ones found on the servers.
+        // Managed databases first, then the ones found on the servers; system databases after the others.
+        const order = (a, b) =>
+            Number(!!a.system) - Number(!!b.system) ||
+            a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) ||
+            (a.server_name ?? '').localeCompare(b.server_name ?? '');
         const rows = [
-            ...[...dbs].sort(byName).map((d) => ({ managed: true, ...d })),
-            ...[...discovered].sort((a, b) => byName(a, b) || a.server_name.localeCompare(b.server_name)).map((d) => ({ managed: false, ...d })),
+            ...dbs.map((d) => ({ managed: true, ...d, server_name: d.server_name ?? d.primary?.server_name })).sort(order),
+            ...discovered.map((d) => ({ managed: false, ...d })).sort(order),
         ];
         const ifManaged = (fn) => (d) => (d.managed ? fn(d) : '');
         clear(listBox).append(
             dataTable({
                 caption: 'Databases',
                 rows,
-                empty: 'No user databases found on your servers yet. Register a server (Servers page).',
+                empty: 'No databases found on your servers yet. Register a server (Servers page).',
                 rowClass: (d) => (d.managed && health.get(d.id).kind !== 'ok' ? `row-${health.get(d.id).kind}` : null),
                 columns: [
                     { label: 'Database', header: true, cell: nameCell },
@@ -289,6 +330,7 @@ export function overviewView() {
                     {
                         label: 'Secondaries',
                         cell: ifManaged((d) => {
+                            if (d.backup_only) return '';
                             const sec = d.replicas.filter((r) => r.role !== 'primary');
                             return sec.length
                                 ? sec.map((r) =>
@@ -308,11 +350,12 @@ export function overviewView() {
                     },
                     ...['FULL', 'DIFF', 'LOG'].map((t) => ({
                         label: `Last ${t}`,
-                        cell: ifManaged((d) => ageBadge(d.latest[t]?.backup_finish, expectedMinutes(d.schedules.find((s) => s.backup_type === t)))),
+                        cell: ifManaged((d) => lastBackupBadge(d, t)),
                     })),
                     {
                         label: 'Shipping',
                         cell: ifManaged((d) => {
+                            if (d.backup_only) return ''; // never shipped
                             const stopped = d.replicas.filter((r) => ['broken', 'needs_reseed'].includes(r.chain_state));
                             const out = [];
                             if (d.foreignLogBackups) {
@@ -340,51 +383,80 @@ export function overviewView() {
             : manageSwitch({
                   on: false,
                   label: `Manage ${d.name} on ${d.server_name}`,
-                  reason: d.shippable
-                      ? null
-                      : `${d.recovery_model} recovery: Mostly-On can only manage databases in FULL recovery. To manage it, run ALTER DATABASE [${d.name}] SET RECOVERY FULL; on ${d.server_name}.`,
+                  reason: null,
                   onActivate: () => manage(d),
               });
-        return h('div.db-name', sw, d.managed ? h('a', { href: `#/databases/${d.id}` }, d.name) : h('span', d.name));
+        const local = d.managed ? d.backup_only : d.manage_as === 'backup_only';
+        return h('div.db-name', sw, d.managed ? h('a', { href: `#/databases/${d.id}` }, d.name) : h('span', d.name), local ? [' ', backupOnlyTag(d)] : null);
     }
 
-    async function manage(d) {
+    let defaults = null; // the default schedules (/api/info), for the Manage dialog
+    const scheduleWords = (types) =>
+        types
+            .map((t) => [t, defaults?.[t]])
+            .filter(([, s]) => s && s.enabled !== false)
+            .map(([t, s]) => `${t} ${describeSchedule(s)}`)
+            .join(', ');
+
+    /** "From now on, only Mostly-On may take log backups", with a required "I understand". */
+    function logWarning(consequence) {
         const warningId = `warn-${Math.random().toString(36).slice(2, 9)}`;
         const understand = h('input', { type: 'checkbox', name: 'understand', required: true, 'aria-describedby': warningId });
         const validity = () => understand.setCustomValidity(understand.checked ? '' : 'Tick "I understand" to confirm that no other tool takes log backups of this database.');
         validity();
         understand.addEventListener('change', validity);
+        return h(
+            'div.callout.warn.ack',
+            h(
+                'div',
+                { id: warningId },
+                h('p', h('strong', 'From now on, only Mostly-On may take log backups of this database.')),
+                h('p', `If another tool (a maintenance plan, a backup agent) also takes log backups, ${consequence} Backups taken with the COPY_ONLY option are fine.`),
+            ),
+            field('I understand', understand),
+        );
+    }
+
+    async function manage(d) {
+        if (!defaults) defaults = (await get('/api/info').catch(() => ({}))).defaultSchedules ?? null;
+        const local = d.manage_as === 'backup_only';
+        const master = d.system && d.name === 'master';
+        const logs = d.recovery_model === 'FULL' && !master; // LOG backups (and the warning about them)
+        const fields = local
+            ? [
+                  h(
+                      'p',
+                      `Mostly-On backs up ${d.name} on ${d.server_name} only: no secondaries, no failover, and no platform-managed restore. ` +
+                          `This will take a FULL backup right away, then ${scheduleWords(logs ? ['FULL', 'DIFF', 'LOG'] : ['FULL']) || 'on the default schedules'}.`,
+                  ),
+                  master
+                      ? h('p.muted', 'SQL Server only allows full backups of master.')
+                      : logs
+                        ? null
+                        : h('p.muted', `In ${d.recovery_model} recovery Mostly-On takes only FULL backups. LOG backups start by themselves if the database is switched to FULL recovery.`),
+                  logs
+                      ? logWarning('restoring this database to a point in time needs their files as well.')
+                      : h('div.callout', h('p', 'Turn off other backup jobs for this database, so its backups and their retention live in one place.')),
+              ]
+            : [
+                  h('p', `${d.server_name} becomes the primary for ${d.name}. Mostly-On takes a FULL backup right away and then runs the default schedules (${scheduleWords(['FULL', 'DIFF', 'LOG']) || 'see Settings'}).`),
+                  logWarning('the secondaries never get the changes in them, and shipping stops until you reinitialize them.'),
+              ];
         const res = await formDialog({
-            title: `Manage ${d.name}?`,
-            fields: [
-                h('p', `${d.server_name} becomes the primary for ${d.name}. Mostly-On takes a FULL backup right away and then runs the default schedules (FULL weekly, DIFF daily, LOG every 5 minutes).`),
-                h(
-                    'div.callout.warn.ack',
-                    h(
-                        'div',
-                        { id: warningId },
-                        h('p', h('strong', 'From now on, only Mostly-On may take log backups of this database.')),
-                        h(
-                            'p',
-                            'If another tool (a maintenance plan, a backup agent) also takes log backups, the secondaries never get the changes in them, and shipping stops until you reinitialize them. ' +
-                                'Backups taken with the COPY_ONLY option are fine.',
-                        ),
-                    ),
-                    field('I understand', understand),
-                ),
-            ],
-            submitLabel: 'Manage',
+            title: local ? `Back up ${d.name} on ${d.server_name}?` : `Manage ${d.name}?`,
+            fields: fields.filter((x) => x !== null),
+            submitLabel: local ? 'Back up' : 'Manage',
             onSubmit: () => post('/api/databases', { server_id: d.server_id, name: d.name }),
         });
         if (res) {
-            toast(res.warning || `Managing ${d.name}; initial FULL backup started`, res.warning ? 'err' : 'ok');
+            toast(res.warning || `${local ? `Backing up ${d.name} on ${d.server_name}` : `Managing ${d.name}`}; initial FULL backup started`, res.warning ? 'err' : 'ok');
             load().catch(() => {});
         }
     }
 
     async function stopManaging(d) {
         if (await stopManagingDialog(d)) {
-            toast(`Mostly-On no longer manages ${d.name}`, 'ok');
+            toast(`Mostly-On no longer manages ${d.label ?? d.name}`, 'ok');
             load().catch(() => {});
         }
     }
@@ -398,7 +470,8 @@ export function overviewView() {
                 alertsBox,
                 h(
                     'p.muted',
-                    'User databases on your servers. Only databases in FULL recovery model can be managed.',
+                    'Databases on your servers. Databases in FULL recovery are log shipped to secondaries. ' +
+                        'System databases, and databases in SIMPLE or BULK_LOGGED recovery, are only backed up, on their own server.',
                 ),
                 listBox,
             );

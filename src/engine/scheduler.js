@@ -4,6 +4,8 @@
 // primary. A schedule missed while the controller was down runs once, then
 // continues from "now"; there is no backfill of missed runs. If the database
 // is busy (lock conflict) the schedule stays due and is retried next tick.
+// A type that does not apply right now (a DIFF or LOG of a backups-only
+// database that is not in FULL recovery) is skipped quietly until its next run.
 import * as schedules from '../store/repos/schedules.js';
 import * as databases from '../store/repos/databases.js';
 import { startBackup } from './backup.js';
@@ -39,17 +41,33 @@ async function runOne(s) {
             }
             return;
         }
-        // Preflight failure (primary unreachable, database offline ...). The
-        // health and alert machinery reports those conditions; here we record
-        // the status and retry soon.
-        const next = new Date(Math.min(nextRun(s, new Date()).getTime(), Date.now() + RETRY_AFTER_FAILURE_MS));
-        schedules.recordRun(s.database_id, s.backup_type, { ranAt: ranAt.toISOString(), status: `failed: ${err.message}`, nextRunAt: next.toISOString() });
-        log.warn('Scheduled backup could not start', { databaseId: s.database_id, type: s.backup_type, error: err.message });
-        publish('backup.failed', { databaseId: s.database_id, type: s.backup_type, error: err.message });
+        const after = afterStartError(s, err, new Date());
+        schedules.recordRun(s.database_id, s.backup_type, { ranAt: ranAt.toISOString(), status: after.status, nextRunAt: after.nextRunAt.toISOString() });
+        if (after.failed) {
+            log.warn('Scheduled backup could not start', { databaseId: s.database_id, type: s.backup_type, error: err.message });
+            publish('backup.failed', { databaseId: s.database_id, type: s.backup_type, error: err.message });
+        }
     } finally {
         inflight.delete(key);
         publish('database.changed', { databaseId: s.database_id });
     }
+}
+
+/**
+ * What a schedule records when its backup could not start.
+ * - The type does not apply right now (err.notApplicable): a neutral status,
+ *   and the next regular run.
+ * - Anything else (primary unreachable, database offline ...): the health and
+ *   alert machinery reports those conditions; here the failure is recorded and
+ *   retried soon.
+ */
+export function afterStartError(s, err, now) {
+    if (err.notApplicable) return { failed: false, status: err.skipStatus || 'skipped', nextRunAt: nextRun(s, now) };
+    return {
+        failed: true,
+        status: `failed: ${err.message}`,
+        nextRunAt: new Date(Math.min(nextRun(s, now).getTime(), now.getTime() + RETRY_AFTER_FAILURE_MS)),
+    };
 }
 
 export function tick(now = new Date()) {

@@ -146,7 +146,8 @@ export function serversView() {
                     { label: 'Version', cell: (s) => (s.product_version ? `${s.health?.info?.versionName || ''} ${s.product_version}`.trim() : '–') },
                     { label: 'Edition', cell: (s) => s.edition || '–' },
                     { label: 'Platform', cell: (s) => platformTag(s.health?.info?.host) },
-                    { label: 'Databases', num: true, cell: (s) => (s.health?.ok ? String(s.health.databases.length) : '–') },
+                    // User databases; master, model and msdb are on every server.
+                    { label: 'Databases', num: true, cell: (s) => (s.health?.ok ? String(s.health.databases.filter((d) => !isSystem(d)).length) : '–') },
                     { label: 'Checked', cell: (s) => ago(s.health?.checkedAt) },
                 ],
             }),
@@ -331,6 +332,9 @@ function removeButton(s) {
     return [button, tip?.tip];
 }
 
+/** master, model or msdb (by the id the server reports). */
+const isSystem = (d) => d?.databaseId != null && [1, 3, 4].includes(d.databaseId);
+
 /**
  * Every user database on the server, managed or not, by name. Managed ones
  * (roles) link to their page and show their role; the rest say "unmanaged".
@@ -342,9 +346,17 @@ function serverDatabasesTable(roles, hh) {
     const rows = roles.map((r) => ({ name: r.database_name, role: r, live: live.get(key(r.database_name)) ?? null }));
     const managed = new Set(rows.map((x) => key(x.name)));
     for (const d of live.values()) if (!managed.has(key(d.name))) rows.push({ name: d.name, role: null, live: d });
-    rows.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    // System databases (master, model, msdb) after the others.
+    rows.sort((a, b) => Number(isSystem(a.live)) - Number(isSystem(b.live)) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
-    const roleText = (r) => (r.role === 'diverged' ? 'old primary, out of sync' : r.role === 'secondary' && r.restore_delay_minutes > 0 ? 'secondary (delayed)' : r.role);
+    const roleText = (r) =>
+        r.backup_only_server_id != null
+            ? 'backups only'
+            : r.role === 'diverged'
+              ? 'old primary, out of sync'
+              : r.role === 'secondary' && r.restore_delay_minutes > 0
+                ? 'secondary (delayed)'
+                : r.role;
     const roleBadge = (r) => (r ? badge(roleText(r), r.role === 'diverged' ? 'err' : '') : badge('unmanaged'));
     const stateCell = ({ role, live: d }) => {
         if (!d) return hh?.ok ? badge('not found', 'err') : badge('unknown');
@@ -354,9 +366,13 @@ function serverDatabasesTable(roles, hh) {
     return dataTable({
         caption: 'Databases on this server',
         rows,
-        empty: hh?.ok ? 'No user databases on this server.' : 'Not available while the server is unreachable.',
+        empty: hh?.ok ? 'No databases on this server.' : 'Not available while the server is unreachable.',
         columns: [
-            { label: 'Database', header: true, cell: (x) => (x.role ? h('a', { href: `#/databases/${x.role.database_id}` }, x.name) : x.name) },
+            {
+                label: 'Database',
+                header: true,
+                cell: (x) => [x.role ? h('a', { href: `#/databases/${x.role.database_id}` }, x.name) : x.name, isSystem(x.live) ? [' ', badge('system')] : null],
+            },
             { label: 'Role', cell: (x) => roleBadge(x.role) },
             { label: 'Shipping', cell: (x) => (x.role?.role === 'secondary' ? chainBadge(x.role) : '') },
             { label: 'State', cell: stateCell },
@@ -383,7 +399,8 @@ export function serverDetailView(id) {
             return;
         }
         const hh = s.health;
-        const primaries = roles.filter((r) => r.role === 'primary');
+        // Backups-only databases never move to another server.
+        const primaries = roles.filter((r) => r.role === 'primary' && r.backup_only_server_id == null);
         const targets = primaries.length ? await get(`/api/servers/${id}/switchover-targets`).catch(() => null) : null;
         // Native append() would render null as the text "null"; filter it out.
         clear(root).append(...[

@@ -1,5 +1,5 @@
 /*
-    Mostly-On helper procedures, version 4.
+    Mostly-On helper procedures, version 5.
 
     Mostly-On never needs a sysadmin login. Everything that needs high privileges
     (BACKUP, RESTORE, ALTER DATABASE, KILL) happens inside the procedures in the
@@ -7,8 +7,9 @@
     holds CONTROL SERVER and dbcreator; the login Mostly-On uses only gets
     EXECUTE on them, plus read access to server state and backup history.
 
-    The procedures refuse system databases, and only read or write backup files
-    under the shared backup folder given below.
+    The procedures back up master, model and msdb, but never restore or change
+    them, and never touch tempdb. They only read or write backup files under the
+    shared backup folder given below.
 
     How to run it:
       * As a member of sysadmin, on every SQL Server that Mostly-On manages.
@@ -97,7 +98,7 @@ CREATE FUNCTION mostly_on.helper_version()
 RETURNS int
 AS
 BEGIN;
-    RETURN 4;
+    RETURN 5;
 END;
 GO
 
@@ -158,14 +159,19 @@ IF (@ok=0) BEGIN;
 END;
 GO
 
--- Throws for system databases, and (with @must_exist=1) for databases that do not exist.
+-- Throws for tempdb, for the other system databases unless @backup=1 (they are
+-- backed up, but never restored or changed), and (with @must_exist=1) for
+-- databases that do not exist.
 CREATE PROCEDURE mostly_on.check_database
     @db                 sysname,
-    @must_exist         bit=1
+    @must_exist         bit=1,
+    @backup             bit=0
 AS
 SET NOCOUNT ON;
-IF (@db IS NULL OR @db IN (N'master', N'model', N'msdb', N'tempdb') OR DB_ID(@db) BETWEEN 1 AND 4)
-    THROW 50001, N'Mostly-On never touches system databases.', 1;
+IF (@db IS NULL OR @db=N'tempdb' OR DB_ID(@db)=2)
+    THROW 50001, N'Mostly-On never touches tempdb.', 1;
+IF (@backup=0 AND (@db IN (N'master', N'model', N'msdb') OR DB_ID(@db) BETWEEN 1 AND 4))
+    THROW 50001, N'Mostly-On only backs up system databases (master, model, msdb); it never restores or changes them.', 1;
 IF (@must_exist=1 AND DB_ID(@db) IS NULL) BEGIN;
     DECLARE @message nvarchar(2048)=N'Database '+@db+N' does not exist on this server.';
     THROW 50002, @message, 1;
@@ -188,8 +194,10 @@ CREATE PROCEDURE mostly_on.take_backup
     @continue_after_error bit=0
 AS
 SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db;
+EXEC mostly_on.check_database @db=@db, @backup=1;
 EXEC mostly_on.check_path @path=@path, @kind='backup';
+IF (DB_ID(@db)=1 AND @type!='FULL')
+    THROW 50022, N'SQL Server only allows full backups of master.', 1;
 
 IF (@type='FULL' AND @copy_only=0)
     BACKUP DATABASE @db TO DISK=@path WITH CHECKSUM, INIT, NO_COMPRESSION, NAME=@name, DESCRIPTION=@description, STATS=10;

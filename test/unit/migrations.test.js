@@ -138,3 +138,49 @@ test('a migration that leaves broken references is rolled back', () => {
     assert.equal(conn.prepare('SELECT COUNT(*) FROM parents').pluck().get(), 1);
     conn.close();
 });
+
+test('010: the databases table loses its UNIQUE name, and every row that refers to it survives', () => {
+    const real = path.join(path.dirname(new URL(import.meta.url).pathname), '../../src/store/migrations');
+    const all = fs.readdirSync(real).filter((f) => /^\d{3}_.+\.sql$/.test(f)).sort();
+    const upTo = (n) => Object.fromEntries(all.filter((f) => Number(f.slice(0, 3)) <= n).map((f) => [f, fs.readFileSync(path.join(real, f), 'utf8')]));
+    const s = scratch(upTo(9));
+    let conn = openDb(s.file, { migrationsDir: s.dir });
+    const t = '2026-01-01T00:00:00Z';
+    conn.exec(`
+        INSERT INTO servers (id, name, host, username, password_enc, sql_backup_root, created_at, updated_at) VALUES (1, 'sql1', 'h', 'u', 'p', '/b', '${t}', '${t}'), (2, 'sql2', 'h', 'u', 'p', '/b', '${t}', '${t}');
+        INSERT INTO databases (id, name, status, created_at, updated_at, owner_name, retention_full_days) VALUES (7, 'Sales', 'managed', '${t}', '${t}', 'app', 30), (8, 'Old', 'unmanaged', '${t}', '${t}', NULL, NULL);
+        INSERT INTO database_replicas (database_id, server_id, role, updated_at, restore_delay_minutes) VALUES (7, 1, 'primary', '${t}', 0), (7, 2, 'secondary', '${t}', 60);
+        INSERT INTO forks (database_id, fork_guid, created_at) VALUES (7, 'f', '${t}');
+        INSERT INTO backup_files (id, database_id, server_id, type, rel_path, created_at) VALUES (1, 7, 1, 'FULL', 'Sales/FULL/a.bak', '${t}');
+        INSERT INTO restores (backup_file_id, database_id, server_id, started_at) VALUES (1, 7, 2, '${t}');
+        INSERT INTO operations (id, type, database_id, status, created_at, updated_at) VALUES (1, 'backup', 7, 'succeeded', '${t}', '${t}');
+        INSERT INTO schedules (database_id, backup_type, kind, interval_minutes) VALUES (7, 'LOG', 'interval', 5);
+        INSERT INTO foreign_backups (backup_set_uuid, database_id, server_id, type, detected_at) VALUES ('u', 7, 1, 'FULL', '${t}');
+    `);
+    const counts = () => Object.fromEntries(['databases', 'database_replicas', 'forks', 'backup_files', 'restores', 'operations', 'schedules', 'foreign_backups'].map((tb) => [tb, conn.prepare(`SELECT COUNT(*) FROM ${tb}`).pluck().get()]));
+    const before = counts();
+    closeDb();
+
+    write(s.dir, upTo(10));
+    conn = openDb(s.file, { migrationsDir: s.dir });
+    assert.deepEqual(counts(), before, 'every row kept');
+    assert.deepEqual(conn.prepare('SELECT id, name, status, owner_name, retention_full_days, backup_only_server_id FROM databases WHERE id=7').get(), {
+        id: 7, name: 'Sales', status: 'managed', owner_name: 'app', retention_full_days: 30, backup_only_server_id: null,
+    });
+    assert.deepEqual(conn.pragma('foreign_key_check'), []);
+
+    // Names: unique among log-shipped databases, and per server among backups-only ones.
+    const add = (id, name, server) => conn.prepare(`INSERT INTO databases (id, name, created_at, updated_at, backup_only_server_id) VALUES (?, ?, '${t}', '${t}', ?)`).run(id, name, server);
+    assert.throws(() => add(20, 'Sales', null), /UNIQUE/);
+    add(21, 'master', 1);
+    add(22, 'master', 2);
+    assert.throws(() => add(23, 'master', 1), /UNIQUE/);
+    add(24, 'Sales', 1); // a backups-only database may share a log-shipped database's name
+    assert.throws(() => add(25, 'x', 99), /FOREIGN KEY/);
+
+    // The cascade and SET NULL still work on the rebuilt table.
+    conn.prepare('DELETE FROM databases WHERE id=7').run();
+    const after = counts();
+    for (const tb of ['database_replicas', 'forks', 'backup_files', 'restores', 'schedules', 'foreign_backups']) assert.equal(after[tb], 0, tb);
+    assert.equal(conn.prepare('SELECT database_id FROM operations WHERE id=1').pluck().get(), null);
+});
