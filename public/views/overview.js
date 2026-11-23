@@ -263,29 +263,30 @@ export function dbHealth(d, alerts, thresholdMinutes) {
     return { kind: ['ok', 'warn', 'err'][level], label: ['healthy', 'warning', 'error'][level], reasons };
 }
 
+// How a database is managed, in words, for the manage control's accessible name.
+const MANAGE_STATE_TEXT = { off: 'not managed', local: 'managed, no secondaries', shipped: 'managed, log shipped to secondaries' };
+
 /**
- * The manage on/off switch: a checkbox styled as a switch (role=switch; the
- * native `switch` attribute is used where the browser has it). It never flips
- * by itself: activating it opens a dialog, and the list reloads afterwards.
- * A switch that cannot be used stays focusable; its reason is a tooltip (on
- * hover, focus, or a tap on the switch) and its accessible description.
+ * The manage control: a button drawn as a three-position slider, so the state
+ * shows at a glance. O: not managed. I: managed, no secondaries (backups
+ * only, or log shipped but without a secondary yet). II: log shipped to
+ * secondaries (which also means it cannot be switched off here). The position
+ * is not picked here: activating it opens the Manage or Stop managing dialog,
+ * and the list reloads afterwards. One that cannot be used
+ * stays focusable; its reason is a tooltip (on hover, focus, or a tap) and its
+ * accessible description.
+ *   state: 'off' | 'local' | 'shipped'
  */
-function manageSwitch({ on, label, reason, onActivate }) {
-    const input = h('input.switch', {
-        type: 'checkbox',
-        switch: true,
-        role: 'switch',
-        checked: on,
-        'aria-label': label,
+function manageControl({ state, who, reason, onActivate }) {
+    const button = h('button.manage-state', {
+        type: 'button',
+        'data-state': state,
+        'aria-label': `${who}: ${MANAGE_STATE_TEXT[state]}`,
         'aria-disabled': reason ? 'true' : null,
     });
-    const tip = reason ? tooltip(input, reason) : null;
-    input.addEventListener('click', (e) => {
-        e.preventDefault(); // the state changes only once the dialog succeeds
-        if (tip) tip.show();
-        else onActivate();
-    });
-    return [input, tip?.tip];
+    const tip = reason ? tooltip(button, reason) : null;
+    button.addEventListener('click', () => (tip ? tip.show() : onActivate()));
+    return [button, tip?.tip];
 }
 
 export function overviewView() {
@@ -393,18 +394,18 @@ export function overviewView() {
         return details;
     }
 
-    /** Switch, name (a link for managed databases) and, if the switch cannot be used, why. */
+    /** Manage control, name (a link for managed databases) and, if the control cannot be used, why. */
     function nameCell(d) {
         const sw = d.managed
-            ? manageSwitch({
-                  on: true,
-                  label: `Manage ${d.label ?? d.name}`,
+            ? manageControl({
+                  state: d.replicas.some((r) => r.role !== 'primary') ? 'shipped' : 'local',
+                  who: d.label ?? d.name,
                   reason: stopManagingBlocker(d) ? `To stop managing this database, first remove its secondaries (${d.replicas.filter((r) => r.role !== 'primary').map((r) => r.server_name).join(', ')}) on its page.` : null,
                   onActivate: () => stopManaging(d),
               })
-            : manageSwitch({
-                  on: false,
-                  label: `Manage ${d.name} on ${d.server_name}`,
+            : manageControl({
+                  state: 'off',
+                  who: `${d.name} on ${d.server_name}`,
                   reason: null,
                   onActivate: () => manage(d),
               });

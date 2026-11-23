@@ -69,9 +69,9 @@ The included `docker-compose.yml` starts three SQL Server Express containers (`s
    | SQL login / Password | `mostly_on` / your `MOSTLY_ON_SQL_PASSWORD` |
    | Shared backup folder, as this SQL Server sees it | `/var/opt/mssql/backup` |
 
-6. Create a database on `sql1` (any tool; it must use FULL recovery model). It appears in the **Databases** list on the **Overview** with its switch off, indicating it's unmanaged. Turn the switch on (**Manage**), then on the database's page press **Add secondary** and pick `sql2` and/or `sql3`.
+6. Create a database on `sql1` (any tool; it must use FULL recovery model). It appears on the **Overview**, under `sql1`'s **Not managed** list. Press its manage control (**Manage**), then on the database's page press **Add secondary** and pick `sql2` and/or `sql3`.
 
-   To stop managing a database, turn its switch off. That requires any secondaries be removed first (database page, Replicas table, **Remove**), so no copy is left waiting for log backups that never come. The system databases (master, model, msdb) and databases in SIMPLE or BULK_LOGGED recovery can be managed too: they are tagged **backups only**, and are backed up on their own server, never shipped or restored (see [How it works](#how-it-works)).
+   The manage control shows how Mostly-On manages each database: **O** not managed, **I** managed without secondaries, **II** log shipped to secondaries. To stop managing a database, press its control. That requires any secondaries be removed first (database page, Replicas table, **Remove**), so no copy is left waiting for log backups that never come. The system databases (master, model, msdb) and databases in SIMPLE or BULK_LOGGED recovery can be managed too: they are tagged **backups only**, and are backed up on their own server, never shipped or restored (see [How it works](#how-it-works)).
 
 From here on, Mostly-On backs the database up on a schedule and keeps `sql2` up to date. Try **Failover** on the secondary's row.
 

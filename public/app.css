@@ -12,6 +12,8 @@
     --border-light: #d9dce3;    --border-dark: #343944;
     --accent-light: #2f5bd3;    --accent-dark: #86a6ff;
     --accent-text-light: #ffffff; --accent-text-dark: #0d1530;
+    /* A managed database's control: lighter than the accent, still 3:1 against its white knob. */
+    --manage-on-light: #6d8ce0; --manage-on-dark: #86a6ff;
     --ok-light: #18794e;        --ok-dark: #4cc38a;
     --warn-light: #9a5b00;      --warn-dark: #f0b44c;
     --err-light: #c4271c;       --err-dark: #ff7a6e;
@@ -27,6 +29,7 @@
     --border: var(--border-light);
     --accent: var(--accent-light);
     --accent-text: var(--accent-text-light);
+    --manage-on: var(--manage-on-light);
     --ok: var(--ok-light);
     --warn: var(--warn-light);
     --err: var(--err-light);
@@ -43,6 +46,7 @@
         --border: var(--border-dark);
         --accent: var(--accent-dark);
         --accent-text: var(--accent-text-dark);
+        --manage-on: var(--manage-on-dark);
         --ok: var(--ok-dark);
         --warn: var(--warn-dark);
         --err: var(--err-dark);
@@ -60,6 +64,7 @@
         --border: light-dark(var(--border-light), var(--border-dark));
         --accent: light-dark(var(--accent-light), var(--accent-dark));
         --accent-text: light-dark(var(--accent-text-light), var(--accent-text-dark));
+        --manage-on: light-dark(var(--manage-on-light), var(--manage-on-dark));
         --ok: light-dark(var(--ok-light), var(--ok-dark));
         --warn: light-dark(var(--warn-light), var(--warn-dark));
         --err: light-dark(var(--err-light), var(--err-dark));
@@ -237,15 +242,81 @@ input.switch::after {
 input.switch:checked { background: var(--accent); border-color: var(--accent); }
 input.switch:checked::after { background: var(--accent-text); translate: 1.2rem -50%; }
 input.switch:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-/* A switch that cannot be used here (its tooltip says why) keeps its colour:
-   on is outlined instead of filled, off gets a dashed border. Fading it would
-   read as a different colour. */
-input.switch[aria-disabled="true"] { cursor: not-allowed; border-style: dashed; }
-input.switch[aria-disabled="true"]:checked { background: var(--surface); border-style: solid; box-shadow: inset 0 0 0 1px var(--accent); }
-input.switch[aria-disabled="true"]:checked::before { color: var(--accent); }
-input.switch[aria-disabled="true"]:checked::after { background: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
     input.switch, input.switch::after { transition: none; }
+}
+/* Manage control (overview.js manageControl()): a button drawn as a slider
+   with three positions. O, knob at the start: not managed. I, knob in the
+   middle: managed, no secondaries. II, knob at the end: log shipped to
+   secondaries. Off keeps the switch's outlined look; both managed positions
+   are filled. */
+button.manage-state {
+    --track: 3.75rem;
+    --knob: 1.05rem;
+    --pad: 0.2rem;
+    --travel: calc(var(--track) - 2px - var(--knob) - 2 * var(--pad)); /* 2px: the borders */
+    --dir: 1; /* translate runs left to right; -1 in right-to-left text */
+    flex: none;
+    position: relative;
+    inline-size: var(--track);
+    block-size: 1.5rem;
+    min-block-size: 0;
+    padding: 0;
+    border: 1px solid var(--muted);
+    border-radius: 999px;
+    background: var(--surface);
+    transition: background-color 0.15s, border-color 0.15s;
+}
+/* The mark, on the free side of the knob. */
+button.manage-state::before {
+    position: absolute;
+    inset-block: 0;
+    display: grid;
+    place-items: center;
+    font: 600 0.7rem/1 system-ui, sans-serif;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+}
+button.manage-state[data-state="off"]::before { content: "O"; inset-inline-end: 0.45rem; }
+button.manage-state[data-state="local"]::before { content: "I"; inset-inline-start: 0.6rem; }
+button.manage-state[data-state="shipped"]::before { content: "II"; inset-inline-start: 0.65rem; }
+/* The knob. */
+button.manage-state::after {
+    content: "";
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: var(--pad);
+    inline-size: var(--knob);
+    block-size: var(--knob);
+    border-radius: 50%;
+    background: var(--muted);
+    translate: 0 -50%;
+    transition: translate 0.15s;
+}
+/* The middle position sits 2px past the exact middle: the I mark on its other side makes the exact middle look off-centre. */
+button.manage-state[data-state="local"]::after { translate: calc(var(--dir) * (var(--travel) / 2 + 0.125rem)) -50%; }
+button.manage-state[data-state="shipped"]::after { translate: calc(var(--dir) * var(--travel)) -50%; }
+button.manage-state:dir(rtl) { --dir: -1; }
+/* Managed (either position): filled. Also on hover, which would otherwise grey every button. */
+button.manage-state:is([data-state="local"], [data-state="shipped"]),
+button.manage-state:is([data-state="local"], [data-state="shipped"]):hover { background: var(--manage-on); border-color: var(--manage-on); }
+button.manage-state:is([data-state="local"], [data-state="shipped"])::before { color: var(--accent-text); }
+button.manage-state:is([data-state="local"], [data-state="shipped"])::after { background: var(--accent-text); }
+button.manage-state[data-state="off"]:hover { background: var(--surface-2); }
+button.manage-state:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+/* Cannot be used here (its tooltip says why): same look, a different cursor. */
+button.manage-state[aria-disabled="true"] { opacity: 1; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+    button.manage-state, button.manage-state::after { transition: none; }
+}
+/* Forced colours: system colours, so the knob and the filled track stay visible. */
+@media (forced-colors: active) {
+    button.manage-state::before, button.manage-state::after { forced-color-adjust: none; }
+    button.manage-state::before { color: ButtonText; }
+    button.manage-state::after { background: ButtonText; }
+    button.manage-state:is([data-state="local"], [data-state="shipped"]) { forced-color-adjust: none; background: Highlight; border-color: Highlight; }
+    button.manage-state:is([data-state="local"], [data-state="shipped"])::before { color: HighlightText; }
+    button.manage-state:is([data-state="local"], [data-state="shipped"])::after { background: HighlightText; }
 }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.danger { background: var(--err); border-color: var(--err); color: #fff; }
