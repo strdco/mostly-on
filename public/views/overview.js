@@ -492,11 +492,6 @@ export function overviewView() {
             el.append(
                 h('h1', 'Overview'),
                 alertsBox,
-                h(
-                    'p.muted',
-                    'Your databases, grouped by server. A database in FULL recovery is listed under its primary and log shipped to its secondaries. ' +
-                        'System databases, and databases in SIMPLE or BULK_LOGGED recovery, are only backed up, on their own server.',
-                ),
                 listBox,
             );
             await load();
