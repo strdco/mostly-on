@@ -228,3 +228,59 @@ test('backups-only databases: plain labels, a LOG taken elsewhere is a warning, 
     health.forget(s1.id);
     closeDb();
 });
+
+test('a log-shipped database out of FULL recovery: an error in SIMPLE, a warning in BULK_LOGGED', async () => {
+    const crypto = await import('node:crypto');
+    const { openDb, closeDb } = await import('../../src/store/db.js');
+    const servers = await import('../../src/store/repos/servers.js');
+    const databases = await import('../../src/store/repos/databases.js');
+    const health = await import('../../src/engine/health.js');
+    const { tryAcquire } = await import('../../src/engine/locks.js');
+    const { setEngineConfig } = await import('../../src/engine/context.js');
+    const { collectConditions } = await import('../../src/notify/alerts.js');
+    openDb(':memory:');
+    setEngineConfig({ publicUrl: 'http://mo.test' });
+    const mk = (name) => servers.create(servers.validate({ name, host: name, username: 'u', password: 'p', sql_backup_root: '/b' }), crypto.randomBytes(32));
+    const s1 = mk('sql1');
+    const s2 = mk('sql2');
+    const shop = databases.manage({ name: 'Shop', familyGuid: null, primaryServerId: s1.id });
+    const util = databases.manage({ name: 'Util', familyGuid: null, primaryServerId: s1.id, backupOnly: true });
+    const live = (recoveryModel) =>
+        health._setForTests(s1.id, {
+            ok: true,
+            databases: ['Shop', 'Util'].map((name, i) => ({ name, databaseId: 9 + i, state: 'ONLINE', recoveryModel, isInStandby: false })),
+        });
+    const key = `recovery:${shop.id}`;
+
+    live('FULL');
+    assert.equal(collectConditions().has(key), false);
+
+    live('SIMPLE');
+    let c = collectConditions().get(key);
+    assert.equal(c.severity, 'error');
+    assert.equal(
+        c.message,
+        'Shop is in SIMPLE recovery on its primary sql1, so its log cannot be backed up and its log chain is broken. Switch it back to FULL recovery; Mostly-On then starts a new log chain with a full backup.',
+    );
+    assert.equal(collectConditions().has(`recovery:${util.id}`), false, 'a backups-only database only takes FULL backups in SIMPLE recovery: nothing to alert about');
+
+    databases.addSecondary({ databaseId: shop.id, serverId: s2.id, restoreMode: 'norecovery' });
+    assert.match(collectConditions().get(key).message, /Switch it back to FULL recovery, then reinitialize its secondaries\.$/);
+
+    live('BULK_LOGGED');
+    c = collectConditions().get(key);
+    assert.equal(c.severity, 'warn');
+    assert.equal(
+        c.message,
+        'Shop is in BULK_LOGGED recovery on its primary sql1, so Mostly-On takes no log backups of it and its secondaries fall behind. Switch it back to FULL recovery; shipping then catches up by itself.',
+    );
+
+    const release = tryAcquire(shop.id, 'exclusive');
+    assert.equal(collectConditions().has(key), false, 'not while a failover or reseed holds the database');
+    release();
+
+    health._setForTests(s1.id, { ok: false, error: 'down' });
+    assert.equal(collectConditions().has(key), false, 'an unreachable primary is reported as such instead');
+    health.forget(s1.id);
+    closeDb();
+});

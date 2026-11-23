@@ -82,6 +82,25 @@ export async function dbBackupState(serverId, dbName) {
 }
 
 /**
+ * Reads a database's state again while it is starting up (RECOVERING), every
+ * pollMs for up to waitMs, and returns the last state read. SQL Server Express
+ * opens a database with AUTO_CLOSE on first use, and it shows as RECOVERING
+ * for a moment. Other states (RECOVERY_PENDING, SUSPECT ...) return at once.
+ */
+export async function waitWhileStartingUp(read, { waitMs = 20_000, pollMs = 1_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now } = {}) {
+    const until = now() + waitMs;
+    let state = await read();
+    while (state?.state === 'RECOVERING' && now() < until) {
+        await sleep(pollMs);
+        state = await read();
+    }
+    return state;
+}
+
+/** dbBackupState(), once the database has finished starting up (or after 20 s). */
+export const dbBackupStateStarted = (serverId, dbName) => waitWhileStartingUp(() => dbBackupState(serverId, dbName));
+
+/**
  * Whether the server is ready for Mostly-On: the signed helper procedures at
  * the version this controller needs, and the read permissions.
  * @returns {{ready: boolean, version: number|null, expected: number, problems: string[], login: string}}

@@ -716,6 +716,29 @@ export function databaseView(id) {
         }
     }
 
+    /**
+     * A log-shipped database that left FULL recovery gets no log backups (as
+     * its alert says). SIMPLE also breaks its log chain.
+     */
+    function recoveryCallout(db) {
+        const rm = db.recovery_model;
+        if (db.backup_only || !rm || rm === 'FULL') return null;
+        const secondaries = db.replicas.some((r) => r.role === 'secondary');
+        const where = `${db.name} is in ${rm} recovery on its primary ${db.primary?.server_name ?? ''}`.trim();
+        if (rm === 'SIMPLE') {
+            return h(
+                'div.callout.err',
+                h('p', h('strong', `${where}, so its log cannot be backed up and its log chain is broken.`)),
+                h('p', secondaries ? 'Switch it back to FULL recovery, then reinitialize its secondaries (Reinitialize).' : 'Switch it back to FULL recovery; Mostly-On then starts a new log chain with a full backup.'),
+            );
+        }
+        return h(
+            'div.callout.warn',
+            h('p', h('strong', `${where}, so Mostly-On takes no log backups of it${secondaries ? ' and its secondaries fall behind' : ''}.`)),
+            h('p', `Switch it back to FULL recovery; ${secondaries ? 'shipping then catches up' : 'log backups then continue'} by itself.`),
+        );
+    }
+
     // DIFF and LOG backups build on a FULL: until Mostly-On has one, they are greyed out.
     // A backups-only database takes them only in FULL recovery, and master never.
     function backupMenu(db) {
@@ -803,8 +826,9 @@ export function databaseView(id) {
                 stopButton(db),
             ),
             db.can_ship
-                ? h('div.callout', h('p', `${db.name} is in FULL recovery now. To give it secondaries, stop managing it, then manage it again: it is then log shipped.`))
+                ? h('div.callout.note', h('p', `${db.name} is in FULL recovery now. To give it secondaries, stop managing it, then manage it again: it is then log shipped.`))
                 : null,
+            recoveryCallout(db),
             stopped.length
                 ? h(
                       'div.callout.err',
@@ -941,7 +965,7 @@ export function databaseView(id) {
                     },
                 ],
             }),
-            db.backup_only && db.name === 'master' ? h('p.small.muted', 'SQL Server only allows full backups of master, so it has no DIFF or LOG schedule.') : null,
+            db.backup_only && db.name === 'master' ? h('p.small.muted', 'Mostly-On takes only full backups of master, and of databases in SIMPLE or BULK_LOGGED recovery, so master has no DIFF or LOG schedule.') : null,
             ...retentionForm(db, settings, load),
             // Failed or interrupted operations stay in view: they are resumed from here.
             stuckOps.length ? h('h2', 'Needs your attention') : null,

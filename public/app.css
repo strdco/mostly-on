@@ -237,7 +237,13 @@ input.switch::after {
 input.switch:checked { background: var(--accent); border-color: var(--accent); }
 input.switch:checked::after { background: var(--accent-text); translate: 1.2rem -50%; }
 input.switch:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-input.switch[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+/* A switch that cannot be used here (its tooltip says why) keeps its colour:
+   on is outlined instead of filled, off gets a dashed border. Fading it would
+   read as a different colour. */
+input.switch[aria-disabled="true"] { cursor: not-allowed; border-style: dashed; }
+input.switch[aria-disabled="true"]:checked { background: var(--surface); border-style: solid; box-shadow: inset 0 0 0 1px var(--accent); }
+input.switch[aria-disabled="true"]:checked::before { color: var(--accent); }
+input.switch[aria-disabled="true"]:checked::after { background: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
     input.switch, input.switch::after { transition: none; }
 }
@@ -250,6 +256,7 @@ form.stack { display: grid; gap: 0.75rem; }
 /* In a stacked form the grid gap does the spacing; an empty message takes no room
    (it stays in the accessibility tree, so its role=alert still announces). */
 form.stack > .actions { margin-block: 0; }
+form.stack > p, form.stack > .callout { margin-block: 0; }
 .error-text:empty { margin: 0; }
 /* Retention days on the database page: three short number fields side by side. */
 fieldset.retention-days { display: grid; grid-template-columns: repeat(3, 9rem); gap: 0.75rem 1rem; margin: 0; padding: 0; border: 0; min-inline-size: 0; }
@@ -316,6 +323,10 @@ input[type="text"], input[type="password"], input[type="number"], input[type="ti
 .callout { padding: 0.6rem 0.8rem; border-radius: var(--radius); margin-block: 0.5rem; }
 .callout.warn { background: var(--warn-bg); color: var(--text); border-inline-start: 4px solid var(--warn); }
 .callout.err { background: var(--err-bg); color: var(--text); border-inline-start: 4px solid var(--err); }
+/* Advice, not a problem. */
+.callout.note { background: var(--surface-2); color: var(--text); border-inline-start: 4px solid var(--muted); }
+.callout > p { margin: 0; }
+.callout > p + p { margin-block-start: 0.4rem; }
 /* A warning to acknowledge (an "I understand" box under it). */
 .callout.ack { display: grid; gap: 0.6rem; padding: 0.8rem 1rem; border: 1px solid var(--warn); border-inline-start-width: 4px; }
 .callout.ack p { margin: 0; }
@@ -352,7 +363,11 @@ table.data th, table.data td {
 }
 table.data thead th { font-size: 0.8rem; color: var(--muted); background: var(--surface); position: sticky; inset-block-start: 0; z-index: 1; }
 table.data tbody th { font-weight: 600; background: var(--surface); }
-table.data tbody tr:last-child > * { border-block-end: none; }
+table.data tbody:last-child tr:last-child > * { border-block-end: none; }
+/* Row groups (dataTable groups): a heading row, and an optional footer row. */
+table.data tr.group-head > th { background: var(--surface-2); font-size: 0.95rem; padding-block: 0.4rem; }
+.group-name { font-weight: 700; }
+table.data tr.group-foot > td { padding-block: 0.35rem; }
 table.data td.num { text-align: end; font-variant-numeric: tabular-nums; }
 /* Buttons in table rows are compact, so a row's actions fit on one line. They stay
    at least 28px tall (WCAG 2.5.8 asks for 24px targets). */
@@ -369,7 +384,9 @@ table.data td .actions { gap: 0.35rem; margin-block: 0; }
     table.data, table.data thead, table.data tbody, table.data tr, table.data th, table.data td { display: block; }
     table.data thead { display: none; }
     table.data tr { padding: 0.5rem 0; border-block-end: 1px solid var(--border); }
-    table.data tbody tr:last-child { border-block-end: none; }
+    table.data tbody:last-child tr:last-child { border-block-end: none; }
+    table.data tr.group-head { padding: 0; }
+    table.data tr.group-head > th { padding-block: 0.45rem; }
     table.data th, table.data td { border: none; padding: 0.2rem 0.75rem; }
     table.data td.num { text-align: start; }
     table.data caption { display: block; }
@@ -390,6 +407,13 @@ table.data tr.row-err > :first-child { box-shadow: inset 4px 0 0 var(--err); }
     table.data tr.row-err { box-shadow: inset 4px 0 0 var(--err); }
 }
 .health-reasons { margin: 0.2rem 0 0; padding: 0; list-style: none; font-size: 0.8rem; color: var(--muted); font-weight: 400; }
+.running { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--muted); }
+/* Databases on a server that Mostly-On does not manage: collapsed under its group. */
+details.not-managed > summary { inline-size: fit-content; padding-block: 0.15rem; font-size: 0.9rem; font-weight: 600; color: var(--muted); }
+details.not-managed > summary .names { font-weight: 400; }
+details.not-managed[open] > summary .names { display: none; } /* the list below shows them */
+details.not-managed > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+ul.not-managed-list { list-style: none; margin: 0.35rem 0 0.25rem; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); gap: 0.4rem 1.5rem; }
 .table-more { margin-block: 0.4rem 0; }
 
 /* --- dialogs ----------------------------------------------------------------- */

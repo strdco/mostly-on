@@ -12,6 +12,12 @@ export const MASTER_ID = 1;
 
 export const isBackupOnly = (db) => db?.backup_only_server_id != null;
 
+// Mostly-On's own rule, in words. (SQL Server itself allows DIFF backups in
+// SIMPLE recovery, and DIFF and LOG backups in BULK_LOGGED; only master is
+// FULL only, whatever its recovery model.)
+export const ONLY_FULL_MASTER = 'Mostly-On takes only full backups of master, and of databases in SIMPLE or BULK_LOGGED recovery.';
+const ONLY_FULL_NON_FULL = 'Mostly-On takes only full backups of databases in SIMPLE or BULK_LOGGED recovery';
+
 /** A system database by name, for lists that only have names (discovery). */
 export const isSystemName = (name) => SYSTEM_DATABASE_NAMES.includes(String(name ?? '').toLowerCase());
 
@@ -44,13 +50,13 @@ export function backupTypeProblem(db, live, type, serverName) {
     const { recoveryModel = null, databaseId = null } = live ?? {};
     if (isBackupOnly(db)) {
         if (databaseId === MASTER_ID || (databaseId == null && db.name === 'master')) {
-            return { skip: true, status: 'skipped: master is FULL only', message: 'SQL Server only allows full backups of master.' };
+            return { skip: true, status: 'skipped: master is FULL only', message: ONLY_FULL_MASTER };
         }
         if (recoveryModel && recoveryModel !== 'FULL') {
             return {
                 skip: true,
                 status: `skipped: ${recoveryModel} recovery`,
-                message: `${db.name} on ${serverName} is in ${recoveryModel} recovery, so Mostly-On only takes FULL backups of it. DIFF and LOG backups start when it is in FULL recovery.`,
+                message: `${ONLY_FULL_NON_FULL}, and ${db.name} on ${serverName} is in ${recoveryModel} recovery. Its DIFF and LOG backups start by themselves when it is switched to FULL recovery.`,
             };
         }
         return null;

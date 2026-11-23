@@ -106,11 +106,12 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
 
     let state;
     try {
-        state = await inspect.dbBackupState(server.id, db.name);
+        state = await inspect.dbBackupStateStarted(server.id, db.name);
     } catch (err) {
         throw fail(503, `Primary ${server.name} is unreachable: ${sqlErrorText(err)}`);
     }
     if (!state) throw fail(409, `Database ${db.name} does not exist on its primary ${server.name}`);
+    if (state.state === 'RECOVERING') throw fail(409, `Database ${db.name} is still starting up (RECOVERING) on its primary ${server.name}`);
     if (state.state !== 'ONLINE') throw fail(409, `Database ${db.name} is ${state.state} on its primary ${server.name}`);
     if (db.family_guid && state.familyGuid && db.family_guid !== state.familyGuid) {
         throw fail(409, `Database ${db.name} on ${server.name} is not the managed database (family_guid ${state.familyGuid}, expected ${db.family_guid}). Was it dropped and recreated?`);

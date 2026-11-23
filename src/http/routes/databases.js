@@ -22,7 +22,7 @@ import { evaluateSoon } from '../../notify/alerts.js';
 import { syncFromHealth } from '../../engine/discovery.js';
 import { publish } from '../../bus.js';
 import { dbFolder } from '../../paths.js';
-import { isBackupOnly, isSystemName, manageKind, skippedTypes, dbLabel, SYSTEM_DATABASE_IDS, MASTER_ID } from '../../engine/backup-rules.js';
+import { isBackupOnly, isSystemName, manageKind, skippedTypes, dbLabel, SYSTEM_DATABASE_IDS, MASTER_ID, ONLY_FULL_MASTER } from '../../engine/backup-rules.js';
 
 function mustGet(id) {
     const db = databases.get(id);
@@ -113,13 +113,14 @@ export function databaseRoutes(router) {
 
         let state;
         try {
-            state = await inspect.dbBackupState(serverId, name);
+            state = await inspect.dbBackupStateStarted(serverId, name);
         } catch (err) {
             throw new HttpError(503, `Cannot reach ${server.name}: ${sqlErrorText(err)}`);
         }
         if (!state) throw new HttpError(404, `Database ${name} does not exist on ${server.name}`);
         if (state.databaseId === 2) throw new HttpError(409, 'Mostly-On never backs up tempdb: SQL Server creates it again at every start.');
         if (state.isSnapshot) throw new HttpError(409, `${name} on ${server.name} is a database snapshot, which cannot be backed up.`);
+        if (state.state === 'RECOVERING') throw new HttpError(409, `Database ${name} is still starting up (RECOVERING) on ${server.name}. Try again in a moment.`);
         if (state.state !== 'ONLINE') throw new HttpError(409, `Database ${name} is ${state.state} on ${server.name}`);
 
         const realName = state.name; // the server's own spelling, as health checks report it
@@ -193,7 +194,7 @@ export function databaseRoutes(router) {
         const type = ctx.params.type;
         if (!BACKUP_TYPES.includes(type)) throw new HttpError(400, 'Invalid backup type');
         if (!schedules.list(db.id).some((x) => x.backup_type === type)) {
-            throw new HttpError(409, db.name === 'master' && isBackupOnly(db) ? 'SQL Server only allows full backups of master.' : `${dbLabel(db)} has no ${type} schedule`);
+            throw new HttpError(409, db.name === 'master' && isBackupOnly(db) ? ONLY_FULL_MASTER : `${dbLabel(db)} has no ${type} schedule`);
         }
         const v = validateSchedule(ctx.body || {});
         const s = schedules.update(db.id, type, v);

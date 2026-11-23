@@ -54,27 +54,41 @@ const isEmpty = (v) => v === null || v === undefined || v === '' || v === false 
  * @param {object} o
  * @param {number} [o.limit]  show this many rows, with a "Show all" toggle for the rest
  * @param {(row) => string} [o.rowClass]
+ * @param {{header: any, rows: object[], footer?: any}[]} [o.groups]  instead of rows: one
+ *   <tbody> per group, its header in a row of its own (th scope=rowgroup) and an optional
+ *   footer row, so the columns line up across groups (no "Show all" toggle)
  */
-export function dataTable({ caption, columns, rows, empty = 'Nothing here yet.', limit = 0, rowClass = null }) {
+export function dataTable({ caption, columns, rows = [], groups = null, empty = 'Nothing here yet.', limit = 0, rowClass = null }) {
     const captionId = `cap-${Math.random().toString(36).slice(2, 9)}`;
-    if (!rows.length) return h('p.muted', empty);
+    if (groups ? !groups.some((g) => g.rows.length || g.footer) : !rows.length) return h('p.muted', empty);
+    if (groups) limit = 0;
     const extra = limit && rows.length > limit + 2 ? rows.length - limit : 0; // don't hide just one or two rows
     let open = expandedTables.has(caption);
-    const trs = rows.map((r, i) =>
+    const row = (r, hidden = false) =>
         h(
             'tr',
-            { class: rowClass?.(r) || null, hidden: extra > 0 && !open && i >= limit },
+            { class: rowClass?.(r) || null, hidden },
             columns.map((c) => {
                 const content = c.cell(r);
                 if (c.header) return h('th', { scope: 'row' }, content);
                 return h(c.num ? 'td.num' : 'td', { 'data-label': c.label, 'data-empty': isEmpty(content) }, content);
             }),
-        ),
-    );
+        );
+    const trs = groups ? [] : rows.map((r, i) => row(r, extra > 0 && !open && i >= limit));
+    const bodies = groups
+        ? groups.map((g) =>
+              h(
+                  'tbody',
+                  h('tr.group-head', h('th', { scope: 'rowgroup', colspan: columns.length }, g.header)),
+                  g.rows.map((r) => row(r)),
+                  g.footer ? h('tr.group-foot', h('td', { colspan: columns.length }, g.footer)) : null,
+              ),
+          )
+        : [h('tbody', trs)];
     const table = h(
         'div.table-wrapper',
         { tabindex: 0, role: 'region', 'aria-labelledby': captionId },
-        h('table.data', h('caption', { id: captionId }, caption), h('thead', h('tr', columns.map((c) => h('th', { scope: 'col' }, c.label)))), h('tbody', trs)),
+        h('table.data', h('caption', { id: captionId }, caption), h('thead', h('tr', columns.map((c) => h('th', { scope: 'col' }, c.label)))), bodies),
     );
     if (!extra) return table;
     // The toggle stays in place (and keeps focus) in both states.

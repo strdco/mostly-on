@@ -5,6 +5,9 @@ import { stopManagingBlocker, stopManagingDialog } from './database.js';
 import { lagLimits, delayText, restoresPaused } from './lag.js';
 import { describeSchedule } from './schedule.js';
 
+// As in engine/backup-rules.js (the dashboard does not import engine code).
+const ONLY_FULL_MASTER = 'Mostly-On takes only full backups of master, and of databases in SIMPLE or BULK_LOGGED recovery.';
+
 // Database states in words; the SQL Server name stays in brackets where it is a problem.
 const STATE_TEXT = {
     ONLINE: 'online',
@@ -194,7 +197,7 @@ export function backupOnlyTag(d) {
  */
 export function typeNotApplicable(d, type) {
     if (d.skipped?.[type]) return d.skipped[type];
-    if (d.backup_only && !d.schedules.some((s) => s.backup_type === type)) return d.name === 'master' ? 'SQL Server only allows full backups of master.' : `${d.label} has no ${type} schedule.`;
+    if (d.backup_only && !d.schedules.some((s) => s.backup_type === type)) return d.name === 'master' ? ONLY_FULL_MASTER : `${d.label} has no ${type} schedule.`;
     return null;
 }
 
@@ -226,8 +229,10 @@ export function dbHealth(d, alerts, thresholdMinutes) {
         level = Math.max(level, lvl);
         reasons.push(text);
     };
-        if (!d.primary) flag(2, 'no primary');
+    if (!d.primary) flag(2, 'no primary');
     else if (d.primary.live && (d.primary.live.state !== 'ONLINE' || d.primary.live.isInStandby)) flag(2, `primary is ${stateText(d.primary.live, 'primary')}`);
+    // A log-shipped database out of FULL recovery gets no log backups (an alert says what to do).
+    if (!d.backup_only && d.recovery_model && d.recovery_model !== 'FULL') flag(d.recovery_model === 'SIMPLE' ? 2 : 1, `in ${d.recovery_model} recovery: no log backups`);
     for (const r of d.replicas) {
         if (r.role === 'diverged') flag(1, `out-of-sync copy on ${r.server_name} needs reinitializing`);
         if (r.role !== 'secondary') continue;
@@ -288,49 +293,59 @@ export function overviewView() {
     let alertsBox;
     let timer;
 
+    // Servers whose "Not managed" list is open, so a live re-render keeps it open.
+    const openLists = new Set();
+
     async function load() {
-        const [dbs, discovered, settings, alerts] = await Promise.all([
+        const [dbs, discovered, settings, alerts, servers] = await Promise.all([
             get('/api/databases'),
             get('/api/discovered?include_dismissed=1'),
             get('/api/settings'),
             get('/api/alerts?status=active'),
+            get('/api/servers'),
         ]);
         clear(alertsBox).append(...[activeAlertsCallout(alerts)].filter((x) => x !== null));
         const threshold = settings['alerts.lag_threshold_minutes'];
         const health = new Map(dbs.map((d) => [d.id, dbHealth(d, alerts, threshold)]));
-        // Managed databases first, then the ones found on the servers; system databases after the others.
-        const order = (a, b) =>
-            Number(!!a.system) - Number(!!b.system) ||
-            a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) ||
-            (a.server_name ?? '').localeCompare(b.server_name ?? '');
-        const rows = [
-            ...dbs.map((d) => ({ managed: true, ...d, server_name: d.server_name ?? d.primary?.server_name })).sort(order),
-            ...discovered.map((d) => ({ managed: false, ...d })).sort(order),
-        ];
-        const ifManaged = (fn) => (d) => (d.managed ? fn(d) : '');
+
+        // One group per server: a log-shipped database under its primary, a
+        // backups-only one under its own server, then the databases found
+        // there that Mostly-On does not manage. Databases without a primary first.
+        const groups = new Map();
+        const groupFor = (id, name) => {
+            const key = id ?? 'none';
+            if (!groups.has(key)) groups.set(key, { key, id, name, server: servers.find((s) => s.id === id) ?? null, managed: [], unmanaged: [] });
+            return groups.get(key);
+        };
+        for (const d of dbs) groupFor(d.primary?.server_id ?? null, d.primary?.server_name).managed.push({ managed: true, ...d, server_name: d.server_name ?? d.primary?.server_name });
+        for (const d of discovered) groupFor(d.server_id, d.server_name).unmanaged.push({ managed: false, ...d });
+        // System databases after the others.
+        const order = (a, b) => Number(!!a.system) - Number(!!b.system) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        const sorted = [...groups.values()].sort((a, b) => (a.id == null ? -1 : b.id == null ? 1 : (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' })));
+
         clear(listBox).append(
             dataTable({
                 caption: 'Databases',
-                rows,
+                groups: sorted.map((g) => ({ header: groupHeader(g), rows: g.managed.sort(order), footer: notManagedList(g, g.unmanaged.sort(order)) })),
                 empty: 'No databases found on your servers yet. Register a server (Servers page).',
-                rowClass: (d) => (d.managed && health.get(d.id).kind !== 'ok' ? `row-${health.get(d.id).kind}` : null),
+                rowClass: (d) => (health.get(d.id).kind !== 'ok' ? `row-${health.get(d.id).kind}` : null),
                 columns: [
                     { label: 'Database', header: true, cell: nameCell },
                     {
                         label: 'Health',
-                        cell: ifManaged((d) => {
+                        cell: (d) => {
                             const x = health.get(d.id);
-                            return [badge(x.label, x.kind), x.reasons.length ? h('ul.health-reasons', x.reasons.map((r) => h('li', r))) : null];
-                        }),
-                    },
-                    {
-                        label: 'Primary',
-                        cell: (d) => (!d.managed ? d.server_name : d.primary ? [d.primary.server_name, ' ', stateBadge(d.primary.live, 'primary')] : badge('none', 'err')),
+                            return [
+                                badge(x.label, x.kind),
+                                x.reasons.length ? h('ul.health-reasons', x.reasons.map((r) => h('li', r))) : null,
+                                d.busy.length ? h('p.running', `Running: ${busyText(d.busy, d.replicas)}`) : null,
+                            ];
+                        },
                     },
                     {
                         label: 'Secondaries',
-                        cell: ifManaged((d) => {
-                            if (d.backup_only) return '';
+                        cell: (d) => {
+                            if (d.backup_only) return backupOnlyTag(d); // why there are none
                             const sec = d.replicas.filter((r) => r.role !== 'primary');
                             return sec.length
                                 ? sec.map((r) =>
@@ -346,29 +361,36 @@ export function overviewView() {
                                       ),
                                   )
                                 : h('span.muted', 'none');
-                        }),
+                        },
                     },
-                    ...['FULL', 'DIFF', 'LOG'].map((t) => ({
-                        label: `Last ${t}`,
-                        cell: ifManaged((d) => lastBackupBadge(d, t)),
-                    })),
-                    {
-                        label: 'Shipping',
-                        cell: ifManaged((d) => {
-                            if (d.backup_only) return ''; // never shipped
-                            const stopped = d.replicas.filter((r) => ['broken', 'needs_reseed'].includes(r.chain_state));
-                            const out = [];
-                            if (d.foreignLogBackups) {
-                                out.push(badge(`${d.foreignLogBackups} log backup${d.foreignLogBackups === 1 ? '' : 's'} taken outside Mostly-On`, 'err'));
-                            }
-                            if (stopped.length) out.push(badge(`shipping stopped to ${stopped.map((r) => r.server_name).join(', ')}`, 'err'));
-                            return out.length ? out : badge('ok', 'ok');
-                        }),
-                    },
-                    { label: 'Running now', cell: ifManaged((d) => (d.busy.length ? badge(busyText(d.busy, d.replicas)) : '')) },
+                    ...['FULL', 'DIFF', 'LOG'].map((t) => ({ label: `Last ${t}`, cell: (d) => lastBackupBadge(d, t) })),
                 ],
             }),
         );
+    }
+
+    /** A server's name (a link to its page), and why it needs attention, if it does. */
+    function groupHeader(g) {
+        if (g.id == null) return h('span.group-name', 'No primary');
+        const s = g.server;
+        const name = s ? h('a.group-name', { href: `#/servers/${g.id}` }, g.name) : h('span.group-name', g.name);
+        const problem = !s ? null : !s.enabled ? badge('disabled') : s.health && !s.health.ok ? badge('unreachable', 'err') : null;
+        return [name, problem ? [' ', problem] : null];
+    }
+
+    /** The databases found on a server that Mostly-On does not manage: collapsed, with their names in the summary. */
+    function notManagedList(g, list) {
+        if (!list.length) return null;
+        const names = list.map((d) => d.name);
+        const shown = names.length > 6 ? `${names.slice(0, 6).join(', ')}, …` : names.join(', ');
+        const details = h(
+            'details.not-managed',
+            { open: openLists.has(g.key) },
+            h('summary', `Not managed (${list.length})`, h('span.muted.names', `: ${shown}`)),
+            h('ul.not-managed-list', list.map((d) => h('li', nameCell(d)))),
+        );
+        details.addEventListener('toggle', () => (details.open ? openLists.add(g.key) : openLists.delete(g.key)));
+        return details;
     }
 
     /** Switch, name (a link for managed databases) and, if the switch cannot be used, why. */
@@ -376,7 +398,7 @@ export function overviewView() {
         const sw = d.managed
             ? manageSwitch({
                   on: true,
-                  label: `Manage ${d.name}`,
+                  label: `Manage ${d.label ?? d.name}`,
                   reason: stopManagingBlocker(d) ? `To stop managing this database, first remove its secondaries (${d.replicas.filter((r) => r.role !== 'primary').map((r) => r.server_name).join(', ')}) on its page.` : null,
                   onActivate: () => stopManaging(d),
               })
@@ -386,8 +408,9 @@ export function overviewView() {
                   reason: null,
                   onActivate: () => manage(d),
               });
-        const local = d.managed ? d.backup_only : d.manage_as === 'backup_only';
-        return h('div.db-name', sw, d.managed ? h('a', { href: `#/databases/${d.id}` }, d.name) : h('span', d.name), local ? [' ', backupOnlyTag(d)] : null);
+        // A managed backups-only database shows its tag under Secondaries instead.
+        if (d.managed) return h('div.db-name', sw, h('a', { href: `#/databases/${d.id}` }, d.name));
+        return h('div.db-name', sw, h('span', d.name), d.manage_as === 'backup_only' ? backupOnlyTag(d) : null);
     }
 
     let defaults = null; // the default schedules (/api/info), for the Manage dialog
@@ -430,13 +453,13 @@ export function overviewView() {
                           `This will take a FULL backup right away, then ${scheduleWords(logs ? ['FULL', 'DIFF', 'LOG'] : ['FULL']) || 'on the default schedules'}.`,
                   ),
                   master
-                      ? h('p.muted', 'SQL Server only allows full backups of master.')
+                      ? h('p.muted', ONLY_FULL_MASTER)
                       : logs
                         ? null
-                        : h('p.muted', `In ${d.recovery_model} recovery Mostly-On takes only FULL backups. LOG backups start by themselves if the database is switched to FULL recovery.`),
+                        : h('p.muted', `Mostly-On takes only full backups of databases in SIMPLE or BULK_LOGGED recovery. LOG backups of ${d.name} start by themselves if it is switched to FULL recovery.`),
                   logs
                       ? logWarning('restoring this database to a point in time needs their files as well.')
-                      : h('div.callout', h('p', 'Turn off other backup jobs for this database, so its backups and their retention live in one place.')),
+                      : h('div.callout.note', h('p', 'Turn off other backup jobs for this database, so its backups and their retention live in one place.')),
               ]
             : [
                   h('p', `${d.server_name} becomes the primary for ${d.name}. Mostly-On takes a FULL backup right away and then runs the default schedules (${scheduleWords(['FULL', 'DIFF', 'LOG']) || 'see Settings'}).`),
@@ -470,7 +493,7 @@ export function overviewView() {
                 alertsBox,
                 h(
                     'p.muted',
-                    'Databases on your servers. Databases in FULL recovery are log shipped to secondaries. ' +
+                    'Your databases, grouped by server. A database in FULL recovery is listed under its primary and log shipped to its secondaries. ' +
                         'System databases, and databases in SIMPLE or BULK_LOGGED recovery, are only backed up, on their own server.',
                 ),
                 listBox,

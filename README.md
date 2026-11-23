@@ -218,7 +218,7 @@ Everything is set through environment variables (see `.env.example`). Everything
 ## SQL Server requirements
 
 - **SQL Server 2019 or newer.** All editions, including Express Edition, will work.
-- Databases you ship must use **FULL recovery model**. To switch model: `ALTER DATABASE [name] SET RECOVERY FULL;` Databases in SIMPLE or BULK_LOGGED recovery, and the system databases, can still be backed up (**backups only**, see [How it works](#how-it-works)).
+- Databases you ship must use **FULL recovery model**. To switch model: `ALTER DATABASE [name] SET RECOVERY FULL;` A shipped database switched to SIMPLE or BULK_LOGGED later gets no log backups until it is back in FULL, and Mostly-On alerts you. Databases in SIMPLE or BULK_LOGGED recovery, and the system databases, can still be backed up (**backups only**, see [How it works](#how-it-works)).
 - **Each server needs Mostly-On's setup script, run once by a sysadmin.** Mostly-On's own login should *not* have sysadmin privileges (see below).
 - Secondaries need to have the same major version or higher as the primary.
 - Readable secondaries ("STANDBY") need the same major SQL Server version as the primary.
@@ -254,7 +254,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 
 ## How it works
 
-- **Backups.** Each managed database has a FULL, DIFF and LOG schedule, editable on its page. By default: FULL weekly and LOG every 5 minutes. DIFF backups are off by default: they only make restores faster. Switch them on per database, or for new databases under Settings (**Default schedules**). Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression).
+- **Backups.** Each managed database has a FULL, DIFF and LOG schedule, editable on its page. By default: FULL weekly and LOG every 5 minutes. DIFF backups are off by default: they only make restores faster. Switch them on per database, or for new databases under Settings (**Default schedules**). Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression). A database that is still starting up (`RECOVERING`, for example on Express Edition, which opens an `AUTO_CLOSE` database on first use) gets up to 20 seconds before a backup gives up.
 - **Load on each SQL Server.** At most **2 backups and restores run at a time** on each SQL Server, counting all its databases, as primary and as secondary. Change the default under Settings (**SQL Servers connections**), or give a server its own value (edit the server, **More options**).
   - More wait their turn, first come first served; the operation shows "Waiting for a free connection to sql1" meanwhile.
   - Health checks and other short queries have their own connections and never wait, so a busy server is never reported unreachable.
@@ -275,6 +275,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 - **Alerts.** Mostly-On alerts you once when a problem starts, then reminds you every few hours while it lasts, and sends one notice when it is resolved. Alerts cover:
   - a server is unreachable;
   - a database is not in the state it should be;
+  - a log-shipped database was switched out of FULL recovery, so it gets no log backups. In SIMPLE recovery this is an error: its log chain is broken, and its secondaries need reinitializing once it is back in FULL. In BULK_LOGGED it is a warning: back in FULL, shipping catches up by itself;
   - shipping has stopped, or a secondary is too far behind. You can configure alert thresholds on the **Settings** page. For example, with logs every 15 minutes and an alert threshold of 10 minutes, it alerts once a secondary is more than 25 minutes old;
   - a backup or restore failed;
   - a backup was taken outside Mostly-On;
@@ -389,7 +390,8 @@ The integration suite starts its own isolated compose project (`mostly-on-it`) w
 6. Restore copies of the database as it was at a moment, from the backups and after a fresh log backup: the row written after the moment is not in the copy, and the original is untouched.
 7. Roll the database back to a moment: the change after it is gone, the tail-log backup that holds it stays on the share, and the secondary continues from the first log backup on the new branch.
 8. Check that notifications are sent once and not repeated after a controller restart, using the mock Pushover in `docker-compose.test.yml`.
-9. Back up master on both servers and a SIMPLE database (backups only): each server gets its own folder, LOG backups are skipped until the database is in FULL recovery, and secondaries and restores are refused.
+9. Switch the log-shipped database to BULK_LOGGED recovery: an alert says that it gets no log backups. Back in FULL recovery, shipping catches up and the alert resolves.
+10. Back up master on both servers and a SIMPLE database (backups only): each server gets its own folder, LOG backups are skipped until the database is in FULL recovery, and secondaries and restores are refused.
 
 It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards for a look around, and `IT_REUSE=1` to rerun against it.
 

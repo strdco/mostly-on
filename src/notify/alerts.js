@@ -6,6 +6,8 @@
 //   server:<srv>          an enabled server is unreachable
 //   setup:<srv>           its setup script is missing or out of date (resolves as soon as a check finds it ready)
 //   dbstate:<db>:<srv>    not ONLINE on the primary / not RESTORING (or STANDBY) on a secondary
+//   recovery:<db>         a log-shipped database left FULL recovery, so it gets no log backups
+//                         (SIMPLE: error, its log chain is broken; BULK_LOGGED: warning)
 //   chain:<db>:<srv>      shipping stopped: chain broken or reseed needed
 //   lag:<db>:<srv>        a secondary is further behind than its LOG interval plus alerts.lag_threshold_minutes
 //                         (plus its restore delay; none while its restores are paused or catching up)
@@ -61,6 +63,25 @@ function links() {
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/**
+ * A log-shipped database that left FULL recovery: Mostly-On takes no log
+ * backups of it (backup-rules.js). SIMPLE also breaks its log chain, so its
+ * secondaries need reinitializing once it is back in FULL recovery; after
+ * BULK_LOGGED, shipping just catches up.
+ */
+export function recoveryCondition(db, serverName, recoveryModel, hasSecondaries) {
+    const where = `${db.name} is in ${recoveryModel} recovery on its primary ${serverName}`;
+    const simple = recoveryModel === 'SIMPLE';
+    const message = simple
+        ? `${where}, so its log cannot be backed up and its log chain is broken. ` +
+          (hasSecondaries
+              ? 'Switch it back to FULL recovery, then reinitialize its secondaries.'
+              : 'Switch it back to FULL recovery; Mostly-On then starts a new log chain with a full backup.')
+        : `${where}, so Mostly-On takes no log backups of it${hasSecondaries ? ' and its secondaries fall behind' : ''}. ` +
+          `Switch it back to FULL recovery; ${hasSecondaries ? 'shipping then catches up' : 'log backups then continue'} by itself.`;
+    return { key: `recovery:${db.id}`, kind: 'recovery_model', severity: simple ? 'error' : 'warn', message };
+}
+
 /** The current problems, keyed by condition key. */
 export function collectConditions() {
     const out = new Map();
@@ -106,6 +127,9 @@ export function collectConditions() {
                     add(ref(r, { key: `dbstate:${db.id}:${r.server_id}`, kind: 'db_state', severity: 'error', message }));
                 }
                 if (isBackupOnly(db) && live) skippedNow.set(db.id, skippedTypes(db, live, r.server_name));
+                if (!isBackupOnly(db) && up && !busy && live?.recoveryModel && live.recoveryModel !== 'FULL') {
+                    add(ref(r, recoveryCondition(db, r.server_name, live.recoveryModel, reps.some((x) => x.role === 'secondary'))));
+                }
                 continue;
             }
 

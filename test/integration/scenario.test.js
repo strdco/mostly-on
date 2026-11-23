@@ -10,6 +10,7 @@
 //   5b. restore copies as they were at a moment (from the backups, and after a fresh log backup)
 //   5c. roll the database back to a moment; the secondary follows the new branch
 //   6. alerts: one notification per problem, none re-sent after a controller restart
+//   6b. a log-shipped database switched to BULK_LOGGED recovery raises an alert; back in FULL, shipping catches up
 //
 // Run: npm run test:integration   (Docker required; takes several minutes)
 import { test, before, after } from 'node:test';
@@ -454,12 +455,38 @@ test('6. one notification per problem, none re-sent after a restart', async () =
     assert.equal(all.filter(unreachable).length, 1, 'still only one alert for sql2');
 });
 
+test('6b. a log-shipped database out of FULL recovery raises an alert; back in FULL, shipping catches up', async () => {
+    const primary = await primaryName();
+    const secondary = primary === 'sql1' ? 'sql2' : 'sql1';
+    const active = async () => (await api.get('/api/alerts?status=active')).find((a) => a.kind === 'recovery_model' && a.database_id === dbId);
+    try {
+        await q(primary, `ALTER DATABASE ${DB} SET RECOVERY BULK_LOGGED;`);
+        const alert = await waitFor('the recovery model alert', active, { timeout: 90_000 });
+        assert.equal(alert.severity, 'warn');
+        assert.equal(
+            alert.message,
+            `${DB} is in BULK_LOGGED recovery on its primary ${primary}, so Mostly-On takes no log backups of it and its secondaries fall behind. Switch it back to FULL recovery; shipping then catches up by itself.`,
+        );
+        await assert.rejects(api.post(`/api/databases/${dbId}/backups`, { type: 'LOG' }), (err) => err.status === 409 && /BULK_LOGGED recovery/.test(err.message));
+        await insertRow(primary, 'during BULK_LOGGED');
+    } finally {
+        await q(primary, `ALTER DATABASE ${DB} SET RECOVERY FULL;`);
+    }
+    // The log chain is intact: the next log backup carries everything since the last one.
+    await shipTo(secondary);
+    await waitFor('the alert to resolve', async () => !(await active()), { timeout: 90_000 });
+    assert.equal((await replica(secondary)).chain_state, 'ok');
+});
+
 // Last, as it leaves shipping stopped (and alerts about it).
 test('7. a backup file replaced after it was taken is never restored', async () => {
     const primary = await primaryName();
     const secondary = primary === 'sql1' ? 'sql2' : 'sql1';
     // Pause the secondary, so the file can be replaced before it is restored.
     await api.put(`/api/servers/${ids[secondary]}`, { enabled: false });
+    // A restore pass that was already running finishes what it finds, which could include the log
+    // taken next (say, one the schedule just took). No new pass starts on a disabled server.
+    await waitFor(`no restore running on ${secondary}`, async () => !(await api.get(`/api/databases/${dbId}`)).busy.includes(`restore:${ids[secondary]}`), { timeout: 60_000, interval: 250 });
     await insertRow(primary, 'in the replaced log');
     const { operation } = await api.post(`/api/databases/${dbId}/backups`, { type: 'LOG' });
     const relPath = (await succeeded(api.waitOp(operation.id))).ctx.relPath;
@@ -502,9 +529,9 @@ test('8. system databases and SIMPLE databases are backed up on their own server
         assert.notEqual(master.sql1, master.sql2);
         await assert.rejects(api.post('/api/databases', { server_id: ids.sql1, name: 'master' }), conflict(/already managed/));
         const opsBefore = (await dbOf(master.sql1)).operations.length;
-        await assert.rejects(api.post(`/api/databases/${master.sql1}/backups`, { type: 'DIFF' }), conflict(/only allows full backups of master/));
+        await assert.rejects(api.post(`/api/databases/${master.sql1}/backups`, { type: 'DIFF' }), conflict(/takes only full backups of master/));
         assert.equal((await dbOf(master.sql1)).operations.length, opsBefore, 'a refused DIFF leaves no operation behind');
-        await assert.rejects(api.put(`/api/databases/${master.sql1}/schedules/LOG`, { kind: 'interval', interval_minutes: 5 }), conflict(/only allows full backups of master/));
+        await assert.rejects(api.put(`/api/databases/${master.sql1}/schedules/LOG`, { kind: 'interval', interval_minutes: 5 }), conflict(/takes only full backups of master/));
 
         // A SIMPLE database of the same name on both servers.
         for (const s of ['sql1', 'sql2']) {
@@ -520,7 +547,7 @@ test('8. system databases and SIMPLE databases are backed up on their own server
             await succeeded(api.waitOp(m.operation.id));
         }
         const id = scratch.sql1;
-        await assert.rejects(api.post(`/api/databases/${id}/backups`, { type: 'LOG' }), conflict(/is in SIMPLE recovery, so Mostly-On only takes FULL backups/));
+        await assert.rejects(api.post(`/api/databases/${id}/backups`, { type: 'LOG' }), conflict(/takes only full backups of databases in SIMPLE or BULK_LOGGED recovery, and ItScratch on sql1 is in SIMPLE recovery/));
         // A LOG schedule is skipped quietly: no failed operation, no alert.
         await api.put(`/api/databases/${id}/schedules/LOG`, { kind: 'interval', interval_minutes: 1, enabled: true });
         await waitFor('the LOG schedule to be skipped', async () => (await dbOf(id)).schedules.find((x) => x.backup_type === 'LOG').last_status === 'skipped: SIMPLE recovery', {
@@ -531,7 +558,7 @@ test('8. system databases and SIMPLE databases are backed up on their own server
         assert.ok(!(await api.get('/api/alerts?status=active')).some((a) => a.database_id === id), 'no alert');
         // Never shipped or restored.
         await assert.rejects(api.post(`/api/databases/${id}/secondaries`, { server_id: ids.sql2, source: 'new_full', restore_mode: 'norecovery' }), conflict(/managed as backups only/));
-        await assert.rejects(api.get(`/api/databases/${id}/restore-range`), conflict(/never restores it/));
+        await assert.rejects(api.get(`/api/databases/${id}/restore-range`), conflict(/does not perform managed restores\. Backup files live in ItScratch@sql1/));
 
         // Switched to FULL recovery, it gets LOG backups (the first one is a FULL, which starts the log chain).
         await q('sql1', `ALTER DATABASE ${SCRATCH} SET RECOVERY FULL;`);

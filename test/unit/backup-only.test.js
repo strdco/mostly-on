@@ -45,8 +45,8 @@ test('a secondary never overwrites a database Mostly-On backs up on the target',
 test('no failover and no restore for a backups-only database', async () => {
     const { s2, util } = setup();
     await assert.rejects(failoverPreview(util.id, s2.id), status409(/only backs up Util on sql1: it has no secondaries/));
-    assert.throws(() => restoreRange(util.id), status409(/never restores it\. Restore it by hand from the folder Util@sql1 on the backup share/));
-    await assert.rejects(startPointInTime(util.id, { mode: 'copy', at: new Date().toISOString(), targetServerId: s2.id, newName: 'X' }), status409(/never restores it/));
+    assert.throws(() => restoreRange(util.id), status409(/does not perform managed restores\. Backup files live in Util@sql1 on the backup share/));
+    await assert.rejects(startPointInTime(util.id, { mode: 'copy', at: new Date().toISOString(), targetServerId: s2.id, newName: 'X' }), status409(/does not perform managed restores/));
 });
 
 test('"Fail over databases" leaves backups-only databases out', () => {

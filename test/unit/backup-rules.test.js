@@ -38,10 +38,14 @@ test('which backup types apply now', () => {
     const p = backupTypeProblem(local, live('BULK_LOGGED'), 'LOG', 'sql1');
     assert.equal(p.skip, true);
     assert.equal(p.status, 'skipped: BULK_LOGGED recovery');
-    assert.match(p.message, /Util on sql1 is in BULK_LOGGED recovery, so Mostly-On only takes FULL backups of it/);
+    assert.equal(
+        p.message,
+        'Mostly-On takes only full backups of databases in SIMPLE or BULK_LOGGED recovery, and Util on sql1 is in BULK_LOGGED recovery. Its DIFF and LOG backups start by themselves when it is switched to FULL recovery.',
+    );
 
     // master: FULL only, whatever its recovery model.
     for (const type of ['DIFF', 'LOG']) assert.deepEqual(backupTypeProblem(master, live('FULL', 1), type, 's').skip, true);
+    assert.equal(backupTypeProblem(master, live('FULL', 1), 'DIFF', 's').message, 'Mostly-On takes only full backups of master, and of databases in SIMPLE or BULK_LOGGED recovery.');
     assert.equal(backupTypeProblem(master, {}, 'LOG', 's').skip, true, 'by name when the server could not be asked');
 
     // Unknown recovery model (server unreachable): no opinion; the backup fails on its own.
