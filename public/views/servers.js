@@ -243,17 +243,21 @@ async function afterRegister(s) {
 
 /** "Switch over all databases on this server to another one", shown with the per-database plan. */
 /**
- * "Fail over databases…": greyed out (reason in a tooltip) when none of the
- * primaries on this server has a working secondary anywhere.
+ * "Fail over databases…", always shown so it can be found. Greyed out (reason
+ * in a tooltip) when the server is the primary of no log-shipped database,
+ * when it is unreachable, or when none of its primaries has a working
+ * secondary anywhere.
  */
-function failoverButton(s, targets) {
-    const blocker = !targets
-        ? null
-        : !targets.from.reachable
-          ? `${s.name} is unreachable. A failover without data loss needs it: fail each database over from its own page instead.`
-          : !targets.targets.length
-            ? `None of the databases whose primary is ${s.name} has a working secondary on another server.`
-            : null;
+function failoverButton(s, targets, primaryCount) {
+    const blocker = !primaryCount
+        ? `${s.name} is not the primary of any log-shipped database, so there is nothing to fail over. Databases fail over from the server that is their primary.`
+        : !targets
+          ? null
+          : !targets.from.reachable
+            ? `${s.name} is unreachable. A failover without data loss needs it: fail each database over from its own page instead.`
+            : !targets.targets.length
+              ? `None of the databases whose primary is ${s.name} has a working secondary on another server.`
+              : null;
     const button = h('button.primary', { type: 'button', 'aria-disabled': blocker ? 'true' : null }, 'Fail over databases…');
     const tip = blocker ? tooltip(button, blocker) : null;
     button.addEventListener('click', async () => {
@@ -530,7 +534,7 @@ export function serverDetailView(id) {
             h(
                 'div.actions',
                 h('button', { type: 'button', onclick: async () => { await post(`/api/servers/${id}/check`); load(); } }, 'Check now'),
-                primaries.length ? failoverButton(s, targets) : null,
+                failoverButton(s, targets, primaries.length),
                 h('button', { type: 'button', onclick: async () => { if (await editServerDialog(s)) load(); } }, 'Edit'),
                 removeButton(s),
             ),

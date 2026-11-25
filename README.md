@@ -338,6 +338,7 @@ For server maintenance, press **Fail over databases…** on a server's page and 
 - The dialog lists the databases that stay behind and why (no copy there, shipping stopped, still being set up, kept behind on purpose). They stay unavailable while the old server is down: run it again with another server, or fail them over from their own pages.
 - If the chosen server runs a newer SQL Server version, the old server cannot receive its log backups afterwards; the dialog warns about this per database.
 - If one failover fails, the rest wait; resume the batch once it is fixed.
+- The button is greyed out, with the reason, when it can't be used: the server isn't the primary of any log-shipped database, it is unreachable, or none of its databases has a working secondary.
 
 ## Restoring to a point in time
 
