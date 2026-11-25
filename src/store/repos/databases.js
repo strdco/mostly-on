@@ -8,7 +8,7 @@ import { dbLabel, isSystemName, manageKind } from '../../engine/backup-rules.js'
 // it belongs to that one server. NULL = log shipped, identified by name on every server.
 const DB_COLS = `d.id, d.name, d.family_guid, d.status, d.owner_sid, d.owner_name, d.owner_fallback,
     d.retention_full_days, d.retention_diff_days, d.retention_log_days, d.created_at, d.updated_at,
-    d.backup_only_server_id, bs.name AS backup_only_server_name`;
+    d.backup_only_server_id, bs.name AS backup_only_server_name, d.stopped_by, d.auto_seed`;
 const DB_FROM = 'databases AS d LEFT JOIN servers AS bs ON bs.id=d.backup_only_server_id';
 
 export function list({ includeUnmanaged = false } = {}) {
@@ -234,17 +234,21 @@ function defaultSchedules(databaseId, { fullOnly = false } = {}) {
  * backupOnly: backed up on this server only (system databases, and databases
  * not in FULL recovery); fullOnly: master (a FULL schedule only).
  */
-export function manage({ name, familyGuid, primaryServerId, backupOnly = false, fullOnly = false }) {
+export function manage({ name, familyGuid, primaryServerId, backupOnly = false, fullOnly = false, autoSeed = false }) {
     return tx(() => {
         const now = nowIso();
         let row = find(name, backupOnly ? primaryServerId : null);
         if (row) {
-            getDb().prepare("UPDATE databases SET status='managed', family_guid=?, updated_at=? WHERE id=?").run(familyGuid, now, row.id);
+            getDb()
+                .prepare("UPDATE databases SET status='managed', family_guid=?, stopped_by=NULL, auto_seed=?, updated_at=? WHERE id=?")
+                .run(familyGuid, autoSeed ? 1 : 0, now, row.id);
             getDb().prepare('DELETE FROM database_replicas WHERE database_id=?').run(row.id);
         } else {
             const info = getDb()
-                .prepare("INSERT INTO databases (name, family_guid, status, created_at, updated_at, backup_only_server_id) VALUES (?, ?, 'managed', ?, ?, ?)")
-                .run(name, familyGuid, now, now, backupOnly ? primaryServerId : null);
+                .prepare(
+                    "INSERT INTO databases (name, family_guid, status, created_at, updated_at, backup_only_server_id, auto_seed) VALUES (?, ?, 'managed', ?, ?, ?, ?)",
+                )
+                .run(name, familyGuid, now, now, backupOnly ? primaryServerId : null, autoSeed ? 1 : 0);
             row = { id: Number(info.lastInsertRowid) };
         }
         getDb()
@@ -269,14 +273,39 @@ export function unmanageBlocker(id) {
     return `Remove its secondaries first (${others.map((r) => r.server_name).join(', ')}: Replicas table on the database page, Remove).`;
 }
 
-export function unmanage(id) {
+/** stoppedBy: 'person' (Stop managing) or 'dropped' (gone from its server; see engine/auto-manage.js). */
+export function unmanage(id, { stoppedBy = 'person' } = {}) {
     const blocker = unmanageBlocker(id);
     if (blocker) throw Object.assign(new Error(blocker), { status: 409, expose: true });
     tx(() => {
-        getDb().prepare("UPDATE databases SET status='unmanaged', updated_at=? WHERE id=?").run(nowIso(), id);
+        getDb().prepare("UPDATE databases SET status='unmanaged', stopped_by=?, auto_seed=0, updated_at=? WHERE id=?").run(stoppedBy, nowIso(), id);
         getDb().prepare('UPDATE schedules SET enabled=0 WHERE database_id=?').run(id);
         getDb().prepare('DELETE FROM database_replicas WHERE database_id=?').run(id);
     });
+}
+
+/** A database managed automatically no longer waits for its first secondary. */
+export function clearAutoSeed(id) {
+    getDb().prepare('UPDATE databases SET auto_seed=0 WHERE id=?').run(id);
+}
+
+/**
+ * Names a person stopped managing that count on this server (log-shipped
+ * ones everywhere, backups-only ones on their own server): automatic
+ * management leaves them alone until someone manages them again.
+ */
+export function stoppedByPersonOn(serverId) {
+    return new Set(
+        getDb()
+            .prepare("SELECT name FROM databases WHERE status='unmanaged' AND stopped_by='person' AND (backup_only_server_id IS NULL OR backup_only_server_id=?)")
+            .pluck()
+            .all(serverId),
+    );
+}
+
+/** Databases no longer managed because they were dropped: retention still removes their backups in time. */
+export function listDropped() {
+    return getDb().prepare(`SELECT ${DB_COLS} FROM ${DB_FROM} WHERE d.status='unmanaged' AND d.stopped_by='dropped' ORDER BY d.name`).all();
 }
 
 // --- discovery ---------------------------------------------------------------

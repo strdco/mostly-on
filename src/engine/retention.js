@@ -74,7 +74,8 @@ function retentionDaysFor(db) {
     return { FULL: safe.full, DIFF: safe.diff, LOG: safe.log };
 }
 
-export function applyToDatabase(db, { dryRun = false } = {}) {
+/** dropped: a database no longer managed because it was dropped on its server; its files go once past retention, newest ones too. */
+export function applyToDatabase(db, { dryRun = false, dropped = false } = {}) {
     const result = { database: databases.label(db), databaseId: db.id, deleted: [], kept: 0, blocked: null, errors: [], protected: [] };
     const release = tryAcquire(db.id, 'retention');
     if (!release) {
@@ -90,6 +91,7 @@ export function applyToDatabase(db, { dryRun = false } = {}) {
             now: new Date(),
             extraProtected: filesInUse(),
             lineage: forks.lineage(db.id),
+            dropped,
         });
         result.blocked = plan.blocked;
         result.kept = files.length - plan.deletable.length;
@@ -130,8 +132,9 @@ async function purgeMsdbHistory() {
 
 export async function runAll({ dryRun = false } = {}) {
     const results = [];
-    for (const db of databases.list()) {
-        const r = applyToDatabase(db, { dryRun });
+    const dropped = new Set(databases.listDropped().map((d) => d.id));
+    for (const db of [...databases.list(), ...databases.listDropped()]) {
+        const r = applyToDatabase(db, { dryRun, dropped: dropped.has(db.id) });
         results.push(r);
         if (!dryRun && r.deleted.length) {
             events.add('info', 'retention', `Retention removed ${r.deleted.length} backup file(s) of ${databases.label(db)}`, {
@@ -139,6 +142,9 @@ export async function runAll({ dryRun = false } = {}) {
                 data: { files: r.deleted.map((d) => d.rel_path) },
             });
             publish('database.changed', { databaseId: db.id });
+            if (dropped.has(db.id) && !backups.present(db.id).length) {
+                events.add('info', 'retention', `The last backup files of ${databases.label(db)}, which was dropped, are gone (retention).`, { databaseId: db.id });
+            }
         }
         for (const e of r.errors) events.add('error', 'retention', `Retention could not delete a file of ${databases.label(db)}: ${e}`, { databaseId: db.id });
     }

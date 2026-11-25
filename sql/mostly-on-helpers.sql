@@ -1,5 +1,5 @@
 /*
-    Mostly-On helper procedures, version 5.
+    Mostly-On helper procedures, version 6.
 
     Mostly-On never needs a sysadmin login. Everything that needs high privileges
     (BACKUP, RESTORE, ALTER DATABASE, KILL) happens inside the procedures in the
@@ -9,7 +9,8 @@
 
     The procedures back up master, model and msdb, but never restore or change
     them, and never touch tempdb. They only read or write backup files under the
-    shared backup folder given below.
+    shared backup folder given below. They drop a database only when it is a
+    copy nobody can write to (RESTORING or STANDBY), after its primary was dropped.
 
     How to run it:
       * As a member of sysadmin, on every SQL Server that Mostly-On manages.
@@ -98,7 +99,7 @@ CREATE FUNCTION mostly_on.helper_version()
 RETURNS int
 AS
 BEGIN;
-    RETURN 5;
+    RETURN 6;
 END;
 GO
 
@@ -446,6 +447,30 @@ DECLARE @sql nvarchar(max)=CASE @state
     WHEN 'MULTI_USER' THEN N'ALTER DATABASE '+QUOTENAME(@db)+N' SET MULTI_USER;'
     END;
 IF (@sql IS NULL) THROW 50030, N'Unknown database state.', 1;
+EXEC sys.sp_executesql @sql;
+GO
+
+-- Drops the copy of a database that was dropped on its primary. Only a copy
+-- nobody can write to: RESTORING (a secondary), or read-only in STANDBY. A
+-- STANDBY copy's readers are disconnected first.
+CREATE PROCEDURE mostly_on.drop_database
+    @db                 sysname
+AS
+SET NOCOUNT ON;
+EXEC mostly_on.check_database @db=@db;
+DECLARE @state nvarchar(60), @standby bit;
+SELECT @state=d.state_desc, @standby=d.is_in_standby FROM sys.databases AS d WHERE d.name=@db;
+IF (@state!=N'RESTORING' AND @standby=0) BEGIN;
+    DECLARE @message nvarchar(2048)=N'Mostly-On only drops a copy nobody can write to (RESTORING or STANDBY), and '+@db+N' is '+@state+N'.';
+    THROW 50031, @message, 1;
+END;
+DECLARE @kill nvarchar(max);
+SELECT @kill=STRING_AGG(CAST(N'KILL '+CONVERT(nvarchar(11), s.session_id)+N';' AS nvarchar(max)), N'')
+FROM sys.dm_exec_sessions AS s
+WHERE s.database_id=DB_ID(@db)
+  AND s.session_id!=@@SPID;
+IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+DECLARE @sql nvarchar(max)=N'DROP DATABASE '+QUOTENAME(@db)+N';';
 EXEC sys.sp_executesql @sql;
 GO
 

@@ -10,6 +10,7 @@ export const DEFAULTS = Object.freeze({
     'alerts.lag_threshold_minutes': 30,
     'alerts.reminder_hours': 4, // 0 = no reminders
     'alerts.debounce_seconds': 60, // a condition must hold (or be gone) this long before it alerts (or resolves)
+    'auto_manage.drop_after_minutes': 30, // servers that manage databases automatically: how long a database must be gone
     'retention.full_days': 28,
     'retention.diff_days': 14,
     'retention.log_days': 7,
@@ -41,6 +42,7 @@ const MINIMUMS = {
     'retention.log_days': 1,
     'msdb_history.keep_days': 1,
     'servers.max_parallel': 1,
+    'auto_manage.drop_after_minutes': 5,
 };
 
 // Upper bounds, and settings that must be whole numbers.

@@ -14,7 +14,7 @@ import * as health from '../engine/health.js';
 import * as serversRepo from '../store/repos/servers.js';
 
 /** The helper procedure version this controller needs (helper_version() in the script). */
-export const HELPER_VERSION = 5;
+export const HELPER_VERSION = 6;
 
 // The helpers that back up or restore, and so count against a server's limit.
 const WORK = new Set(['take_backup', 'restore_database', 'restore_log', 'recover']);
@@ -91,6 +91,11 @@ export function recover({ db, ownerSid = null, ownerName = null }) {
 /** 'OFFLINE' | 'ONLINE_RESTRICTED' | 'MULTI_USER' */
 export function setState({ db, state }) {
     return call('set_state', { db: T.sysname(db), state: T.nvarchar(state, 20) });
+}
+
+/** Drops a copy that is not in use: only a RESTORING or read-only (STANDBY) one; the procedure refuses any other. */
+export function dropDatabase({ db }) {
+    return call('drop_database', { db: T.sysname(db) });
 }
 
 export const headerOnly = ({ path }) => call('header_only', { path: T.nvarchar(path, 400) });

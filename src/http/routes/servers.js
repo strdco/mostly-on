@@ -8,6 +8,8 @@ import * as health from '../../engine/health.js';
 import { resetPool, testConnection, sqlErrorText } from '../../sql/pool.js';
 import { setupScriptFor } from '../../sql/setup-script.js';
 import { slotStatus } from '../../sql/slots.js';
+import { runPass } from '../../engine/auto-manage.js';
+import { log } from '../../log.js';
 
 const ROLE_WORDS = { primary: ['primary copy', 'primary copies'], secondary: ['secondary copy', 'secondary copies'], diverged: ['out-of-sync copy', 'out-of-sync copies'] };
 
@@ -54,6 +56,15 @@ function withHealth(s) {
             ? { ok: h.ok, checkedAt: h.checkedAt, error: h.error, warnings: h.warnings, info: h.info, databases: h.databases, setup: h.setup }
             : null,
     };
+}
+
+/** User databases on a server that automatic management would start managing. */
+function wouldManage(serverId) {
+    const skip = databases.stoppedByPersonOn(serverId);
+    return databases
+        .discovered()
+        .filter((d) => d.server_id === serverId && !d.system && d.state === 'ONLINE' && !skip.has(d.name))
+        .map((d) => d.name);
 }
 
 function mustGet(id) {
@@ -138,6 +149,50 @@ export function serverRoutes(router, { cfg }) {
         evaluateSoon(); // its alerts (unreachable, setup) no longer apply
         events.add('info', 'server', `Server ${s.name} removed${how === 'removed' ? '; its backup files and history are kept' : ''}`, { serverId: how === 'removed' ? id : null });
         return { ok: true };
+    });
+
+    // Automatic management: what turning it on would do (the confirm dialog). ship_to: the target it would get.
+    router.get('/api/servers/:id/auto-manage-preview', async (ctx) => {
+        const s = mustGet(idParam(ctx.params.id));
+        const target = ctx.query.ship_to ? mustGet(idParam(ctx.query.ship_to, 'ship_to')) : null;
+        const pairs = target && !target.ship_to_server_id && target.id !== s.id;
+        return {
+            would_manage: s.auto_manage ? [] : wouldManage(s.id),
+            paired: pairs ? { id: target.id, name: target.name, would_manage: target.auto_manage ? [] : wouldManage(target.id) } : null,
+        };
+    });
+
+    // Turns automatic management on or off, with the default target for new
+    // databases. A target without one of its own gets this server as its target
+    // (a pair), so after a switchover new databases are shipped back.
+    router.put('/api/servers/:id/auto-manage', async (ctx) => {
+        const s = mustGet(idParam(ctx.params.id));
+        if (s.removed_at) throw new HttpError(409, 'This server was removed');
+        const on = ctx.body?.auto_manage === true;
+        const raw = ctx.body?.ship_to_server_id;
+        const shipTo = on && raw != null && raw !== '' ? idParam(raw, 'ship_to_server_id') : null;
+        let target = null;
+        if (shipTo) {
+            target = mustGet(shipTo);
+            if (target.removed_at) throw new HttpError(409, `${target.name} was removed`);
+            if (target.id === s.id) throw new HttpError(400, 'A server cannot log ship to itself');
+            if (!target.enabled) throw new HttpError(409, `${target.name} is disabled`);
+        }
+        serversRepo.setAutoManage(s.id, { autoManage: on, shipTo });
+        events.add(
+            'info',
+            'server',
+            on ? `${s.name} manages its databases automatically${target ? `; new ones are log shipped to ${target.name}` : ''}` : `${s.name} no longer manages its databases automatically`,
+            { serverId: s.id },
+        );
+        let paired = null;
+        if (target && !target.ship_to_server_id) {
+            serversRepo.setAutoManage(target.id, { autoManage: true, shipTo: s.id });
+            paired = target.name;
+            events.add('info', 'server', `${target.name} manages its databases automatically; new ones are log shipped to ${s.name} (paired with ${s.name})`, { serverId: target.id });
+        }
+        for (const id of [s.id, target?.id].filter(Boolean)) runPass(id).catch((err) => log.error('Automatic management failed', { err }));
+        return { server: withHealth(serversRepo.get(s.id)), paired };
     });
 
     router.post('/api/servers/:id/check', async (ctx) => {

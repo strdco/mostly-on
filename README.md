@@ -237,7 +237,7 @@ Backing up, restoring, failing over and disconnecting users all need high privil
 What that means in practice:
 
 - **Mostly-On's login on its own can do almost nothing.** It cannot read your data, create logins, change server settings, or back up and restore anything directly. (The backup files hold all your data, so protect the shared backup folder too! Backups of `master` and `msdb` also hold the server's logins with their password hashes, its credentials and its jobs.)
-- **The procedures have guard rails.** They back up the system databases master, model and msdb, but never restore or change them, and never touch tempdb. They only read or write backup files inside the shared backup folder. Restored database files only go to the server's default data and log folders. They never make Mostly-On's login the owner of a database, so they can't be used to read your data either.
+- **The procedures have guard rails.** They back up the system databases master, model and msdb, but never restore or change them, and never touch tempdb. They only read or write backup files inside the shared backup folder. They drop a database only when nobody can write to it (`RESTORING`, or a read-only `STANDBY` copy): the copy of a database that was dropped on its primary. Restored database files only go to the server's default data and log folders. They never make Mostly-On's login the owner of a database, so they can't be used to read your data either.
 - **They can still do what failover needs.** That includes overwriting a database and taking one offline, which is the job itself. The procedures accept **every user database on the server**, not only the ones Mostly-On manages. Whoever controls Mostly-On (its dashboard, or its SQL login) can therefore disrupt any user database on the server; protect both accordingly.
 - **Database owners are kept.** A restored database would otherwise belong to Mostly-On's login. When a copy is brought online at failover, it gets its original owner back if that login exists on the server: matched by SID first, then by name. If neither exists, it gets `sa`, and an event tells you how to fix it; a later failover to that server gives it back to its owner once the login exists. Any other database (one that Mostly-On didn't restore or hand to `sa` itself) always keeps its owner.
 
@@ -271,10 +271,10 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
   - A delayed secondary restores a log backup only once that backup is as old as the delay, so the replica will end up between the delay and the delay plus one log backup interval behind.
   - You **cannot** fail over to a delayed secondary. To do this, reset its delay to 0; the failover then restores the missing log backups itself.
   - Only a readable (STANDBY) copy can be queried. Readers are disconnected at every restore. To prevent this, press **Pause sync** (for up to 24 hours).
-- **Retention.** Old backup files are deleted after the number of days you define (Settings), per backup type; a database can have its own, overriding, values. Any files required by a secondary, as well as the newest complete set needed to restore each database, are always kept. FULL backups are kept at least as long as DIFF and LOG backups, as those would be useless without the FULL they build on; Mostly-On will refuse settings that would break this rule.
+- **Retention.** Old backup files are deleted after the number of days you define (Settings), per backup type; a database can have its own, overriding, values. Any files required by a secondary, as well as the newest complete set needed to restore each database, are always kept. A database that was dropped (see **Automatic management**) keeps no newest set: its files go once they are past retention. A database you stop managing yourself keeps its files until you delete them. FULL backups are kept at least as long as DIFF and LOG backups, as those would be useless without the FULL they build on; Mostly-On will refuse settings that would break this rule.
 - **Alerts.** Mostly-On alerts you once when a problem starts, then reminds you every few hours while it lasts, and sends one notice when it is resolved. Alerts cover:
   - a server is unreachable;
-  - a database is not in the state it should be;
+  - a database is not in the state it should be (not while a database on a server with automatic management is gone: that is a drop, most likely, and an event says so);
   - a log-shipped database was switched out of FULL recovery, so it gets no log backups. In SIMPLE recovery this is an error: its log chain is broken, and its secondaries need reinitializing once it is back in FULL. In BULK_LOGGED it is a warning: back in FULL, shipping catches up by itself;
   - shipping has stopped, or a secondary is too far behind. You can configure alert thresholds on the **Settings** page. For example, with logs every 15 minutes and an alert threshold of 10 minutes, it alerts once a secondary is more than 25 minutes old;
   - a backup or restore failed;
@@ -284,6 +284,16 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 
   Alert state survives restarts, so nothing is sent twice.
 - **Crash safety.** Every multi-step job (failovers, adding or reinitializing a secondary) is recorded step by step. After a restart, an interrupted job is never continued on its own: the **Operations** page shows exactly where it stopped, what to check, and offers **Resume** or **Mark resolved**.
+
+## Automatic management
+
+For servers where databases come and go, one per customer for example. Turn it on per server, with the **Manage databases automatically** switch on the server's page. The **Servers** list shows which servers have it on, and where they ship new databases.
+
+- **New databases are managed by themselves.** A user database is managed a minute after it appears, so an application has time to set it up (switch it to FULL recovery, for example). Turning it on also manages the user databases already on the server that Mostly-On does not manage yet; the dialog lists them first. A few are taken on at every health check, so hundreds of them are taken on gradually.
+- **They are log shipped to the server you choose.** A database in FULL recovery gets a secondary on that server once its first FULL backup is there. One that is not in FULL recovery is backed up only. To have new databases start in FULL recovery, keep the `model` database in FULL recovery. If adding the secondary fails, an event says why, and you add it on the database's page; Mostly-On does not keep trying.
+- **Servers are paired.** When sql1 log ships to sql2 and sql2 has no server of its own yet, sql2 gets sql1. After a switchover (**Fail over databases…**), new databases are created on sql2 and shipped back to sql1, with nothing to change. After a failover without the old server, new secondaries wait until it is back.
+- **Dropped databases stop being managed.** A managed database that has been gone from its server for 30 minutes (Settings, **Monitoring**) is no longer managed. While it is gone, it raises no alerts and its backups wait; if it comes back in time, nothing happens. Its copies on secondaries are dropped, but only a copy nobody can write to (`RESTORING` or a read-only `STANDBY` copy) on a reachable server; any other copy is left for you, and an event says so. Its backups are kept until retention removes them, the newest ones too. A database dropped and created again under the same name counts as a new database.
+- **What it leaves alone.** System databases, a database with the name of a log-shipped database on another server (a log-shipped name is taken on every server), and databases you stopped managing yourself (until you manage them again). Databases you manage by hand never get a secondary automatically.
 
 ---
 
@@ -355,7 +365,7 @@ The tail-log backup and the other backups from after the point-in-time stay on t
 
 Pull or build the new image and restart the container.
 
-**Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
+**Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5, and the one that drops the copies of dropped databases is version 6). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
 
 The catalog in `/data` upgrades itself on start:
 
@@ -392,6 +402,7 @@ The integration suite starts its own isolated compose project (`mostly-on-it`) w
 8. Check that notifications are sent once and not repeated after a controller restart, using the mock Pushover in `docker-compose.test.yml`.
 9. Switch the log-shipped database to BULK_LOGGED recovery: an alert says that it gets no log backups. Back in FULL recovery, shipping catches up and the alert resolves.
 10. Back up master on both servers and a SIMPLE database (backups only): each server gets its own folder, LOG backups are skipped until the database is in FULL recovery, and secondaries and restores are refused.
+11. Turn on automatic management for sql1, shipping to sql2, and check that sql2 is paired back. A new database on each server is managed and shipped to the other. Drop one: no alert while it is gone, then it is no longer managed, its copy on the secondary is dropped and its backup files are still there. Created again, it is managed again. The compose test file shortens the waits (`MOSTLY_ON_TEST_AUTO_SECONDS`).
 
 It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards for a look around, and `IT_REUSE=1` to rerun against it.
 

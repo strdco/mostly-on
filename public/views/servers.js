@@ -148,6 +148,19 @@ export function serversView() {
                     { label: 'Platform', cell: (s) => platformTag(s.health?.info?.host) },
                     // User databases; master, model and msdb are on every server.
                     { label: 'Databases', num: true, cell: (s) => (s.health?.ok ? String(s.health.databases.filter((d) => !isSystem(d)).length) : '–') },
+                    {
+                        label: 'Automatic',
+                        cell: (s) => {
+                            if (!s.auto_manage) return h('span.muted', 'off');
+                            const to = servers.find((x) => x.id === s.ship_to_server_id);
+                            return tipBadge(
+                                to ? `on → ${to.name}` : 'on',
+                                '',
+                                `${s.name} manages its databases automatically: new user databases are managed by themselves, and dropped ones stop being managed. ` +
+                                    (to ? `New databases in FULL recovery are log shipped to ${to.name}.` : 'New databases are backed up only.'),
+                            );
+                        },
+                    },
                     { label: 'Checked', cell: (s) => ago(s.health?.checkedAt) },
                 ],
             }),
@@ -382,11 +395,120 @@ function serverDatabasesTable(roles, hh) {
     });
 }
 
+/** "A, B, C and 9 more": database names for a dialog, without a wall of text. */
+function someNames(names, max = 8) {
+    if (names.length <= max) return names.join(', ');
+    return `${names.slice(0, max).join(', ')} and ${names.length - max} more`;
+}
+
+/** What automatic management does on this server, in a sentence or two (the switch says whether it is on). */
+function autoManageText(s, servers, dropAfter) {
+    if (!s.auto_manage) return `New databases on ${s.name} appear on the Overview as not managed, and you manage each one yourself.`;
+    const target = servers.find((x) => x.id === s.ship_to_server_id);
+    return (
+        `Mostly-On manages the user databases on ${s.name} by itself, a minute after they appear, and stops managing one that has been gone for ${dropAfter} minutes. ` +
+        (target ? `New databases in FULL recovery are log shipped to ${target.name}.` : 'New databases are backed up only: no server is set to log ship them to.')
+    );
+}
+
+/**
+ * Turns automatic management on, or changes the server new databases are log
+ * shipped to, after showing what that does now. Resolves with the saved
+ * result, or null if cancelled.
+ */
+async function autoManageDialog(s, servers, dropAfter) {
+    const others = servers.filter((x) => x.id !== s.id && x.enabled && !x.removed_at);
+    const target = h(
+        'select',
+        { name: 'ship_to_server_id' },
+        h('option', { value: '' }, 'None: back them up only'),
+        others.map((x) => h('option', { value: String(x.id), selected: x.id === s.ship_to_server_id }, x.name)),
+    );
+    const preview = h('div.callout.note', { 'aria-live': 'polite', hidden: true });
+    let seq = 0;
+    async function update() {
+        const mine = ++seq;
+        const p = await get(`/api/servers/${s.id}/auto-manage-preview${target.value ? `?ship_to=${target.value}` : ''}`).catch(() => null);
+        if (mine !== seq || !p) return;
+        const lines = [];
+        if (p.would_manage.length) lines.push(`Mostly-On also starts managing the ${p.would_manage.length} user database${p.would_manage.length === 1 ? '' : 's'} on ${s.name} it does not manage yet: ${someNames(p.would_manage)}.`);
+        if (p.paired) {
+            lines.push(
+                `${p.paired.name} will be configured to log ship back to ${s.name} in case of a failover.` +
+                    (p.paired.would_manage.length ? ` Mostly-On also starts managing its ${p.paired.would_manage.length} user database${p.paired.would_manage.length === 1 ? '' : 's'}: ${someNames(p.paired.would_manage)}.` : ''),
+            );
+        }
+        clear(preview).append(...lines.map((t) => h('p', t)));
+        preview.hidden = !lines.length;
+    }
+    target.addEventListener('change', update);
+    const res = await formDialog({
+        title: s.auto_manage ? `Log shipping of new databases on ${s.name}` : `Manage databases on ${s.name} automatically?`,
+        fields: [
+            s.auto_manage
+                ? null
+                : h(
+                      'p',
+                      `For servers where databases come and go (one per customer, say). A user database is managed a minute after it appears. One that has been gone for ${dropAfter} minutes (Settings) ` +
+                          'is no longer managed: its copies on secondaries are dropped, and its backups are kept until retention removes them. System databases, and databases you stopped managing yourself, are left alone.',
+                  ),
+            field(
+                'Log ship new databases to',
+                target,
+                'Only databases in FULL recovery. Others are backed up on this server only. To have new databases in FULL recovery, set the model database to FULL recovery.',
+            ),
+            preview,
+        ].filter((x) => x !== null),
+        submitLabel: s.auto_manage ? 'Save' : 'Turn on',
+        onOpen: () => update(),
+        onSubmit: (v) => put(`/api/servers/${s.id}/auto-manage`, { auto_manage: true, ship_to_server_id: v.ship_to_server_id ? Number(v.ship_to_server_id) : null }),
+    });
+    if (res) toast(res.paired ? `Saved. ${res.paired} now log ships its new databases to ${s.name}.` : 'Saved', 'ok');
+    return res;
+}
+
+/** The on/off switch for automatic management, its explanation, and (while on) a button to change the target. */
+function autoManageSection(s, servers, dropAfter, reload) {
+    const id = `am-${s.id}`;
+    const sw = h('input.switch', { type: 'checkbox', switch: true, role: 'switch', id, checked: s.auto_manage, 'aria-describedby': `${id}-hint` });
+    sw.addEventListener('change', async () => {
+        sw.disabled = true;
+        try {
+            if (sw.checked) {
+                if (!(await autoManageDialog(s, servers, dropAfter))) sw.checked = false; // cancelled
+            } else {
+                await put(`/api/servers/${s.id}/auto-manage`, { auto_manage: false });
+                toast(`${s.name} no longer manages its databases automatically`, 'ok');
+            }
+        } catch (err) {
+            sw.checked = !sw.checked;
+            toast(err.message, 'err');
+        } finally {
+            sw.disabled = false;
+        }
+        reload();
+    });
+    return h(
+        'section.panel',
+        h('div.setting-switch', sw, h('label', { for: id }, 'Manage databases automatically'), h('span.hint', { id: `${id}-hint` }, autoManageText(s, servers, dropAfter))),
+        s.auto_manage
+            ? h('p.auto-target', h('button', { type: 'button', onclick: async () => { if (await autoManageDialog(s, servers, dropAfter)) reload(); } }, 'Change where new databases are shipped'))
+            : null,
+    );
+}
+
 export function serverDetailView(id) {
     let root;
     let timer;
     async function load() {
-        const [s, roles, info] = await Promise.all([get(`/api/servers/${id}`), get(`/api/servers/${id}/roles`), get('/api/info').catch(() => ({}))]);
+        const [s, roles, info, servers, settings] = await Promise.all([
+            get(`/api/servers/${id}`),
+            get(`/api/servers/${id}/roles`),
+            get('/api/info').catch(() => ({})),
+            get('/api/servers'),
+            get('/api/settings').catch(() => ({})),
+        ]);
+        const dropAfter = settings['auto_manage.drop_after_minutes'] ?? 30;
         if (s.removed_at) {
             clear(root).append(
                 h('h1', `Server ${s.name}`),
@@ -432,6 +554,8 @@ export function serverDetailView(id) {
                     h('dd', s.work ? `${s.work.limit}${s.max_parallel == null ? ' (default)' : ''}: ${s.work.running} running now${s.work.waiting ? `, ${s.work.waiting} waiting` : ''}` : '–'),
                 ),
             ),
+            h('h2', 'Automatic management'),
+            autoManageSection(s, servers, dropAfter, () => load().catch(() => {})),
             h('h2', 'Setup'),
             h(
                 'p.muted',

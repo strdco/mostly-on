@@ -11,6 +11,7 @@ import * as databases from '../store/repos/databases.js';
 import { startBackup } from './backup.js';
 import { nextRun } from './schedule-math.js';
 import { BusyError } from './locks.js';
+import { pendingDrop } from './auto-manage.js';
 import { log } from '../log.js';
 import { publish } from '../bus.js';
 
@@ -75,6 +76,7 @@ export function tick(now = new Date()) {
         const key = `${s.database_id}:${s.backup_type}`;
         if (inflight.has(key)) continue;
         if (!databases.primaryOf(s.database_id)) continue;
+        if (pendingDrop(s.database_id)) continue; // gone from its server; stays due until it is back or no longer managed
         if (!s.next_run_at) {
             schedules.setNextRun(s.database_id, s.backup_type, nextRun(s, now).toISOString());
             continue;

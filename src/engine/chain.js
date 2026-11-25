@@ -179,6 +179,29 @@ export function newestBaseOnLineage(files, lineage) {
     return newestBase(files.filter((f) => onLineage(f, lineage)));
 }
 
+/** Protects the newest restorable chain and what secondaries still need; returns why nothing may go, if so. */
+function protectChains(present, secondaries, lineage, protect) {
+    const active = secondaries.filter((s) => s.role === 'secondary' && s.chain_state !== 'needs_reseed');
+    const unknown = active.find((s) => !s.position_lsn && s.chain_state !== 'seeding');
+    if (unknown) return `secondary on server ${unknown.server_id} has no known restore position`;
+
+    const base = newestBaseOnLineage(present, lineage);
+    if (!base) return 'no FULL backup on disk';
+    protect(base.full, 'newest FULL');
+    if (base.diff) protect(base.diff, 'newest DIFF of the newest FULL');
+    for (const f of present) {
+        if (f.type === 'LOG' && L.gt(f.last_lsn, base.position)) protect(f, 'needed to restore the newest chain');
+    }
+
+    for (const s of active) {
+        if (!s.position_lsn) continue;
+        for (const f of present) {
+            if (f.type === 'LOG' && L.gt(f.last_lsn, s.position_lsn)) protect(f, `not yet restored on server ${s.server_id}`);
+        }
+    }
+    return null;
+}
+
 /**
  * Decides which files retention may delete.
  *
@@ -192,35 +215,23 @@ export function newestBaseOnLineage(files, lineage) {
  * FULL exists, nothing is deleted at all. Secondaries that need a reseed do
  * not protect anything; a seeding secondary protects from its position once
  * it has one (its base files are protected through `extraProtected`).
+ * dropped: the database was dropped on its server (engine/auto-manage.js), so
+ * there is no newest chain to keep and no secondary: every file goes once it
+ * is past its retention (in-use files and DIVERGED safety backups stay).
  *
  * @param {{files:object[], secondaries:{server_id:number, role:string, chain_state?:string, position_lsn:string|null}[],
  *          retentionDays:{FULL:number, DIFF:number, LOG:number}, now:Date, extraProtected?:Set<number>}} p
  * @returns {{deletable:object[], protectedIds:Map<number,string>, blocked:string|null}}
  */
-export function retentionPlan({ files, secondaries, retentionDays, now, extraProtected = new Set(), lineage = null }) {
+export function retentionPlan({ files, secondaries, retentionDays, now, extraProtected = new Set(), lineage = null, dropped = false }) {
     const present = files.filter((f) => f.file_status === 'present');
     const protectedIds = new Map();
     const protect = (f, why) => {
         if (!protectedIds.has(f.id)) protectedIds.set(f.id, why);
     };
-
-    const active = secondaries.filter((s) => s.role === 'secondary' && s.chain_state !== 'needs_reseed');
-    const unknown = active.find((s) => !s.position_lsn && s.chain_state !== 'seeding');
-    if (unknown) return { deletable: [], protectedIds, blocked: `secondary on server ${unknown.server_id} has no known restore position` };
-
-    const base = newestBaseOnLineage(present, lineage);
-    if (!base) return { deletable: [], protectedIds, blocked: 'no FULL backup on disk' };
-    protect(base.full, 'newest FULL');
-    if (base.diff) protect(base.diff, 'newest DIFF of the newest FULL');
-    for (const f of present) {
-        if (f.type === 'LOG' && L.gt(f.last_lsn, base.position)) protect(f, 'needed to restore the newest chain');
-    }
-
-    for (const s of active) {
-        if (!s.position_lsn) continue;
-        for (const f of present) {
-            if (f.type === 'LOG' && L.gt(f.last_lsn, s.position_lsn)) protect(f, `not yet restored on server ${s.server_id}`);
-        }
+    if (!dropped) {
+        const blocked = protectChains(present, secondaries, lineage, protect);
+        if (blocked) return { deletable: [], protectedIds, blocked };
     }
 
     for (const f of present) {

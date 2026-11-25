@@ -11,6 +11,9 @@
 //   5c. roll the database back to a moment; the secondary follows the new branch
 //   6. alerts: one notification per problem, none re-sent after a controller restart
 //   6b. a log-shipped database switched to BULK_LOGGED recovery raises an alert; back in FULL, shipping catches up
+//   7. a backup file replaced after it was taken is never restored
+//   8. system databases and SIMPLE databases are backed up on their own server only
+//   9. paired servers manage new databases by themselves, ship them to each other, and stop managing dropped ones
 //
 // Run: npm run test:integration   (Docker required; takes several minutes)
 import { test, before, after } from 'node:test';
@@ -597,5 +600,65 @@ test('8. system databases and SIMPLE databases are backed up on their own server
         for (const id of managed) await api.post(`/api/databases/${id}/unmanage`, { confirm: (await dbOf(id).catch(() => null))?.name }).catch(() => {});
         for (const s of ['sql1', 'sql2']) await q(s, `IF DB_ID(N'${SCRATCH}') IS NOT NULL DROP DATABASE ${SCRATCH};`).catch(() => {});
         await q('sql2', `ALTER DATABASE model SET RECOVERY ${modelWas};`).catch(() => {});
+    }
+});
+
+test('9. paired servers manage new databases by themselves, and stop managing dropped ones', async () => {
+    const [A, B] = ['ItTenantA', 'ItTenantB'];
+    const dbByName = async (name) => (await api.get('/api/databases')).find((d) => d.name === name);
+    const before = new Set((await api.get('/api/databases')).map((d) => d.id));
+    const exists = async (server, name) => (await q(server, 'SELECT COUNT(*) AS n FROM sys.databases WHERE name=@name;', { name }))[0].n === 1;
+    try {
+        // sql1 ships to sql2; sql2 has no target yet, so it is paired back to sql1.
+        const preview = await api.get(`/api/servers/${ids.sql1}/auto-manage-preview?ship_to=${ids.sql2}`);
+        assert.equal(preview.paired?.name, 'sql2');
+        const saved = await api.put(`/api/servers/${ids.sql1}/auto-manage`, { auto_manage: true, ship_to_server_id: ids.sql2 });
+        assert.equal(saved.paired, 'sql2');
+        const sql2 = await api.get(`/api/servers/${ids.sql2}`);
+        assert.deepEqual([sql2.auto_manage, sql2.ship_to_server_id], [true, ids.sql1]);
+        await assert.rejects(api.put(`/api/servers/${ids.sql1}/auto-manage`, { auto_manage: true, ship_to_server_id: ids.sql1 }), (err) => err.status === 400);
+
+        // A new database in FULL recovery on each server: managed, with a secondary on the other one.
+        await q('sql1', `CREATE DATABASE ${A}; ALTER DATABASE ${A} SET RECOVERY FULL;`);
+        await q('sql2', `CREATE DATABASE ${B}; ALTER DATABASE ${B} SET RECOVERY FULL;`);
+        for (const [name, primary, secondary] of [[A, 'sql1', 'sql2'], [B, 'sql2', 'sql1']]) {
+            await waitFor(`${name} to be shipped to ${secondary}`, async () => {
+                const d = await dbByName(name);
+                return d?.primary?.server_name === primary && d.replicas.some((r) => r.server_name === secondary && r.role === 'secondary' && r.chain_state === 'ok');
+            }, { timeout: 300_000, interval: 3000 });
+            assert.equal(await (async () => (await q(secondary, 'SELECT state_desc AS s FROM sys.databases WHERE name=@name;', { name }))[0]?.s)(), 'RESTORING');
+        }
+
+        // Dropped on sql1: no alert while it is gone, then no longer managed, and its copy on sql2 is dropped.
+        const a = await dbByName(A);
+        const files = (await api.get(`/api/databases/${a.id}/backups`)).filter((f) => f.file_status === 'present');
+        assert.ok(files.length > 0);
+        await q('sql1', `ALTER DATABASE ${A} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE ${A};`);
+        await waitFor(`${A} to be reported gone`, async () => (await api.get('/api/events?limit=50')).some((e) => e.message?.includes(`${A} is gone from sql1`)), { timeout: 60_000, interval: 2000 });
+        await sleep(8000); // longer than the alert debounce
+        assert.ok(!(await api.get('/api/alerts?status=active')).some((x) => x.database_id === a.id), 'no alert while it is gone');
+        await waitFor(`${A} to stop being managed`, async () => !(await dbByName(A)), { timeout: 120_000, interval: 2000 });
+        assert.equal(await exists('sql2', A), false, 'its copy on sql2 was dropped');
+        assert.ok(!(await api.get('/api/alerts?status=active')).some((x) => x.database_id === a.id), 'no alert');
+        // Its backup files stay until retention removes them.
+        for (const f of files.slice(0, 3)) {
+            const [r] = await q('sql1', 'EXEC master.dbo.xp_fileexist @path;', { path: `/var/opt/mssql/backup/${f.rel_path}` });
+            assert.equal(r['File Exists'], 1, f.rel_path);
+        }
+        // Stopped by a drop, not by a person: created again, it is managed again.
+        await q('sql1', `CREATE DATABASE ${A}; ALTER DATABASE ${A} SET RECOVERY FULL;`);
+        await waitFor(`${A} to be managed again`, async () => (await dbByName(A))?.primary?.server_name === 'sql1', { timeout: 120_000, interval: 3000 });
+    } finally {
+        for (const s of ['sql1', 'sql2']) await api.put(`/api/servers/${ids[s]}/auto-manage`, { auto_manage: false }).catch(() => {});
+        for (const d of await api.get('/api/databases')) {
+            if (before.has(d.id)) continue;
+            for (const r of d.replicas.filter((x) => x.role !== 'primary')) {
+                await api.post(`/api/databases/${d.id}/replicas/${r.server_id}/remove`, { confirm: d.name }).catch(() => {});
+            }
+            await api.post(`/api/databases/${d.id}/unmanage`, { confirm: d.name }).catch(() => {});
+        }
+        for (const s of ['sql1', 'sql2']) {
+            for (const name of [A, B]) await q(s, `IF DB_ID(N'${name}') IS NOT NULL DROP DATABASE ${name};`).catch(() => {});
+        }
     }
 });

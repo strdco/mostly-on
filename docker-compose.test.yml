@@ -18,6 +18,8 @@ services:
       PUSHOVER_APP_TOKEN: test-app-token
       PUSHOVER_USER_KEY: test-user-key
       PUSHOVER_API_URL: http://mock-pushover:9911/1/messages.json
+      # Automatic management waits seconds instead of minutes (engine/auto-manage.js).
+      MOSTLY_ON_TEST_AUTO_SECONDS: "15"
     depends_on:
       mock-pushover:
         condition: service_started

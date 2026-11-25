@@ -34,6 +34,13 @@ const CARDS = [
             { key: 'health.interval_seconds', label: 'Check server health every', unit: 'seconds', min: 5, hint: 'Connectivity, version and the state of every database.' },
             { key: 'restore.poll_seconds', label: 'Look for logs to restore every', unit: 'seconds', min: 5, hint: 'Secondaries also restore right after each backup; this is the fallback.' },
             { key: 'discovery.interval_seconds', label: 'Look for new databases every', unit: 'seconds', min: 30 },
+            {
+                key: 'auto_manage.drop_after_minutes',
+                label: 'Stop managing a dropped database after',
+                unit: 'minutes',
+                min: 5,
+                hint: 'Only on servers that manage their databases automatically (server page). A database gone this long is no longer managed, its copies on secondaries are dropped, and its backups are kept until retention removes them.',
+            },
         ],
     },
     {

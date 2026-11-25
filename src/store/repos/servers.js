@@ -7,14 +7,14 @@ import { MAXIMUMS } from './settings.js';
 
 const PUBLIC_COLS = `id, name, host, port, instance_name, username, encrypt, trust_server_cert, sql_backup_root,
     controller_backup_root, standby_root, enabled, last_seen_at, last_error, product_version, edition,
-    engine_edition, default_data_path, default_log_path, created_at, updated_at, removed_at, max_parallel`;
+    engine_edition, default_data_path, default_log_path, created_at, updated_at, removed_at, max_parallel, auto_manage, ship_to_server_id`;
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const MAX_PARALLEL = MAXIMUMS['servers.max_parallel'];
 
 function toBool(r) {
     if (!r) return r;
-    return { ...r, encrypt: !!r.encrypt, trust_server_cert: !!r.trust_server_cert, enabled: !!r.enabled };
+    return { ...r, encrypt: !!r.encrypt, trust_server_cert: !!r.trust_server_cert, enabled: !!r.enabled, auto_manage: !!r.auto_manage };
 }
 
 /** Registered servers (not removed ones). */
@@ -220,7 +220,8 @@ export function removeOrRetire(id) {
         if (!/FOREIGN KEY/.test(err.message)) throw err;
     }
     const now = nowIso();
-    getDb().prepare('UPDATE servers SET removed_at=?, enabled=0, updated_at=? WHERE id=?').run(now, now, id);
+    getDb().prepare('UPDATE servers SET removed_at=?, enabled=0, auto_manage=0, ship_to_server_id=NULL, updated_at=? WHERE id=?').run(now, now, id);
+    getDb().prepare('UPDATE servers SET ship_to_server_id=NULL WHERE ship_to_server_id=?').run(id);
     getDb().prepare('DELETE FROM discovered_databases WHERE server_id=?').run(id);
     return 'removed';
 }
@@ -229,6 +230,17 @@ export function removeOrRetire(id) {
 export function revive(id, v, key) {
     getDb().prepare('UPDATE servers SET removed_at=NULL, last_error=NULL WHERE id=?').run(id);
     return update(id, { ...v, enabled: v.enabled ?? 1 }, key);
+}
+
+/**
+ * Automatic management of a server (engine/auto-manage.js): on or off, and
+ * the server new databases are log shipped to (null = none).
+ */
+export function setAutoManage(id, { autoManage, shipTo }) {
+    getDb()
+        .prepare('UPDATE servers SET auto_manage=?, ship_to_server_id=?, updated_at=? WHERE id=?')
+        .run(autoManage ? 1 : 0, autoManage ? (shipTo ?? null) : null, nowIso(), id);
+    return get(id);
 }
 
 export function replicaCount(id) {

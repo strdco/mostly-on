@@ -315,7 +315,7 @@ export function overviewView() {
         const groups = new Map();
         const groupFor = (id, name) => {
             const key = id ?? 'none';
-            if (!groups.has(key)) groups.set(key, { key, id, name, server: servers.find((s) => s.id === id) ?? null, managed: [], unmanaged: [] });
+            if (!groups.has(key)) groups.set(key, { key, id, name, server: servers.find((s) => s.id === id) ?? null, servers, managed: [], unmanaged: [] });
             return groups.get(key);
         };
         for (const d of dbs) groupFor(d.primary?.server_id ?? null, d.primary?.server_name).managed.push({ managed: true, ...d, server_name: d.server_name ?? d.primary?.server_name });
@@ -378,7 +378,17 @@ export function overviewView() {
         const s = g.server;
         const name = s ? h('a.group-name', { href: `#/servers/${g.id}` }, g.name) : h('span.group-name', g.name);
         const problem = !s ? null : !s.enabled ? badge('disabled') : s.health && !s.health.ok ? badge('unreachable', 'err') : null;
-        return [name, problem ? [' ', problem] : null];
+        const shipTo = s?.auto_manage ? g.servers.find((x) => x.id === s.ship_to_server_id) : null;
+        const auto = s?.auto_manage
+            ? tipBadge(
+                  shipTo ? `automatic → ${shipTo.name}` : 'automatic',
+                  '',
+                  `Mostly-On manages the user databases on ${s.name} by itself, and stops managing one that is dropped. ` +
+                      (shipTo ? `New databases in FULL recovery are log shipped to ${shipTo.name}.` : 'New databases are backed up only.') +
+                      ' Change it on the server page.',
+              )
+            : null;
+        return [name, problem ? [' ', problem] : null, auto ? [' ', auto] : null];
     }
 
     /** The databases found on a server that Mostly-On does not manage: rows of their own, hidden until shown, with their names in the toggle. */

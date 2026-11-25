@@ -32,6 +32,7 @@ import * as health from '../engine/health.js';
 import * as notifier from './notifier.js';
 import { getDb } from '../store/db.js';
 import { holders } from '../engine/locks.js';
+import { pendingDrop } from '../engine/auto-manage.js';
 import { lagOf } from '../engine/restore-loop.js';
 import { isBackupOnly, dbLabel, skippedTypes } from '../engine/backup-rules.js';
 import * as schedules from '../store/repos/schedules.js';
@@ -109,6 +110,8 @@ export function collectConditions() {
     const thresholdMinutes = settings.get('alerts.lag_threshold_minutes');
     const skippedNow = new Map(); // backups-only database id -> types that do not apply right now
     for (const db of databases.list()) {
+        // Gone from a server that manages its databases automatically: dropped on purpose, most likely (an event says so).
+        if (pendingDrop(db.id)) continue;
         const logSchedule = schedules.get(db.id, 'LOG');
         const reps = databases.replicas(db.id);
         const busy = holders(db.id).includes('exclusive');
@@ -175,6 +178,7 @@ export function collectConditions() {
     for (const f of ops.failedBackups()) {
         // A DIFF or LOG that does not apply now (the database left FULL recovery): its old failure no longer matters.
         if (skippedNow.get(f.database_id)?.[f.backup_type]) continue;
+        if (pendingDrop(f.database_id)) continue;
         add({
             key: `backup:${f.database_id}:${f.backup_type}`,
             kind: 'backup_failed',

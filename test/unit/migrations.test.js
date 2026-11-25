@@ -184,3 +184,26 @@ test('010: the databases table loses its UNIQUE name, and every row that refers 
     for (const tb of ['database_replicas', 'forks', 'backup_files', 'restores', 'schedules', 'foreign_backups']) assert.equal(after[tb], 0, tb);
     assert.equal(conn.prepare('SELECT database_id FROM operations WHERE id=1').pluck().get(), null);
 });
+
+test('011: databases stopped before automatic management count as stopped by a person', () => {
+    const real = path.join(path.dirname(new URL(import.meta.url).pathname), '../../src/store/migrations');
+    const all = fs.readdirSync(real).filter((f) => /^\d{3}_.+\.sql$/.test(f)).sort();
+    const upTo = (n) => Object.fromEntries(all.filter((f) => Number(f.slice(0, 3)) <= n).map((f) => [f, fs.readFileSync(path.join(real, f), 'utf8')]));
+    const s = scratch(upTo(10));
+    let conn = openDb(s.file, { migrationsDir: s.dir });
+    const t = '2026-01-01T00:00:00Z';
+    conn.exec(`
+        INSERT INTO servers (id, name, host, username, password_enc, sql_backup_root, created_at, updated_at) VALUES (1, 'sql1', 'h', 'u', 'p', '/b', '${t}', '${t}');
+        INSERT INTO databases (id, name, status, created_at, updated_at) VALUES (7, 'Sales', 'managed', '${t}', '${t}'), (8, 'Old', 'unmanaged', '${t}', '${t}');
+    `);
+    closeDb();
+
+    write(s.dir, upTo(11));
+    conn = openDb(s.file, { migrationsDir: s.dir });
+    assert.deepEqual(conn.prepare('SELECT id, stopped_by, auto_seed FROM databases ORDER BY id').all(), [
+        { id: 7, stopped_by: null, auto_seed: 0 },
+        { id: 8, stopped_by: 'person', auto_seed: 0 },
+    ]);
+    assert.deepEqual(conn.prepare('SELECT auto_manage, ship_to_server_id FROM servers').get(), { auto_manage: 0, ship_to_server_id: null });
+    assert.throws(() => conn.prepare("UPDATE databases SET stopped_by='nobody' WHERE id=7").run(), /CHECK/);
+});

@@ -15,6 +15,7 @@ import * as events from './store/repos/events.js';
 import { initPools, closeAll as closePools } from './sql/pool.js';
 import * as health from './engine/health.js';
 import * as discovery from './engine/discovery.js';
+import * as autoManage from './engine/auto-manage.js';
 import * as scheduler from './engine/scheduler.js';
 import * as retention from './engine/retention.js';
 import * as restoreLoop from './engine/restore-loop.js';
@@ -60,6 +61,7 @@ await health.checkAll();
 await reconcileOnStartup();
 health.start();
 discovery.start();
+autoManage.start(); // after discovery: both run after each health check, in this order
 scheduler.start();
 retention.start();
 restoreLoop.start();

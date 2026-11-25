@@ -1,13 +1,10 @@
 import { HttpError, idParam } from '../router.js';
 import * as databases from '../../store/repos/databases.js';
-import * as serversRepo from '../../store/repos/servers.js';
 import * as backups from '../../store/repos/backups.js';
-import * as forks from '../../store/repos/forks.js';
 import * as schedules from '../../store/repos/schedules.js';
 import * as foreign from '../../store/repos/foreign.js';
 import * as ops from '../../store/repos/operations.js';
 import * as events from '../../store/repos/events.js';
-import * as inspect from '../../sql/inspect.js';
 import * as health from '../../engine/health.js';
 import * as retention from '../../engine/retention.js';
 import * as settings from '../../store/repos/settings.js';
@@ -17,12 +14,12 @@ import { validateSchedule } from '../../engine/schedule-math.js';
 import { holders } from '../../engine/locks.js';
 import { lagOf } from '../../engine/restore-loop.js';
 import { canResume, canResolve } from '../../engine/ops/index.js';
-import { sqlErrorText } from '../../sql/pool.js';
 import { evaluateSoon } from '../../notify/alerts.js';
 import { syncFromHealth } from '../../engine/discovery.js';
+import { manageDatabase } from '../../engine/manage.js';
 import { publish } from '../../bus.js';
 import { dbFolder } from '../../paths.js';
-import { isBackupOnly, isSystemName, manageKind, skippedTypes, dbLabel, SYSTEM_DATABASE_IDS, MASTER_ID, ONLY_FULL_MASTER } from '../../engine/backup-rules.js';
+import { isBackupOnly, isSystemName, skippedTypes, dbLabel, SYSTEM_DATABASE_IDS, ONLY_FULL_MASTER } from '../../engine/backup-rules.js';
 
 function mustGet(id) {
     const db = databases.get(id);
@@ -106,61 +103,7 @@ export function databaseRoutes(router) {
         const serverId = idParam(ctx.body?.server_id, 'server_id');
         const name = ctx.body?.name;
         if (typeof name !== 'string' || !name || name.length > 128) throw new HttpError(400, 'name is required');
-        const server = serversRepo.get(serverId);
-        if (!server) throw new HttpError(404, 'Server not found');
-        // A log-shipped name is one database on every server.
-        if (databases.find(name)?.status === 'managed') throw new HttpError(409, `${name} is already managed`);
-
-        let state;
-        try {
-            state = await inspect.dbBackupStateStarted(serverId, name);
-        } catch (err) {
-            throw new HttpError(503, `Cannot reach ${server.name}: ${sqlErrorText(err)}`);
-        }
-        if (!state) throw new HttpError(404, `Database ${name} does not exist on ${server.name}`);
-        if (state.databaseId === 2) throw new HttpError(409, 'Mostly-On never backs up tempdb: SQL Server creates it again at every start.');
-        if (state.isSnapshot) throw new HttpError(409, `${name} on ${server.name} is a database snapshot, which cannot be backed up.`);
-        if (state.state === 'RECOVERING') throw new HttpError(409, `Database ${name} is still starting up (RECOVERING) on ${server.name}. Try again in a moment.`);
-        if (state.state !== 'ONLINE') throw new HttpError(409, `Database ${name} is ${state.state} on ${server.name}`);
-
-        const realName = state.name; // the server's own spelling, as health checks report it
-        const backupOnly = manageKind({ databaseId: state.databaseId, recoveryModel: state.recoveryModel }) === 'backup_only';
-        if (databases.find(realName)?.status === 'managed') throw new HttpError(409, `${realName} is already managed`);
-        if (databases.find(realName, serverId)?.status === 'managed') {
-            throw new HttpError(
-                409,
-                backupOnly
-                    ? `${realName} on ${server.name} is already managed`
-                    : `${realName} on ${server.name} is managed as backups only. To log ship it, stop managing it first, then manage it again.`,
-            );
-        }
-
-        const db = databases.manage({
-            name: realName,
-            familyGuid: state.familyGuid,
-            primaryServerId: serverId,
-            backupOnly,
-            fullOnly: state.databaseId === MASTER_ID,
-        });
-        forks.reset(db.id, state.recoveryForkGuid);
-        databases.noteOwner(db.id, state);
-        events.add(
-            'info',
-            'database',
-            backupOnly ? `Started backing up ${realName} on ${server.name} (backups only: no secondaries, no restores)` : `Started managing ${realName} with primary ${server.name}`,
-            { databaseId: db.id, serverId },
-        );
-        publish('database.changed', { databaseId: db.id });
-
-        // A FULL backup starts the controller's chain immediately.
-        let operation = null;
-        let warning = null;
-        try {
-            const started = await startBackup(db.id, 'FULL', { trigger: 'manage' });
-            operation = started.operation;
-        } catch (err) {
-            warning = `Initial FULL backup could not start: ${err.message}`;
-        }
+        const { db, operation, warning } = await manageDatabase({ serverId, name });
         ctx.status = 201;
         return { database: summary(db), operation, warning };
     });
