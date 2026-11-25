@@ -12,7 +12,9 @@ import { fileOnDisk } from '../../engine/restore.js';
 import { undoFilePath, isPaused, MAX_RESTORE_DELAY_MINUTES, MAX_PAUSE_HOURS } from '../../engine/restore-plan.js';
 import { restoreDelayChangeBlocker, delayText } from '../../engine/ops/shared.js';
 import { nowIso } from '../../store/db.js';
-import { holders } from '../../engine/locks.js';
+import { holders, tryAcquire } from '../../engine/locks.js';
+import * as P from '../../sql/privileged.js';
+import { sqlErrorText } from '../../sql/pool.js';
 import { restoreCompatibility } from '../../sqlversion.js';
 import { publish } from '../../bus.js';
 
@@ -21,6 +23,8 @@ function mustGetDb(id) {
     if (!db || db.status !== 'managed') throw new HttpError(404, 'Database not found or not managed');
     return db;
 }
+
+const REMOVE_ACTIONS = ['drop', 'recover', 'leave'];
 
 function mustGetSecondary(db, serverId) {
     const rep = databases.replica(db.id, serverId);
@@ -169,21 +173,51 @@ export function replicaRoutes(router) {
         return { ok: true, filesFound: found };
     });
 
-    // Stop shipping to a secondary. The copy on the server is left untouched.
+    // Stop shipping to a secondary, and do something with its copy:
+    //   drop     drop it (only a copy nobody can write to: RESTORING or STANDBY)
+    //   recover  bring it online (RESTORE ... WITH RECOVERY), as a database of its own
+    //   leave    leave it as it is (the default, for API clients from before the choice)
+    // If the copy cannot be dropped or recovered, the secondary stays.
     router.post('/api/databases/:id/replicas/:serverId/remove', async (ctx) => {
         const db = mustGetDb(idParam(ctx.params.id));
         const rep = mustGetSecondary(db, idParam(ctx.params.serverId, 'serverId'));
         if (ctx.body?.confirm !== db.name) throw new HttpError(400, 'Type the database name to confirm');
+        const action = ctx.body?.action ?? 'leave';
+        if (!REMOVE_ACTIONS.includes(action)) throw new HttpError(400, `action must be one of ${REMOVE_ACTIONS.join(', ')}`);
+        if (action !== 'leave' && rep.role !== 'secondary') throw new HttpError(409, `${rep.server_name} holds an out-of-sync copy, which Mostly-On only leaves as it is. Remove it with "Leave it as it is".`);
         const busy = holders(db.id).filter((k) => k === 'exclusive' || k === `restore:${rep.server_id}`);
         if (busy.length) throw new HttpError(409, `${rep.server_name} is busy (${busy.join(', ')}); try again when it has finished`);
-        databases.removeReplica(db.id, rep.server_id);
-        events.add('warn', 'restore', `${rep.server_name} is no longer a ${rep.role} of ${db.name}. The database on ${rep.server_name} is left as it is.`, {
+        const release = tryAcquire(db.id, `restore:${rep.server_id}`);
+        if (!release) throw new HttpError(409, `${rep.server_name} is busy; try again when it has finished`);
+        let outcome = `The database on ${rep.server_name} is left as it is.`;
+        try {
+            if (action !== 'leave') {
+                if (!health.getHealth(rep.server_id)?.ok) throw new HttpError(503, `${rep.server_name} is unreachable, so its copy can only be left as it is.`);
+                try {
+                    if (action === 'drop') {
+                        await P.run(rep.server_id, P.dropDatabase({ db: db.name }), { timeoutMs: 300_000 });
+                        outcome = `Its copy on ${rep.server_name} was dropped.`;
+                    } else {
+                        const owner = databases.get(db.id);
+                        const r = await P.run(rep.server_id, P.recover({ db: db.name, ownerSid: owner?.owner_sid, ownerName: owner?.owner_name }), { timeoutMs: 0 });
+                        const o = r.recordset?.[0];
+                        outcome = `Its copy on ${rep.server_name} is online now, as a database of its own${o?.owner_name ? `, owned by ${o.owner_name}` : ''}.`;
+                    }
+                } catch (err) {
+                    throw new HttpError(409, `Could not ${action === 'drop' ? 'drop' : 'bring online'} ${db.name} on ${rep.server_name}: ${sqlErrorText(err)} ${rep.server_name} is still a secondary.`);
+                }
+            }
+            databases.removeReplica(db.id, rep.server_id);
+        } finally {
+            release();
+        }
+        events.add('warn', 'restore', `${rep.server_name} is no longer a ${rep.role} of ${db.name}. ${outcome}`, {
             databaseId: db.id,
             serverId: rep.server_id,
         });
         changed(db, rep.server_id);
         publish('database.changed', { databaseId: db.id });
-        return { ok: true };
+        return { ok: true, outcome };
     });
 
     router.get('/api/databases/:id/restores', async (ctx) => {

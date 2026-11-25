@@ -234,17 +234,36 @@ function delayedFailoverButton(r) {
     return [button, tip.tip];
 }
 
-function removeDialog(db, r) {
-    return formDialog({
-        title: `Stop shipping ${db.name} to ${r.server_name}?`,
+/**
+ * "Remove": stop shipping to a secondary, and say what happens to its copy
+ * there. Dropping it is the default. An out-of-sync copy is only ever left as it is.
+ */
+async function removeDialog(db, r) {
+    const where = r.server_name;
+    const readable = r.restore_mode === 'standby';
+    const choices =
+        r.role === 'secondary'
+            ? h(
+                  'fieldset.choices',
+                  h('legend', `The old copy of ${db.name} on ${where}`),
+                  radio('action', 'drop', 'Drop it.', true),
+                  radio('action', 'recover', 'Bring it online as a standalone database (RECOVERY)'),
+                  radio('action', 'leave', readable ? 'Leave it read-only (STANDBY), no longer updated' : 'Leave it offline, restoring (NORECOVERY)'),
+              )
+            : null;
+    const res = await formDialog({
+        title: `Stop shipping ${db.name} to ${where}?`,
         fields: [
-            h('p', `${r.server_name} is removed from ${db.name}'s replicas and no more logs are restored there. The database on ${r.server_name} is left exactly as it is.`),
+            h('p', `${where} is removed from ${db.name}'s replicas and no more logs are restored there.`),
+            choices ?? h('p', `The out-of-sync copy on ${where} is left exactly as it is.`),
             field(`Type ${db.name} to confirm`, confirmNameInput('confirm')),
-        ],
+        ].filter((x) => x !== null),
         submitLabel: 'Remove secondary',
         danger: true,
-        onSubmit: (v) => post(`/api/databases/${db.id}/replicas/${r.server_id}/remove`, { confirm: v.confirm }),
+        onSubmit: (v) => post(`/api/databases/${db.id}/replicas/${r.server_id}/remove`, { confirm: v.confirm, action: v.action ?? 'leave' }),
     });
+    if (res?.outcome) toast(res.outcome, 'ok');
+    return res;
 }
 
 function previewList(pf) {

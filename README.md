@@ -237,7 +237,7 @@ Backing up, restoring, failing over and disconnecting users all need high privil
 What that means in practice:
 
 - **Mostly-On's login on its own can do almost nothing.** It cannot read your data, create logins, change server settings, or back up and restore anything directly. (The backup files hold all your data, so protect the shared backup folder too! Backups of `master` and `msdb` also hold the server's logins with their password hashes, its credentials and its jobs.)
-- **The procedures have guard rails.** They back up the system databases master, model and msdb, but never restore or change them, and never touch tempdb. They only read or write backup files inside the shared backup folder. They drop a database only when nobody can write to it (`RESTORING`, or a read-only `STANDBY` copy): the copy of a database that was dropped on its primary. Restored database files only go to the server's default data and log folders. They never make Mostly-On's login the owner of a database, so they can't be used to read your data either.
+- **The procedures have guard rails.** They back up the system databases master, model and msdb, but never restore or change them, and never touch tempdb. They only read or write backup files inside the shared backup folder. They drop a database only when nobody can write to it (`RESTORING`, or a read-only `STANDBY` copy): a secondary you remove, or the copy of a database that was dropped on its primary. Restored database files only go to the server's default data and log folders. They never make Mostly-On's login the owner of a database, so they can't be used to read your data either.
 - **They can still do what failover needs.** That includes overwriting a database and taking one offline, which is the job itself. The procedures accept **every user database on the server**, not only the ones Mostly-On manages. Whoever controls Mostly-On (its dashboard, or its SQL login) can therefore disrupt any user database on the server; protect both accordingly.
 - **Database owners are kept.** A restored database would otherwise belong to Mostly-On's login. When a copy is brought online at failover, it gets its original owner back if that login exists on the server: matched by SID first, then by name. If neither exists, it gets `sa`, and an event tells you how to fix it; a later failover to that server gives it back to its owner once the login exists. Any other database (one that Mostly-On didn't restore or hand to `sa` itself) always keeps its owner.
 
@@ -266,6 +266,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
   - A user database switched to FULL recovery later gets LOG backups by itself. To log ship it, stop managing it, then manage it again.
   - Backups another tool takes of them are noted on the database's page, so you can tell an old backup job is still running. Only a LOG backup raises an alert, since restoring past it needs that file.
 - **Stopped shipping.** If a log backup is missing, or if the secondary refuses it, Mostly-On stops shipping to that replica and tells you why. It never skips ahead or guesses. Put the log backup file back and press **Try again**, or **Reinitialize** the secondary completely.
+- **Removing a secondary.** **Remove** in the Replicas table stops shipping to it and asks what to do with its copy: drop it (the default; its backups stay until retention removes them), bring it online as a database of its own, or leave it as it is. An out-of-sync copy is always left as it is. If the copy can't be dropped or brought online, it stays a secondary and the error says why.
 - **Delayed secondaries.** A secondary can be kept behind on purpose, so you can look at the data as it was before a problem.
   - The **Restore delay** is configured in minutes.
   - A delayed secondary restores a log backup only once that backup is as old as the delay, so the replica will end up between the delay and the delay plus one log backup interval behind.
@@ -366,7 +367,7 @@ The tail-log backup and the other backups from after the point-in-time stay on t
 
 Pull or build the new image and restart the container.
 
-**Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5, and the one that drops the copies of dropped databases is version 6). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
+**Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5, and the one that drops copies and brings read-only copies online is version 6). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
 
 The catalog in `/data` upgrades itself on start:
 

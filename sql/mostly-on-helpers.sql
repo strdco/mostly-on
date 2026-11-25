@@ -10,7 +10,7 @@
     The procedures back up master, model and msdb, but never restore or change
     them, and never touch tempdb. They only read or write backup files under the
     shared backup folder given below. They drop a database only when it is a
-    copy nobody can write to (RESTORING or STANDBY), after its primary was dropped.
+    copy nobody can write to (RESTORING or STANDBY).
 
     How to run it:
       * As a member of sysadmin, on every SQL Server that Mostly-On manages.
@@ -345,8 +345,9 @@ ELSE
     RESTORE LOG @db FROM DISK=@path WITH STANDBY=@undo, CHECKSUM;
 GO
 
--- Brings a copy online at failover: RESTORE WITH RECOVERY (if it is still
--- restoring), MULTI_USER, then the owner. A database created by RESTORE is
+-- Brings a copy online at failover, or when a secondary is removed: RESTORE
+-- WITH RECOVERY (if it is still restoring, or read-only in STANDBY: its
+-- readers are disconnected first), MULTI_USER, then the owner. A database created by RESTORE is
 -- owned by the login that ran it, i.e. Mostly-On's. Only such a database, or
 -- one this procedure earlier gave to the fallback owner as a stand-in (and
 -- that still has it), gets a new owner: the database's own owner if that
@@ -363,7 +364,16 @@ SET NOCOUNT ON;
 EXEC mostly_on.check_database @db=@db;
 DECLARE @sql nvarchar(max);
 
-IF ((SELECT d.state_desc FROM sys.databases AS d WHERE d.name=@db)=N'RESTORING')
+IF (EXISTS (SELECT NULL FROM sys.databases AS d WHERE d.name=@db AND d.is_in_standby=1)) BEGIN;
+    DECLARE @kill nvarchar(max);
+    SELECT @kill=STRING_AGG(CAST(N'KILL '+CONVERT(nvarchar(11), s.session_id)+N';' AS nvarchar(max)), N'')
+    FROM sys.dm_exec_sessions AS s
+    WHERE s.database_id=DB_ID(@db)
+      AND s.session_id!=@@SPID;
+    IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+END;
+
+IF (EXISTS (SELECT NULL FROM sys.databases AS d WHERE d.name=@db AND (d.state_desc=N'RESTORING' OR d.is_in_standby=1)))
     RESTORE DATABASE @db WITH RECOVERY;
 
 IF ((SELECT d.user_access_desc FROM sys.databases AS d WHERE d.name=@db)!=N'MULTI_USER') BEGIN;
@@ -450,9 +460,9 @@ IF (@sql IS NULL) THROW 50030, N'Unknown database state.', 1;
 EXEC sys.sp_executesql @sql;
 GO
 
--- Drops the copy of a database that was dropped on its primary. Only a copy
--- nobody can write to: RESTORING (a secondary), or read-only in STANDBY. A
--- STANDBY copy's readers are disconnected first.
+-- Drops a secondary copy: one being removed, or the copy of a database that
+-- was dropped on its primary. Only a copy nobody can write to: RESTORING, or
+-- read-only in STANDBY. A STANDBY copy's readers are disconnected first.
 CREATE PROCEDURE mostly_on.drop_database
     @db                 sysname
 AS
