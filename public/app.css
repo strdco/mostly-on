@@ -435,10 +435,10 @@ table.data th, table.data td {
 table.data thead th { font-size: 0.8rem; color: var(--muted); background: var(--surface); position: sticky; inset-block-start: 0; z-index: 1; }
 table.data tbody th { font-weight: 600; background: var(--surface); }
 table.data tbody:last-child tr:last-child > * { border-block-end: none; }
-/* Row groups (dataTable groups): a heading row, and an optional footer row. */
+/* Row groups (dataTable groups): a heading row, and an optional show/hide row for more rows. */
 table.data tr.group-head > th { background: var(--surface-2); font-size: 0.95rem; padding-block: 0.4rem; }
 .group-name { font-weight: 700; }
-table.data tr.group-foot > td { padding-block: 0.35rem; }
+table.data tr.group-more > td { padding-block: 0.3rem; }
 table.data td.num { text-align: end; font-variant-numeric: tabular-nums; }
 /* Buttons in table rows are compact, so a row's actions fit on one line. They stay
    at least 28px tall (WCAG 2.5.8 asks for 24px targets). */
@@ -480,11 +480,29 @@ table.data tr.row-err > :first-child { box-shadow: inset 4px 0 0 var(--err); }
 .health-reasons { margin: 0.2rem 0 0; padding: 0; list-style: none; font-size: 0.8rem; color: var(--muted); font-weight: 400; }
 .running { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--muted); }
 /* Databases on a server that Mostly-On does not manage: collapsed under its group. */
-details.not-managed > summary { inline-size: fit-content; padding-block: 0.15rem; font-size: 0.9rem; font-weight: 600; color: var(--muted); }
-details.not-managed > summary .names { font-weight: 400; }
-details.not-managed[open] > summary .names { display: none; } /* the list below shows them */
-details.not-managed > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
-ul.not-managed-list { list-style: none; margin: 0.35rem 0 0.25rem; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); gap: 0.4rem 1.5rem; }
+table.data tr.group-more button.disclosure {
+    display: inline-block;
+    padding: 0.15rem 0.25rem;
+    margin-inline-start: -0.25rem;
+    min-block-size: 1.75rem;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-align: start;
+    cursor: pointer;
+}
+table.data tr.group-more button.disclosure:hover { color: var(--text); }
+table.data tr.group-more button.disclosure::before { content: "▸"; display: inline-block; inline-size: 1em; margin-inline-end: 0.25rem; text-align: center; transition: rotate 0.15s; }
+table.data tr.group-more button.disclosure:dir(rtl)::before { scale: -1 1; }
+table.data tr.group-more button.disclosure[aria-expanded="true"]::before { rotate: 90deg; }
+table.data tr.group-more button.disclosure:dir(rtl)[aria-expanded="true"]::before { rotate: -90deg; }
+table.data tr.group-more button.disclosure .names { font-weight: 400; }
+table.data tr.group-more button.disclosure[aria-expanded="true"] .names { display: none; } /* the rows below show them */
+table.data tr.group-more button.disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+@media (prefers-reduced-motion: reduce) { table.data tr.group-more button.disclosure::before { transition: none; } }
 .table-more { margin-block: 0.4rem 0; }
 
 /* --- dialogs ----------------------------------------------------------------- */

@@ -54,13 +54,29 @@ const isEmpty = (v) => v === null || v === undefined || v === '' || v === false 
  * @param {object} o
  * @param {number} [o.limit]  show this many rows, with a "Show all" toggle for the rest
  * @param {(row) => string} [o.rowClass]
- * @param {{header: any, rows: object[], footer?: any}[]} [o.groups]  instead of rows: one
- *   <tbody> per group, its header in a row of its own (th scope=rowgroup) and an optional
- *   footer row, so the columns line up across groups (no "Show all" toggle)
+ * @param {{header: any, rows: object[], more?: {summary: any, rows: object[], open: boolean, onToggle?: (open: boolean) => void}}[]} [o.groups]
+ *   instead of rows: one <tbody> per group, its header in a row of its own (th scope=rowgroup),
+ *   so the columns line up across groups (no "Show all" toggle). A group's `more` rows follow
+ *   its own, behind a show/hide toggle row.
  */
+/** A group's extra rows, behind a toggle row that shows or hides them in place. */
+function moreRows(more, colspan, row) {
+    let open = !!more.open;
+    const trs = more.rows.map((r) => row(r, !open));
+    trs.forEach((tr) => (tr.id = `more-${Math.random().toString(36).slice(2, 9)}`));
+    const toggle = h('button.disclosure', { type: 'button', 'aria-expanded': String(open), 'aria-controls': trs.map((tr) => tr.id).join(' ') }, more.summary);
+    toggle.addEventListener('click', () => {
+        open = !open;
+        toggle.setAttribute('aria-expanded', String(open));
+        for (const tr of trs) tr.hidden = !open;
+        more.onToggle?.(open);
+    });
+    return [h('tr.group-more', h('td', { colspan }, toggle)), trs];
+}
+
 export function dataTable({ caption, columns, rows = [], groups = null, empty = 'Nothing here yet.', limit = 0, rowClass = null }) {
     const captionId = `cap-${Math.random().toString(36).slice(2, 9)}`;
-    if (groups ? !groups.some((g) => g.rows.length || g.footer) : !rows.length) return h('p.muted', empty);
+    if (groups ? !groups.some((g) => g.rows.length || g.more?.rows.length) : !rows.length) return h('p.muted', empty);
     if (groups) limit = 0;
     const extra = limit && rows.length > limit + 2 ? rows.length - limit : 0; // don't hide just one or two rows
     let open = expandedTables.has(caption);
@@ -81,7 +97,7 @@ export function dataTable({ caption, columns, rows = [], groups = null, empty = 
                   'tbody',
                   h('tr.group-head', h('th', { scope: 'rowgroup', colspan: columns.length }, g.header)),
                   g.rows.map((r) => row(r)),
-                  g.footer ? h('tr.group-foot', h('td', { colspan: columns.length }, g.footer)) : null,
+                  g.more?.rows.length ? moreRows(g.more, columns.length, row) : null,
               ),
           )
         : [h('tbody', trs)];

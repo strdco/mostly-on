@@ -327,14 +327,15 @@ export function overviewView() {
         clear(listBox).append(
             dataTable({
                 caption: 'Databases',
-                groups: sorted.map((g) => ({ header: groupHeader(g), rows: g.managed.sort(order), footer: notManagedList(g, g.unmanaged.sort(order)) })),
+                groups: sorted.map((g) => ({ header: groupHeader(g), rows: g.managed.sort(order), more: notManaged(g, g.unmanaged.sort(order)) })),
                 empty: 'No databases found on your servers yet. Register a server (Servers page).',
-                rowClass: (d) => (health.get(d.id).kind !== 'ok' ? `row-${health.get(d.id).kind}` : null),
+                rowClass: (d) => (!d.managed ? 'row-unmanaged' : health.get(d.id).kind !== 'ok' ? `row-${health.get(d.id).kind}` : null),
                 columns: [
                     { label: 'Database', header: true, cell: nameCell },
                     {
                         label: 'Health',
                         cell: (d) => {
+                            if (!d.managed) return null;
                             const x = health.get(d.id);
                             return [
                                 badge(x.label, x.kind),
@@ -346,6 +347,7 @@ export function overviewView() {
                     {
                         label: 'Secondaries',
                         cell: (d) => {
+                            if (!d.managed) return d.manage_as === 'backup_only' ? backupOnlyTag(d) : null;
                             if (d.backup_only) return backupOnlyTag(d); // why there are none
                             const sec = d.replicas.filter((r) => r.role !== 'primary');
                             return sec.length
@@ -364,7 +366,7 @@ export function overviewView() {
                                 : h('span.muted', 'none');
                         },
                     },
-                    ...['FULL', 'DIFF', 'LOG'].map((t) => ({ label: `Last ${t}`, cell: (d) => lastBackupBadge(d, t) })),
+                    ...['FULL', 'DIFF', 'LOG'].map((t) => ({ label: `Last ${t}`, cell: (d) => (d.managed ? lastBackupBadge(d, t) : null) })),
                 ],
             }),
         );
@@ -379,19 +381,16 @@ export function overviewView() {
         return [name, problem ? [' ', problem] : null];
     }
 
-    /** The databases found on a server that Mostly-On does not manage: collapsed, with their names in the summary. */
-    function notManagedList(g, list) {
-        if (!list.length) return null;
+    /** The databases found on a server that Mostly-On does not manage: rows of their own, hidden until shown, with their names in the toggle. */
+    function notManaged(g, list) {
         const names = list.map((d) => d.name);
         const shown = names.length > 6 ? `${names.slice(0, 6).join(', ')}, …` : names.join(', ');
-        const details = h(
-            'details.not-managed',
-            { open: openLists.has(g.key) },
-            h('summary', `Not managed (${list.length})`, h('span.muted.names', `: ${shown}`)),
-            h('ul.not-managed-list', list.map((d) => h('li', nameCell(d)))),
-        );
-        details.addEventListener('toggle', () => (details.open ? openLists.add(g.key) : openLists.delete(g.key)));
-        return details;
+        return {
+            summary: [`Not managed (${list.length})`, h('span.names', `: ${shown}`)],
+            rows: list,
+            open: openLists.has(g.key),
+            onToggle: (open) => (open ? openLists.add(g.key) : openLists.delete(g.key)),
+        };
     }
 
     /** Manage control, name (a link for managed databases) and, if the control cannot be used, why. */
@@ -409,9 +408,9 @@ export function overviewView() {
                   reason: null,
                   onActivate: () => manage(d),
               });
-        // A managed backups-only database shows its tag under Secondaries instead.
+        // The "backups only" tag goes under Secondaries.
         if (d.managed) return h('div.db-name', sw, h('a', { href: `#/databases/${d.id}` }, d.name));
-        return h('div.db-name', sw, h('span', d.name), d.manage_as === 'backup_only' ? backupOnlyTag(d) : null);
+        return h('div.db-name', sw, h('span', d.name));
     }
 
     let defaults = null; // the default schedules (/api/info), for the Manage dialog
