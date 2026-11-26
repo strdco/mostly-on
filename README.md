@@ -120,24 +120,51 @@ A log-shipped database has one folder, whichever server is its primary. A **back
 
 **The folder can have a different path on each machine.** When you register a server, you tell Mostly-On where the folder is *as that SQL Server sees it*. This is important when your database server runs in a container where, for example, `/var/opt/mssql/backup` might map to an SMB share. If the controller has it somewhere other than what you've configured as `BACKUP_ROOT`, set that path on the server too.
 
-### Permissions
+**Who needs access.** Everything that uses the folder must be able to create folders and files in it, and to read and delete what the others wrote:
 
-SQL Server containers run as **uid 10001**, and so does Mostly-On (group 0). Both need to create folders and files there, and Mostly-On deletes old backups (after they've expired).
+- **SQL Server** writes the backups, and reads them when it restores. In a container, it runs as user ID 10001.
+- **Mostly-On** creates a folder for each database, and deletes backups once they have expired. It runs as user ID 10001, group 0.
 
-- [ ] Give the folder to uid 10001, group 0, with the setgid bit so new folders keep the group:
+When that isn't the case, backups fail with *Operating system error 5 (Access is denied)*, or Mostly-On logs that it could not delete old backup files.
 
-```sh
-sudo mkdir -p /srv/mostly-on/backup /srv/mostly-on/data
-sudo chown 10001:0 /srv/mostly-on/backup /srv/mostly-on/data
-sudo chmod 2770 /srv/mostly-on/backup /srv/mostly-on/data
-```
+How you set it up depends on the machine your containers run on.
 
-- [ ] Bind-mount `/srv/mostly-on/backup` into each SQL Server container (at `/var/opt/mssql/backup`) and into Mostly-On (at `/backup`).
-- [ ] Bind-mount `/srv/mostly-on/data` into Mostly-On at `/data`, or keep the named volume `controller-data` from `docker-compose.yml`: a new named volume gets the right owner from the image by itself. (The demo compose file uses a one-shot `init-perms` service for its shared backup volume, because a SQL Server container may mount it first.)
+### Permissions: Linux host
 
-For a **network share** (NFS, SMB), make sure files created by uid 10001 on one machine can be read, written and deleted by uid 10001 on the others. With NFS, that usually means matching uids or squashing to a uid with access. With SMB, it means mount options such as `uid=10001,gid=0,file_mode=0660,dir_mode=02770`.
+Mostly-On and the SQL Server containers run on the same Linux machine, and the backup folder is an ordinary folder on it.
 
-Symptoms of a permissions problem: backups fail with *Operating system error 5 (Access is denied)*, or retention logs that it could not delete files.
+- [ ] Create the folder and give it to user 10001, group 0. The 2 in `2770` (the setgid bit) makes new folders inside it keep group 0:
+
+  ```sh
+  sudo mkdir -p /srv/mostly-on/backup
+  sudo chown 10001:0 /srv/mostly-on/backup
+  sudo chmod 2770 /srv/mostly-on/backup
+  ```
+
+- [ ] Mount the folder into each SQL Server container at `/var/opt/mssql/backup`, and into Mostly-On at `/backup`. In `docker-compose.yml`, that means replacing the `backup` volume:
+
+  ```yaml
+      volumes:
+        - controller-data:/data
+        - /srv/mostly-on/backup:/backup
+  ```
+
+- [ ] Register each SQL Server with `/var/opt/mssql/backup` as its backup folder.
+
+Mostly-On's own `/data` needs no preparation: the named volume `controller-data` gets the right owner from the image. If you'd rather use a folder on the host for it too, prepare that folder with the same three commands.
+
+**SQL Servers on other Linux machines?** Then the backup folder is an NFS share that every machine mounts, and the user IDs have to line up across machines. See [On a Linux machine](#on-a-linux-machine).
+
+### Permissions: Windows host
+
+**SQL Server installed on Windows.** The backup folder is an SMB share. Its permissions come from the share's rights in Windows and, for Mostly-On, from the options it is mounted with, so the commands above don't apply. See [On a Windows machine](#on-a-windows-machine).
+
+**Docker Desktop (Windows or macOS).** Fine for trying Mostly-On out, but not for backups you rely on. The containers run in a small Linux virtual machine, and folders from your Windows or Mac drive reach them through Docker Desktop's file sharing, which handles ownership its own way.
+
+- [ ] Use named volumes, not folders from your drive. They live inside the virtual machine, where ownership works as on Linux.
+- [ ] If SQL Server containers share the backup volume, give it to user 10001 before they start, as the `init-perms` service in `docker-compose.demo.yml` does.
+
+**WSL 2 without Docker Desktop.** A folder inside the WSL Linux file system, such as `/srv/mostly-on/backup`, works like on a Linux host: follow [Permissions: Linux host](#permissions-linux-host), inside WSL. A folder on a Windows drive (`/mnt/c/...`) doesn't.
 
 ---
 
