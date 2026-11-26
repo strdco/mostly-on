@@ -34,7 +34,8 @@ SQL Server writes its backups to the share as its **service account**, so that a
   CREATE LOGIN mostly_on WITH PASSWORD = N'…', CHECK_EXPIRATION = OFF;
   ```
 
-  Give it nothing else: the setup script in step 4 grants exactly what Mostly-On needs, and no more.
+  Give it no other permissions. This is intended as a low-privilege account,
+  and the setup script in step 4 will grant the specific permissions it needs.
 
 ## 4. Register the server and run its setup script
 

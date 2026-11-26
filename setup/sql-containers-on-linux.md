@@ -1,6 +1,8 @@
 # SQL Server containers on Linux
 
-For SQL Server running in a container (Microsoft's `mcr.microsoft.com/mssql/server` image) on a Linux machine. Do this on each SQL Server host.
+**IMPORTANT** These instructions are for SQL Server running in a container (using Microsoft's `mcr.microsoft.com/mssql/server` image) on a Linux host.
+
+Repeat these steps on each SQL Server host.
 
 Before you start:
 
@@ -96,7 +98,8 @@ The SQL Server container only sees the folders you hand it. So you mount the sha
   CREATE LOGIN mostly_on WITH PASSWORD = N'…', CHECK_EXPIRATION = OFF;
   ```
 
-  Give it nothing else: the setup script in step 4 grants exactly what Mostly-On needs, and no more.
+  Give it no other permissions. This is intended as a low-privilege account,
+  and the setup script in step 4 will grant the specific permissions it needs.
 
 ## 4. Register the server and run its setup script
 
