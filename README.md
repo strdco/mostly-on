@@ -158,7 +158,11 @@ Everything is set through environment variables (see `.env.example`). Everything
 - **Each server needs Mostly-On's setup script, run once by a sysadmin.** Mostly-On's own login should *not* have sysadmin privileges (see below).
 - Secondaries need to have the same major version or higher as the primary.
 - Readable secondaries ("STANDBY") need the same major SQL Server version as the primary.
-- **Nothing else may take log backups** of a managed database. A log backup taken by another tool (like a maintenance plan or a backup agent) holds changes that the secondaries will never receive, which breaks shipping. Mostly-On detects such backups and alerts you. Backups taken with `COPY_ONLY` are safe and do not break this log chain.
+
+> [!IMPORTANT]
+> Nothing else may take log backups of a managed database. A log backup taken by another tool (like a maintenance plan or a backup agent) holds changes that the secondaries will never receive, which breaks the so-called "log chain".
+> Mostly-On detects this and alerts you.
+> Backups taken with `COPY_ONLY` are always safe and do not break the log chain.
 
 ### The setup script, and why Mostly-On does not need sysadmin
 
