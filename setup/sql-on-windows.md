@@ -1,6 +1,6 @@
 # SQL Server on Windows
 
-For SQL Server installed on a Windows machine, any edition and any instance name. Do this on each SQL Server.
+Repeat these steps on each SQL Server.
 
 Before you start: Mostly-On is running, and the backup share is ready as an **SMB share** ([Setting up the Mostly-On container](mostly-on-container.md), steps 1 to 5).
 
@@ -11,7 +11,7 @@ Mostly-On doesn't change these settings for you:
 - [ ] **Turn on TCP/IP**: SQL Server Configuration Manager → SQL Server Network Configuration → Protocols → TCP/IP → Enabled. Restart SQL Server.
 - [ ] **Decide how Mostly-On finds the instance.** Either give the instance a fixed TCP port (TCP/IP → Properties → IP Addresses → IPAll), or keep the **SQL Server Browser** service running, so Mostly-On can look the port up by instance name.
 - [ ] **Allow the port in Windows Firewall**, from the Mostly-On machine. With SQL Server Browser, also allow UDP 1434.
-- [ ] **Turn on mixed-mode authentication** (SQL Server and Windows Authentication): in SSMS, server properties → Security. Mostly-On connects with a SQL login only. Restart SQL Server.
+- [ ] **Turn on mixed-mode authentication** (SQL Server and Windows Authentication): in SSMS, server properties → Security. Mostly-On connects with a SQL login only.
 
 ## 2. Give SQL Server access to the share
 
