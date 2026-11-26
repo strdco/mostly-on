@@ -189,25 +189,29 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 
 ## How it works
 
-- **Backups.** Each managed database has a FULL, DIFF and LOG schedule. They follow the default schedules under Settings (**Default schedules**), and change with them, until you edit one on the database's page: that one is then the database's own, until you choose **Use default** there. By default: FULL weekly and LOG every 5 minutes. DIFF backups are off by default: they only make restores faster. Switch them on for every database in Settings, or for one database on its page. Backups run only on the current primary, always `WITH CHECKSUM` and without compression (Express Edition does not support backup compression). A database that is still starting up (`RECOVERING`, for example on Express Edition, which opens an `AUTO_CLOSE` database on first use) gets up to 20 seconds before a backup gives up.
-- **Load on each SQL Server.** At most **2 backups and restores run at a time** on each SQL Server, counting all its databases, as primary and as secondary. Change the default under Settings (**SQL Servers connections**), or give a server its own value (edit the server, **More options**).
-  - More wait their turn, first come first served; the operation shows "Waiting for a free connection to sql1" meanwhile.
+- **Backups.** Each managed database has a FULL, DIFF and LOG schedule. They follow the default schedules under Settings, unless you create a custom schedule on the database's page. DIFF backups can speed up point-in-time restores for large databases and are disabled by default.
+
+> [!IMPORTANT]
+> Backups are not compressed, in order to maintain compatibility with SQL Server Express Edition.
+
+- At most **2 backup/restore operations run at a time** on each SQL Server. Change this default under Settings (**SQL Servers connections**), or give a server a custom value (server, **More options**).
   - Health checks and other short queries have their own connections and never wait, so a busy server is never reported unreachable.
   - Failovers and rollbacks never wait. A scheduled backup or a restore that is still waiting when a failover or rollback needs its database gives way, and runs again later.
-- **Shipping.** After every log backup, each secondary restores it (`WITH NORECOVERY`, or `STANDBY` for a readable copy). Readers of a readable copy are disconnected when a restore happens, so the copy stays current. "Behind" on the dashboard shows how old the newest data on a secondary is.
-- **Backups only.** The system databases (master, model, msdb), and user databases that are not in FULL recovery when you manage them, are backed up on their own server only, in the folder `<database>@<server>`. They are tagged **backups only** on the dashboard.
-  - They always get FULL backups. While one is in FULL recovery, it also gets DIFF and LOG backups, like any other database. In SIMPLE or BULK_LOGGED recovery, its DIFF and LOG schedules are skipped quietly. master only ever gets FULL backups (SQL Server allows nothing else).
-  - No secondaries and no failover, and Mostly-On never restores them: restore them by hand from those files. Retention works as for any other database.
+- **Shipping.** After every log backup, each secondary restores it (`WITH NORECOVERY`, or `STANDBY` for a readable copy). Readers of a readable copy are forcibly disconnected when a restore happens. The "behind" number on the dashboard shows how far the replica has been restored.
+- **Backups only.** The system databases (master, model, msdb) as well as user databases not in FULL recovery model, are backed up on their own server only, in the folder `<database>@<server>`. They are tagged **backups only** on the dashboard and only get FULL backups.
+  - Backup-only databases cannot have secondaries, cannot failover.
+  - Mostly-On cannot restore system databaes.
+  - Retention works the same as for any other database.
   - A user database switched to FULL recovery later gets LOG backups by itself. To log ship it, stop managing it, then manage it again.
-  - Backups another tool takes of them are noted on the database's page, so you can tell an old backup job is still running. Only a LOG backup raises an alert, since restoring past it needs that file.
-- **Stopped shipping.** If a log backup is missing, or if the secondary refuses it, Mostly-On stops shipping to that replica and tells you why. It never skips ahead or guesses. Put the log backup file back and press **Try again**, or **Reinitialize** the secondary completely.
-- **Removing a secondary.** **Remove** in the Replicas table stops shipping to it and asks what to do with its copy: drop it (the default; its backups stay until retention removes them), bring it online as a database of its own, or leave it as it is. An out-of-sync copy is always left as it is. If the copy can't be dropped or brought online, it stays a secondary and the error says why.
-- **Delayed secondaries.** A secondary can be kept behind on purpose, so you can look at the data as it was before a problem.
-  - The **Restore delay** is configured in minutes.
-  - A delayed secondary restores a log backup only once that backup is as old as the delay, so the replica will end up between the delay and the delay plus one log backup interval behind.
-  - You **cannot** fail over to a delayed secondary. To do this, reset its delay to 0; the failover then restores the missing log backups itself.
-  - Only a readable (STANDBY) copy can be queried. Readers are disconnected at every restore. To prevent this, press **Pause sync** (for up to 24 hours).
-- **Retention.** Old backup files are deleted after the number of days you define (Settings), per backup type; a database can have its own, overriding, values. Any files required by a secondary, as well as the newest complete set needed to restore each database, are always kept. A database that was dropped (see **Automatic management**) keeps no newest set: its files go once they are past retention. A database you stop managing yourself keeps its files until you delete them. FULL backups are kept at least as long as DIFF and LOG backups, as those would be useless without the FULL they build on; Mostly-On will refuse settings that would break this rule.
+  - Backups another tool takes of them are noted on the database's page, so you can tell if an old backup job is still running.
+- **Stopped shipping.** If a log backup is missing, or if the secondary cannot restore it, Mostly-On stops shipping to that replica and tells you why. Press **Try again**, or **Reinitialize** the secondary completely.
+- **Removing a secondary** stops shipping to and asks what to do with the old secondary: drop it (default), bring it online as a stand-alone database, or leave it in the restoring state.
+- **Delayed secondaries.** A secondary replica can be kept behind on purpose, so you can compare older data when troubleshooting production issues. This delay is configured in minutes.
+  - A delayed secondary only restores entire log backups, so the replica will end up *at least* as old as the configured delay.
+  - You cannot fail over to a delayed secondary.
+  - Only a readable (STANDBY) copy can be queried. Readers are forcibly disconnected at every restore. To prevent this, press **Pause sync**.
+- **Retention.** Old backup files are deleted after the number of days you define (Settings), per backup type; a database can have its own, overriding, values. Files required by a secondary are always kept even after the retention period. Backups from dropped databases are subject to the same retention policies. A database you stop managing yourself keeps its files until you delete them.
+- FULL backups are always kept at least as long as DIFF and LOG backups, as those would be useless without the FULL they build on; Mostly-On will refuse settings that would break this rule.
 - **Alerts.** Mostly-On alerts you once when a problem starts, then reminds you every few hours while it lasts, and sends one notice when it is resolved. Alerts cover:
   - a server is unreachable;
   - a database is not in the state it should be (not while a database on a server with automatic management is gone: that is a drop, most likely, and an event says so);
@@ -223,7 +227,7 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 
 ## Automatic management
 
-For servers where databases come and go, one per customer for example. Turn it on per server, with the **Manage databases automatically** switch on the server's page. The **Servers** list shows which servers have it on, and where they ship new databases.
+On servers where databases are more frequently created and dropped, **Manage databases automatically** will automatically manage new databases and log-ship them to a secondary. The **Servers** list shows which servers have automatic management turned on, and where they ship new databases.
 
 - **New databases are managed by themselves.** A user database is managed a minute after it appears, so an application has time to set it up (switch it to FULL recovery, for example). Turning it on also manages the user databases already on the server that Mostly-On does not manage yet; the dialog lists them first. A few are taken on at every health check, so hundreds of them are taken on gradually.
 - **They are log shipped to the server you choose.** A database in FULL recovery gets a secondary on that server once its first FULL backup is there. One that is not in FULL recovery is backed up only. To have new databases start in FULL recovery, keep the `model` database in FULL recovery. If adding the secondary fails, an event says why, and you add it on the database's page; Mostly-On does not keep trying.
