@@ -449,11 +449,10 @@ The integration suite uses those three files too. It starts its own isolated com
 
 It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards for a look around, and `IT_REUSE=1` to rerun against it.
 
-**Publishing the image.** `.github/workflows/publish.yml` runs the unit tests, then builds the image for amd64 and arm64 and pushes it to `ghcr.io/strdco/mostly-on`. A push to `main` publishes `:edge`. A version tag publishes a release (`:0.2.0`, `:0.2` and `:latest`):
+**Publishing the image.** `.github/workflows/publish.yml` runs the unit tests, then builds the image for amd64 and arm64 and pushes it to `ghcr.io/strdco/mostly-on`.
 
-```sh
-git tag v0.2.0 && git push origin v0.2.0
-```
+- **Every push to `main`** publishes `:edge`.
+- **A release:** on GitHub, open **Actions → Publish image → Run workflow** on `main`, and type the version: a number such as `0.2.0`, or `patch`, `minor` or `major` to bump the current one. The workflow sets that version in `package.json`, commits it to `main`, tags it `v0.2.0`, publishes `:0.2.0`, `:0.2`, `:latest` and `:edge`, and creates a GitHub release with notes from the commits since the last one. A pre-release such as `0.3.0-beta.1` gets only its own tag and leaves `:latest` alone. Pull afterwards, since the release adds a commit to `main`.
 
 ---
 

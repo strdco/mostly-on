@@ -1,18 +1,31 @@
 # Builds the controller image and publishes it to ghcr.io/strdco/mostly-on.
 #
-#   push to main      -> :edge
-#   push tag v1.2.3   -> :1.2.3, :1.2 and :latest
+#   Push to main -> :edge
+#
+#   Actions > Publish image > Run workflow, with a version:
+#     sets the version in package.json, commits it to main and tags it
+#     (v0.2.0), publishes :0.2.0, :0.2, :latest and :edge, and creates a
+#     GitHub release.
+#
+# The version box takes a number (0.2.0, or 0.3.0-beta.1 for a pre-release,
+# which does not move :latest or :0.3) or patch / minor / major to bump the
+# current version.
 name: Publish image
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version: a number such as 0.2.0, or patch / minor / major'
+        required: true
+        default: patch
 
 concurrency:
-  group: publish-${{ github.ref }}
-  cancel-in-progress: true
+  group: publish-${{ github.event_name }}
+  # A newer push replaces an unfinished :edge build; a release is never cancelled.
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   test:
@@ -28,14 +41,74 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm test
 
-  publish:
+  # Releases only: set the version, commit, tag and push.
+  version:
+    if: github.event_name == 'workflow_dispatch'
     needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      prerelease: ${{ steps.bump.outputs.prerelease }}
+    steps:
+      - name: Releases come from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run the release from main, not ${GITHUB_REF_NAME}."
+          exit 1
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - id: bump
+        name: Set the version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          INPUT="${INPUT#v}"   # v0.2.0 works too
+          if ! [[ "$INPUT" =~ ^(patch|minor|major|[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
+            echo "::error::'$INPUT' is not a version. Use a number such as 0.2.0, or patch, minor or major."
+            exit 1
+          fi
+          npm version "$INPUT" --no-git-tag-version --allow-same-version --ignore-scripts
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::error::$tag already exists. Choose a higher version."
+            exit 1
+          fi
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+      - name: Commit, tag and push
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git diff --cached --quiet || git commit -m "Release $TAG"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push --atomic origin HEAD:main "$TAG"
+
+  publish:
+    needs: [test, version]
+    # On a push the version job is skipped; on a release it must have succeeded.
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.version.result != 'failure' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag || github.sha }}
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -47,10 +120,12 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/strdco/mostly-on
+          flavor: latest=false
           tags: |
-            type=edge,branch=main
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=edge
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.version }},enable=${{ needs.version.outputs.version != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.version }},enable=${{ needs.version.outputs.version != '' }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.prerelease == 'false' }}
           labels: |
             org.opencontainers.image.title=Mostly-On
             org.opencontainers.image.licenses=MIT
@@ -63,3 +138,20 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Releases only, once the image is out.
+  github-release:
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag "${flags[@]}"
