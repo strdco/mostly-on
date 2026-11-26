@@ -209,21 +209,26 @@ On every SQL Server host and on the Mostly-On host:
 
 Mostly-On's own `/data` needs no preparation: the named volume `controller-data` gets the right owner from the image.
 
-**SQL Server installed on Linux, not in a container?** It runs as the `mssql` user, whose user ID differs from machine to machine. With SMB, mount the share on that machine with `uid=mssql,gid=mssql` instead. With NFS, see [On a Linux machine](#on-a-linux-machine).
-
-**Everything on one machine?** Skip the share: create the folder there with the three NFS commands from step 1, and bind it into every container as in step 3, with `/srv/sqlbackup` in place of `/mnt/sqlbackup`.
+**SQL Server installed on Linux, not in a container?** A few steps differ; see [On a Linux machine](#on-a-linux-machine).
 
 ### Permissions: Windows host
 
-**SQL Server installed on Windows.** The backup folder is an SMB share. Its permissions come from the share's rights in Windows and, for Mostly-On, from the options it is mounted with, so the commands above don't apply. See [On a Windows machine](#on-a-windows-machine).
+**SQL Server installed on Windows.** The backup folder is an SMB share on a file server or NAS, for example `\\fileserver\sqlbackup`. Windows decides who may write there, from the rights on the share and its folder, so there's nothing to `chown`.
 
-**Docker Desktop (Windows or macOS).** Fine for trying Mostly-On out, but not for backups you rely on. The containers run in a small Linux virtual machine, and folders from your Windows or Mac drive reach them through Docker Desktop's file sharing, which handles ownership its own way.
+- [ ] Give SQL Server's service account **Modify** rights on the share and its folder. The default virtual account (`NT Service\MSSQL$<instance>`) reaches the network as the machine's computer account, so grant `DOMAIN\MACHINE$`. Better: run SQL Server as a group managed service account (gMSA), and grant that.
+- [ ] Register the server in Mostly-On with the share's path, `\\fileserver\sqlbackup`, as its backup folder.
+- [ ] Mostly-On runs on Linux: on its host, mount the same share as in [Permissions: Linux host](#permissions-linux-host) (SMB, steps 2 and 3). The same goes for Linux SQL Server hosts in the same setup.
 
-- [ ] Use named volumes, not folders from your drive. They live inside the virtual machine, where ownership works as on Linux.
-- [ ] If SQL Server containers share the backup volume, give it to user 10001 before they start, as the `init-perms` service in `docker-compose.demo.yml` does.
+The other settings a Windows SQL Server needs (TCP/IP, firewall, mixed-mode authentication) are under [On a Windows machine](#on-a-windows-machine).
 
-**WSL 2 without Docker Desktop.** A folder inside the WSL Linux file system, such as `/srv/sqlbackup`, works like on a Linux host: create it with the commands under [Permissions: Linux host](#permissions-linux-host), inside WSL. A folder on a Windows drive (`/mnt/c/...`) doesn't.
+**Docker Desktop (Windows or macOS).** Fine for trying Mostly-On out, but not for backups you rely on: it only starts when someone signs in. The containers run in a small Linux virtual machine, and folders from your Windows or Mac drive reach them through file sharing that doesn't keep Linux owners.
 
+- [ ] Use named volumes, not folders from your drive. They live inside the virtual machine, where ownership works as on Linux. The demo compose files are set up this way.
+
+**Docker inside WSL 2, without Docker Desktop.** The WSL distribution is a Linux host, so treat it like one:
+
+- [ ] Mount the share inside WSL and bind it into the containers, as in [Permissions: Linux host](#permissions-linux-host), steps 2 and 3. Don't use a Windows or mapped drive through `/mnt/...`: it doesn't keep Linux owners either.
+- [ ] Make sure WSL starts with Windows and keeps running, for example with a scheduled task at startup. WSL is built for interactive use and doesn't start by itself, so without that, Mostly-On stays down after a reboot.
 ---
 
 ## SQL Server outside containers
@@ -234,18 +239,18 @@ Every server gets the same treatment: register it, then run its setup script (se
 
 ### On a Linux machine
 
-The backup folder is usually an NFS share, mounted on every SQL Server machine (for example at `/var/opt/mssql/backup`) and on the machine running Mostly-On (bound to `/backup` in its container).
+SQL Server installed from Microsoft's packages runs as the `mssql` user, whose user ID differs from machine to machine. Set up the share as in [Permissions: Linux host](#permissions-linux-host), with two differences on that machine:
 
-SQL Server runs as the `mssql` user, whose user ID differs from machine to machine, and Mostly-On runs as uid 10001. They must be able to read and write each other's files. Mostly-On also deletes expired backups. The simplest way is to make every client write as the same user on the share (NFS `all_squash`):
+- [ ] **Skip step 3:** there is no container to bind into. SQL Server uses the mount point directly, so register the server with `/mnt/sqlbackup` as its backup folder.
+- [ ] **Let the `mssql` user write to the share:**
+  - **SMB:** mount it with `uid=mssql,gid=mssql` instead of `uid=10001,gid=0`.
+  - **NFS:** have the NFS server store everything as user 10001, whoever writes it (`all_squash`). Add the options to each host in `/etc/exports`:
 
-```sh
-# On the NFS server, in /etc/exports (then: sudo exportfs -ra)
-/srv/sqlbackup  *(rw,sync,all_squash,anonuid=10001,anongid=0)
+    ```
+    /srv/sqlbackup  sql1(rw,sync,all_squash,anonuid=10001,anongid=0) sql2(rw,sync,all_squash,anonuid=10001,anongid=0) mostly-on-host(rw,sync)
+    ```
 
-sudo mkdir -p /srv/sqlbackup && sudo chown 10001:0 /srv/sqlbackup && sudo chmod 2770 /srv/sqlbackup
-```
-
-If you'd rather keep real user IDs, create one group with the same group ID everywhere. Add `mssql` to it on every SQL Server machine (`sudo usermod -aG <group> mssql`, then restart `mssql-server`), run Mostly-On with that group (`user: "10001:<gid>"` in compose), and give the folder to that group with `chmod 2770`. Mostly-On creates its subfolders group-writable. If restores on another machine fail with *Operating system error 5*, the backup files aren't readable by the group: add a default ACL (`setfacl -d -m g::rwX /srv/sqlbackup`).
+With NFS, you can keep real user IDs instead: create a group with the same group ID on every machine, add `mssql` to it (`sudo usermod -aG <group> mssql`, then restart `mssql-server`), run Mostly-On with that group (`user: "10001:<gid>"` in compose), and give the folder on the NFS server to that group, with `chmod 2770`. If restores on another machine then fail with *Operating system error 5*, the backup files aren't readable by the group: add a default ACL on the NFS server (`setfacl -d -m g::rwX /srv/sqlbackup`).
 
 ### On a Windows machine
 
@@ -256,26 +261,7 @@ If you'd rather keep real user IDs, create one group with the same group ID ever
 - **The firewall** allows the port (also UDP 1434, if you use the Browser service).
 - **Mixed-mode authentication** (SQL Server and Windows Authentication) is on, and there is a SQL login for Mostly-On. Mostly-On connects with SQL logins only.
 
-**The backup folder** is an SMB share, for example `\\fileserver\sqlbackup`, or a folder on one of the Windows machines that's shared out:
-
-- **SQL Server's service account needs Modify rights on it.** If SQL Server runs as its default virtual account (`NT Service\MSSQL$<instance>`), it reaches the network as the machine's computer account (`DOMAIN\MACHINE$`), so grant that account. In a domain environment, consider running SQL Server under a domain account, or better yet, a group managed service account (gMSA) and grant that.
-- **Register the server with the share's path as SQL Server sees it,** for example `\\fileserver\sqlbackup` or `D:\SqlBackup` if the folder is local to that machine.
-- **Mostly-On mounts the same share.** It needs an account with Modify rights, mounted so that Mostly-On's user owns everything. For example, as a Docker volume:
-
-  ```yaml
-  volumes:
-    backup:
-      driver: local
-      driver_opts:
-        type: cifs
-        device: //fileserver/sqlbackup
-        o: "username=mostlyon,password=...,domain=EXAMPLE,uid=10001,gid=0,file_mode=0660,dir_mode=02770,vers=3.0"
-  ```
-
-  Or mount it on the Docker host (`mount -t cifs` with the same options) and bind it to `/backup`. Folder permissions on the share come from these mount options, so Mostly-On doesn't try to set them.
-
-A Linux SQL Server taking part in the same setup mounts the same share (CIFS on Linux), and is registered with its own path for it, such as `/var/opt/mssql/backup`.
-
+**The backup folder** is an SMB share. Set it up as in [Permissions: Windows host](#permissions-windows-host): rights for SQL Server's service account, the share's path when you register the server, and the mount on the Mostly-On host.
 ---
 
 ## Configuration
