@@ -41,7 +41,7 @@ async function newSecrets() {
         CONTROLLER_PORT: PORTS.controller,
         SQL1_PORT: PORTS.sql1,
         SQL2_PORT: PORTS.sql2,
-        SQL3_PORT: PORTS.sql3, // the compose file has a sql3; keep it off the dev stack's port
+        SQL3_PORT: PORTS.sql3, // the demo compose file has a sql3; keep it off the dev stack's port
         MOCK_PUSHOVER_PORT: PORTS.mock,
         LOG_LEVEL: 'info',
         TZ: 'UTC',
@@ -54,7 +54,7 @@ async function newSecrets() {
 
 /** Runs docker compose for the test project; throws with its output on failure. */
 export function compose(...args) {
-    const r = spawnSync('docker', ['compose', '-p', PROJECT, '--env-file', ENV_FILE, '-f', 'docker-compose.yml', '-f', 'docker-compose.test.yml', ...args], {
+    const r = spawnSync('docker', ['compose', '-p', PROJECT, '--env-file', ENV_FILE, '-f', 'docker-compose.yml', '-f', 'docker-compose.demo.yml', '-f', 'docker-compose.test.yml', ...args], {
         cwd: ROOT,
         encoding: 'utf8',
         maxBuffer: 64 * 1024 * 1024,

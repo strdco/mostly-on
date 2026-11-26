@@ -4,6 +4,7 @@
   "description": "Log shipping and backup orchestrator for SQL Server Express in Linux containers",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "main": "src/main.js",
   "engines": {
     "node": ">=22.12"

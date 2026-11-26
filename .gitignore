@@ -7,3 +7,4 @@ backup/
 *.db-shm
 .DS_Store
 .claude
+*.override.yml

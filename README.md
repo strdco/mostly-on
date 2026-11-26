@@ -22,13 +22,13 @@ SQL Server Express Edition has no SQL Server Agent, and for anything less than E
 > This project was largely vibe-coded and is in early beta. Please test it properly
 > before deploying to important or sensitive environments.
 
-Contents: [Quick start demo](#quick-start-demo) · [Deploying](#deploying) · [The shared backup folder](#the-shared-backup-folder) · [Configuration](#configuration) · [SQL Server requirements](#sql-server-requirements) · [How it works](#how-it-works) · [Failover, step by step](#failover-step-by-step) · [Upgrading](#upgrading) · [Development and tests](#development-and-tests) · [Known limitations](#known-limitations)
+Contents: [Quick start demo](#quick-start-demo) · [Deploying](#deploying) · [The shared backup folder](#the-shared-backup-folder) · [Configuration](#configuration) · [SQL Server requirements](#sql-server-requirements) · [How it works](#how-it-works) · [Failover, step by step](#failover-step-by-step) · [Upgrading](#upgrading) · [Development and tests](#development-and-tests) · [Known limitations](#known-limitations) · [License](#license)
 
 ---
 
 ## Quick start (demo)
 
-The included `docker-compose.yml` starts three SQL Server Express containers (`sql1`, `sql2`, `sql3`) and Mostly-On, with a shared backup volume.
+Mostly-On is published as a container image, `ghcr.io/strdco/mostly-on`. The demo starts it together with three SQL Server Express containers (`sql1`, `sql2`, `sql3`) and a shared backup volume. You need `docker-compose.yml`, `docker-compose.demo.yml`, `.env.example` and the `sql` folder from this repository; cloning it is easiest.
 
 1. Create your settings file:
 
@@ -41,20 +41,19 @@ The included `docker-compose.yml` starts three SQL Server Express containers (`s
    - `ADMIN_PASSWORD_HASH`: the password of the first dashboard user (`ADMIN_USER`, default `admin`), hashed. Once Mostly-On has started, you add everyone else on its **Users** page. Generate it with Node (`npm run hash-password`) or without Node installed:
 
      ```sh
-     docker build -t mostly-on:dev .
-     docker run --rm -it mostly-on:dev node scripts/hash-password.js
+     docker run --rm -it ghcr.io/strdco/mostly-on:latest node scripts/hash-password.js
      ```
 
      (`docker compose` itself refuses to start until these values are set, hence plain `docker`.)
 
    - `SECRET_KEY`: 32 random bytes, base64. `openssl rand -base64 32` or `npm run gen-secret`.
-   - `MSSQL_SA_PASSWORD`: the `sa` password for the two demo SQL Servers (at least 8 characters, with three of: upper case, lower case, digits, symbols).
-   - `MOSTLY_ON_SQL_PASSWORD`: the password of `mostly_on`, the restricted login Mostly-On uses on both demo servers (same rules). The demo's one-shot `sql-setup` service creates that login and runs the setup script on both servers; see [SQL Server requirements](#sql-server-requirements).
+   - `MSSQL_SA_PASSWORD`: the `sa` password for the demo SQL Servers (at least 8 characters, with three of: upper case, lower case, digits, symbols).
+   - `MOSTLY_ON_SQL_PASSWORD`: the password of `mostly_on`, the restricted login Mostly-On uses on the demo servers (same rules). The demo's one-shot `sql-setup` service creates that login and runs the setup script on all three servers; see [SQL Server requirements](#sql-server-requirements).
 
 3. Start everything:
 
    ```sh
-   docker compose up -d --build
+   docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d
    ```
 
    The first start of SQL Server takes a minute or two.
@@ -65,7 +64,7 @@ The included `docker-compose.yml` starts three SQL Server Express containers (`s
 
    | Field | Value |
    |---|---|
-   | Name / Host | `sql1`, `sql2` or `sql3' |
+   | Name / Host | `sql1`, `sql2` or `sql3` |
    | SQL login / Password | `mostly_on` / your `MOSTLY_ON_SQL_PASSWORD` |
    | Shared backup folder, as this SQL Server sees it | `/var/opt/mssql/backup` |
 
@@ -94,9 +93,11 @@ A production setup has three parts:
 > If you don't use persistent volumes, all this data will be lost when you update the
 > Docker image.
 
-Use `docker-compose.yml` as a template:
+Use `docker-compose.yml` as a template. It runs only the Mostly-On container, from the published image:
 
-- [ ] Drop the two `sql` services if your SQL Servers run elsewhere, and keep `restart: unless-stopped` so the controller comes back after a reboot.
+- [ ] Replace the `backup` volume with your shared backup folder (see [The shared backup folder](#the-shared-backup-folder)).
+
+- [ ] Keep `restart: unless-stopped` so the controller comes back after a reboot.
 
 - [ ] Put a TLS-terminating reverse proxy (Caddy, nginx, Traefik, ...) in front of port 8080 for anything but a lab, and set `PUBLIC_URL` to the `https://` address people use. Auth cookies are then marked Secure automatically.
 
@@ -133,7 +134,7 @@ sudo chmod 2770 /srv/mostly-on/backup /srv/mostly-on/data
 ```
 
 - [ ] Bind-mount `/srv/mostly-on/backup` into each SQL Server container (at `/var/opt/mssql/backup`) and into Mostly-On (at `/backup`).
-- [ ] Bind-mount `/srv/mostly-on/data` into Mostly-On at `/data`. The demo compose file does the same with named volumes and a one-shot `init-perms` service.
+- [ ] Bind-mount `/srv/mostly-on/data` into Mostly-On at `/data`, or keep the named volume `controller-data` from `docker-compose.yml`: a new named volume gets the right owner from the image by itself. (The demo compose file uses a one-shot `init-perms` service for its shared backup volume, because a SQL Server container may mount it first.)
 
 For a **network share** (NFS, SMB), make sure files created by uid 10001 on one machine can be read, written and deleted by uid 10001 on the others. With NFS, that usually means matching uids or squashing to a uid with access. With SMB, it means mount options such as `uid=10001,gid=0,file_mode=0660,dir_mode=02770`.
 
@@ -211,7 +212,7 @@ Everything is set through environment variables (see `.env.example`). Everything
 | `PUSHOVER_API_URL` | | Pushover's API | Only for testing against a mock. |
 | `PORT`, `DATA_DIR`, `BACKUP_ROOT` | | `8080`, `/data`, `/backup` | Container paths and port; rarely changed. |
 | `MSSQL_SA_PASSWORD` | demo only | | `sa` password for the demo SQL Server containers. |
-| `MOSTLY_ON_SQL_PASSWORD` | demo only | | Password of the restricted `mostly_on` login the demo creates on both SQL Servers. |
+| `MOSTLY_ON_SQL_PASSWORD` | demo only | | Password of the restricted `mostly_on` login the demo creates on its SQL Servers. |
 
 ---
 
@@ -385,7 +386,21 @@ To find the lines on a server: `EXEC sys.xp_readerrorlog 0, 1, N'Mostly-On';`
 
 ## Upgrading
 
-Pull or build the new image and restart the container.
+Pull the new image and restart the container:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+The image `ghcr.io/strdco/mostly-on` has these tags:
+
+| Tag | What it is |
+|---|---|
+| `latest` | The newest release. |
+| `0.2`, `0.2.1`, ... | A specific release. Pin `0.2` to get fixes for 0.2 without moving to 0.3 by surprise. |
+| `edge` | Every change on `main`, before it is released. For trying things out, not for servers you rely on. |
+
+Read the release notes before you upgrade.
 
 **Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5, the one that drops copies and brings read-only copies online is version 6, and the one that writes key actions to the SQL Server error log is version 7). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
 
@@ -412,7 +427,13 @@ npm test                  # unit tests (no Docker needed)
 npm run test:integration  # the whole scenario against real SQL Server containers
 ```
 
-The integration suite starts its own isolated compose project (`mostly-on-it`) with fresh secrets, separate volumes and its own ports (controller on 18080), so it does not touch a running demo stack. It walks through the brief end to end:
+To run the demo stack with the controller built from your working copy instead of the published image, add `docker-compose.test.yml` (it also points notifications at a mock Pushover):
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.demo.yml -f docker-compose.test.yml up -d --build
+```
+
+The integration suite uses those three files too. It starts its own isolated compose project (`mostly-on-it`) with fresh secrets, separate volumes and its own ports (controller on 18080), so it does not touch a running demo stack. It walks through the brief end to end:
 
 1. Register both servers with the restricted `mostly_on` login, manage a database, add a secondary, and check that it can't stop being managed while it has a secondary. Then check that the login can't do anything outside the helper procedures and their guard rails.
 2. Fail over with a tail-log backup and check that the last row arrived, and that the owner fell back to `sa` because the owner's login is missing on the target.
@@ -427,6 +448,12 @@ The integration suite starts its own isolated compose project (`mostly-on-it`) w
 11. Turn on automatic management for sql1, shipping to sql2, and check that sql2 is paired back. A new database on each server is managed and shipped to the other. Drop one: no alert while it is gone, then it is no longer managed, its copy on the secondary is dropped and its backup files are still there. Created again, it is managed again. The compose test file shortens the waits (`MOSTLY_ON_TEST_AUTO_SECONDS`).
 
 It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards for a look around, and `IT_REUSE=1` to rerun against it.
+
+**Publishing the image.** `.github/workflows/publish.yml` runs the unit tests, then builds the image for amd64 and arm64 and pushes it to `ghcr.io/strdco/mostly-on`. A push to `main` publishes `:edge`. A version tag publishes a release (`:0.2.0`, `:0.2` and `:latest`):
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
 
 ---
 
@@ -449,3 +476,9 @@ It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards 
 - **model usually gets LOG backups every 5 minutes.** On most editions model is in FULL recovery, so that new databases start in FULL recovery too. Its log backups are tiny; switch its LOG schedule off on its page if you don't want them. Don't switch model to SIMPLE recovery: new databases would start in SIMPLE.
 - **A log-shipped name is taken on every server.** A log-shipped database is one database on every server, so a database with the same name on another server cannot be managed, not even as backups only.
 - **Point-in-time restore and time zones.** SQL Server reads the moment in the local time of the server that wrote the log backup. Mostly-On converts it with that server's current UTC offset, so a moment within the hour around a DST change can be off by an hour; check the copy before relying on it.
+
+---
+
+## License
+
+Mostly-On is licensed under the [MIT License](LICENSE): use, copy, change and share it for any purpose, including commercially, as long as you keep the copyright and license notice.

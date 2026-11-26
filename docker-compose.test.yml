@@ -1,6 +1,7 @@
-# Test overrides: a mock Pushover API that records every message.
+# Test overrides: the controller built from this source tree instead of the
+# published image, and a mock Pushover API that records every message.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml -f docker-compose.test.yml up -d --build
 #   curl http://localhost:9911/messages
 name: mostly-on
 
@@ -14,6 +15,8 @@ services:
     restart: unless-stopped
 
   controller:
+    build: .
+    image: mostly-on:dev
     environment:
       PUSHOVER_APP_TOKEN: test-app-token
       PUSHOVER_USER_KEY: test-user-key

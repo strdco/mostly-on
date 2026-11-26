@@ -1,0 +1,90 @@
+# Demo: three SQL Server 2025 Express instances next to the controller, all
+# sharing one backup volume. Layered on top of docker-compose.yml:
+#
+#   cp .env.example .env    # then fill in the secrets, including the demo ones
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d
+#   open http://localhost:8080
+name: mostly-on
+
+x-mssql: &mssql
+  image: mcr.microsoft.com/mssql/server:2025-latest
+  # The image is amd64-only. On Apple Silicon this runs under Rosetta
+  # (Docker Desktop > Settings > General > "Use Rosetta").
+  platform: linux/amd64
+  restart: unless-stopped
+  environment:
+    ACCEPT_EULA: "Y"
+    MSSQL_PID: Express
+    MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+    MSSQL_BACKUP_DIR: /var/opt/mssql/backup
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SET NOCOUNT ON; SELECT 1;' -b -o /dev/null"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 30s
+  depends_on:
+    init-perms:
+      condition: service_completed_successfully
+
+services:
+  # One-shot: gives the shared backup volume to uid 10001 (the uid both mssql
+  # and the controller run as), group 0, setgid so new directories keep
+  # group 0. Needed because a SQL Server container may mount the volume before
+  # the controller does.
+  init-perms:
+    image: busybox:1.37
+    command: ["sh", "-c", "chown 10001:0 /backup && chmod 2770 /backup"]
+    volumes:
+      - backup:/backup
+
+  sql1:
+    <<: *mssql
+    hostname: sql1
+    ports: ["${SQL1_PORT:-14331}:1433"]
+    volumes:
+      - sql1-data:/var/opt/mssql
+      - backup:/var/opt/mssql/backup
+
+  sql2:
+    <<: *mssql
+    hostname: sql2
+    ports: ["${SQL2_PORT:-14332}:1433"]
+    volumes:
+      - sql2-data:/var/opt/mssql
+      - backup:/var/opt/mssql/backup
+
+  sql3:
+    <<: *mssql
+    hostname: sql3
+    ports: ["${SQL3_PORT:-14333}:1433"]
+    volumes:
+      - sql3-data:/var/opt/mssql
+      - backup:/var/opt/mssql/backup
+
+  # One-shot: creates the restricted login "mostly_on" on the SQL Servers and
+  # installs Mostly-On's signed helper procedures (sql/mostly-on-helpers.sql),
+  # so Mostly-On never needs sa. Register the servers with login mostly_on.
+  sql-setup:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    platform: linux/amd64
+    entrypoint: ["/bin/bash", "/setup/run-setup.sh"]
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+      MOSTLY_ON_SQL_PASSWORD: ${MOSTLY_ON_SQL_PASSWORD:?Set MOSTLY_ON_SQL_PASSWORD in .env}
+      SETUP_SERVERS: sql1 sql2 sql3
+    volumes:
+      - ./sql:/setup:ro
+    depends_on:
+      sql1:
+        condition: service_healthy
+      sql2:
+        condition: service_healthy
+      sql3:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  sql1-data:
+  sql2-data:
+  sql3-data:
