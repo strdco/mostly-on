@@ -3,22 +3,29 @@
 // here before and after every step.
 import { getDb, nowIso } from '../db.js';
 
-const COLS = 'id, type, database_id, server_id, parent_id, params, status, current_step, steps, ctx, error, created_at, updated_at, finished_at';
+const COLS = 'id, type, database_id, server_id, parent_id, params, status, current_step, steps, ctx, error, created_by, created_at, updated_at, finished_at';
 
 function shape(r) {
     if (!r) return r;
     return { ...r, params: JSON.parse(r.params), steps: JSON.parse(r.steps), ctx: JSON.parse(r.ctx) };
 }
 
-export function create({ type, databaseId = null, serverId = null, parentId = null, params = {}, steps = [], ctx = {}, status = 'running' }) {
+/** createdBy: the user who started it (NULL = Mostly-On itself); a child operation inherits its parent's. */
+export function create({ type, databaseId = null, serverId = null, parentId = null, params = {}, steps = [], ctx = {}, status = 'running', createdBy = null }) {
     const now = nowIso();
+    if (createdBy == null && parentId != null) createdBy = createdByOf(parentId);
     const info = getDb()
         .prepare(
-            `INSERT INTO operations (type, database_id, server_id, parent_id, params, status, steps, ctx, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO operations (type, database_id, server_id, parent_id, params, status, steps, ctx, created_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(type, databaseId, serverId, parentId, JSON.stringify(params), status, JSON.stringify(steps), JSON.stringify(ctx), now, now);
+        .run(type, databaseId, serverId, parentId, JSON.stringify(params), status, JSON.stringify(steps), JSON.stringify(ctx), createdBy, now, now);
     return get(Number(info.lastInsertRowid));
+}
+
+/** The user who started an operation, or null (Mostly-On itself, or no such operation). */
+export function createdByOf(id) {
+    return getDb().prepare('SELECT created_by FROM operations WHERE id=?').pluck().get(id) ?? null;
 }
 
 export function get(id) {

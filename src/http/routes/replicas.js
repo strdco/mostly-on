@@ -1,5 +1,5 @@
 // Secondaries: seeding, shipping settings, restore history.
-import { HttpError, idParam } from '../router.js';
+import { HttpError, idParam, actorOf } from '../router.js';
 import * as databases from '../../store/repos/databases.js';
 import * as serversRepo from '../../store/repos/servers.js';
 import * as backups from '../../store/repos/backups.js';
@@ -61,6 +61,7 @@ export function replicaRoutes(router) {
             restoreMode: b.restore_mode,
             overwrite: b.overwrite === true,
             confirm: typeof b.confirm === 'string' ? b.confirm : null,
+            actor: actorOf(ctx),
         });
         ctx.status = 202;
         return { operation: started.operation };
@@ -108,10 +109,15 @@ export function replicaRoutes(router) {
         }
         const updated = databases.updateReplica(db.id, rep.server_id, patch);
         if (patch.restore_mode !== undefined) {
-            events.add('info', 'restore', `Shipping settings of ${db.name} on ${rep.server_name} changed`, { databaseId: db.id, serverId: rep.server_id, data: { restore_mode: patch.restore_mode } });
+            events.add('info', 'restore', `Shipping settings of ${db.name} on ${rep.server_name} changed`, {
+                databaseId: db.id,
+                serverId: rep.server_id,
+                data: { restore_mode: patch.restore_mode },
+                actor: actorOf(ctx),
+            });
         }
         if (delay !== before) {
-            const refs = { databaseId: db.id, serverId: rep.server_id, data: { restore_delay_minutes: delay, before } };
+            const refs = { databaseId: db.id, serverId: rep.server_id, data: { restore_delay_minutes: delay, before }, actor: actorOf(ctx) };
             if (before === 0) events.add('warn', 'restore', `${rep.server_name} is now kept ${delayText(delay)} behind the primary of ${db.name} (restore delay). It can no longer be failed over to.`, refs);
             else if (delay === 0) events.add('info', 'restore', `${rep.server_name} is no longer kept behind for ${db.name}: it catches up now, and can be failed over to again.`, refs);
             else events.add('info', 'restore', `The restore delay of ${db.name} on ${rep.server_name} is now ${delayText(delay)} (was ${delayText(before)}).`, refs);
@@ -135,6 +141,7 @@ export function replicaRoutes(router) {
             databaseId: db.id,
             serverId: rep.server_id,
             data: { until: updated.restores_paused_until },
+            actor: actorOf(ctx),
         });
         changed(db, rep.server_id);
         return updated;
@@ -146,7 +153,7 @@ export function replicaRoutes(router) {
         if (!isPaused(rep)) throw new HttpError(409, `Restores of ${db.name} on ${rep.server_name} are not paused`);
         // A past time: catching up, without lag alerts until it is back where its delay says.
         const updated = databases.updateReplica(db.id, rep.server_id, { restores_paused_until: nowIso() });
-        events.add('info', 'restore', `Restores of ${db.name} on ${rep.server_name} resume`, { databaseId: db.id, serverId: rep.server_id });
+        events.add('info', 'restore', `Restores of ${db.name} on ${rep.server_name} resume`, { databaseId: db.id, serverId: rep.server_id, actor: actorOf(ctx) });
         changed(db, rep.server_id);
         nudge(db.id, rep.server_id, { force: true });
         return updated;
@@ -167,6 +174,7 @@ export function replicaRoutes(router) {
             databaseId: db.id,
             serverId: rep.server_id,
             data: { previous: rep.chain_state, reason: rep.chain_reason },
+            actor: actorOf(ctx),
         });
         changed(db, rep.server_id);
         nudge(db.id, rep.server_id, { force: true });
@@ -214,6 +222,8 @@ export function replicaRoutes(router) {
         events.add('warn', 'restore', `${rep.server_name} is no longer a ${rep.role} of ${db.name}. ${outcome}`, {
             databaseId: db.id,
             serverId: rep.server_id,
+            actor: actorOf(ctx),
+            errorLog: [rep.server_id, databases.primaryOf(db.id)?.server_id],
         });
         changed(db, rep.server_id);
         publish('database.changed', { databaseId: db.id });

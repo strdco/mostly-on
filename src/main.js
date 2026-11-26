@@ -12,6 +12,7 @@ import { log, setLogLevel } from './log.js';
 import { openDb, closeDb, CatalogVersionError } from './store/db.js';
 import * as sessions from './store/repos/sessions.js';
 import * as events from './store/repos/events.js';
+import * as users from './store/repos/users.js';
 import { initPools, closeAll as closePools } from './sql/pool.js';
 import * as health from './engine/health.js';
 import * as discovery from './engine/discovery.js';
@@ -31,6 +32,8 @@ import { miscRoutes } from './http/routes/misc.js';
 import { databaseRoutes } from './http/routes/databases.js';
 import { operationRoutes } from './http/routes/operations.js';
 import { alertRoutes } from './http/routes/alerts.js';
+import { userRoutes } from './http/routes/users.js';
+import * as P from './sql/privileged.js';
 import * as notifier from './notify/notifier.js';
 import { createPushover } from './notify/pushover.js';
 import * as alerts from './notify/alerts.js';
@@ -51,11 +54,22 @@ try {
     log.error(`Cannot open the catalog: ${err.message}`, { err });
     process.exit(err instanceof CatalogVersionError ? 3 : 2);
 }
+let firstUser;
+try {
+    firstUser = users.ensureFirstUser(cfg);
+} catch (err) {
+    console.error(`Configuration error: ${err.message}`);
+    closeDb();
+    process.exit(2);
+}
 sessions.purgeExpired();
 initPools(cfg.secretKeyBytes);
 setEngineConfig(cfg);
+events.setErrorLogWriter(P.writeErrorLogBestEffort);
 const { version } = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'));
 events.add('info', 'controller', `Controller ${version} starting`, { data: { version, node: process.version } });
+if (firstUser === 'created') events.add('info', 'user', `Created the first user, ${cfg.adminUser}, from ADMIN_USER and ADMIN_PASSWORD_HASH`);
+else if (cfg.adminPasswordHash) log.info('ADMIN_USER and ADMIN_PASSWORD_HASH are not used: users exist and are managed on the Users page.');
 
 await health.checkAll();
 await reconcileOnStartup();
@@ -79,6 +93,7 @@ const server = createHttpServer(cfg, (router) => {
     failoverRoutes(router, deps);
     operationRoutes(router, deps);
     alertRoutes(router, deps);
+    userRoutes(router, deps);
 });
 
 server.listen(cfg.port, cfg.host, () => {

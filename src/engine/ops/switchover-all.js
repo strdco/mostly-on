@@ -106,7 +106,7 @@ function childSteps(plan, fromId, toId) {
     }));
 }
 
-export async function startSwitchoverAll({ fromServerId, toServerId, confirm }) {
+export async function startSwitchoverAll({ fromServerId, toServerId, confirm, actor = null }) {
     const { from, to, items } = switchoverPlan(fromServerId, toServerId);
     if (confirm !== from.name) throw fail(400, `Type ${from.name} to confirm`);
     if (!items.length) throw fail(409, `${from.name} is not the primary of any managed database`);
@@ -122,24 +122,29 @@ export async function startSwitchoverAll({ fromServerId, toServerId, confirm }) 
         serverId: from.id,
         params: { fromServerId: from.id, toServerId: to.id, databases: plan, staying },
         stepDefs,
+        createdBy: actor,
     });
     const stays = staying.length ? `; ${staying.length} stay${staying.length === 1 ? 's' : ''} on ${from.name} (no working secondary on ${to.name})` : '';
-    events.add('warn', 'failover', `Failing over ${plan.length} database(s) from ${from.name} to ${to.name}${stays}`, { serverId: from.id, operationId: operation.id });
+    events.add('warn', 'failover', `Failing over ${plan.length} database(s) from ${from.name} to ${to.name}${stays}`, {
+        serverId: from.id,
+        operationId: operation.id,
+        errorLog: [from.id, to.id],
+    });
     return { operation, done: execute(operation.id, stepDefs, from, to) };
 }
 
-export async function resumeSwitchoverAll(op) {
+export async function resumeSwitchoverAll(op, { actor = null } = {}) {
     const from = serversRepo.get(op.params.fromServerId);
     const to = serversRepo.get(op.params.toServerId);
     if (!from || !to) throw fail(409, 'One of the servers no longer exists');
     const stepDefs = childSteps(op.params.databases, from.id, to.id);
-    events.add('warn', 'failover', `Resuming switch-over #${op.id} from ${from.name} to ${to.name}`, { serverId: from.id, operationId: op.id });
+    events.add('warn', 'failover', `Resuming switch-over #${op.id} from ${from.name} to ${to.name}`, { serverId: from.id, operationId: op.id, actor });
     return { operation: op, done: execute(op.id, stepDefs, from, to) };
 }
 
 function execute(opId, stepDefs, from, to) {
     return runOperation(opId, stepDefs).then((op) => {
-        if (op.status === 'succeeded') events.add('info', 'failover', `Switch-over from ${from.name} to ${to.name} completed`, { serverId: to.id, operationId: op.id });
+        if (op.status === 'succeeded') events.add('info', 'failover', `Switch-over from ${from.name} to ${to.name} completed`, { serverId: to.id, operationId: op.id, errorLog: [from.id, to.id] });
         publish('database.changed', {});
         return op;
     });

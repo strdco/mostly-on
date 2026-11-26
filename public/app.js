@@ -1,6 +1,6 @@
 // Dashboard shell: auth state, hash router, live updates over SSE.
 import { get, post, setCsrf } from './api.js';
-import { clear, toast } from './dom.js';
+import { h, clear, toast, menuButton } from './dom.js';
 import { loginView } from './views/login.js';
 import { serversView, serverDetailView } from './views/servers.js';
 import { eventsView } from './views/events.js';
@@ -9,12 +9,15 @@ import { databaseView } from './views/database.js';
 import { operationsView } from './views/operations.js';
 import { alertsView } from './views/alerts.js';
 import { settingsView } from './views/settings.js';
+import { usersView } from './views/users.js';
+import { changePasswordDialog, choosePasswordView } from './views/account.js';
 
 const app = document.getElementById('app');
 const topbar = document.getElementById('topbar');
 const liveIndicator = document.getElementById('live-indicator');
 
-const state = { user: null, stream: null, current: null };
+// mustChangePassword: someone else chose this user's password; nothing else is shown until they pick their own.
+const state = { user: null, mustChangePassword: false, stream: null, current: null };
 
 // route table: [regex, view(params) => {render(el), onEvent?(evt)}]
 const routes = [
@@ -26,6 +29,7 @@ const routes = [
     [/^\/operations$/, () => operationsView()],
     [/^\/alerts$/, () => alertsView()],
     [/^\/settings$/, () => settingsView()],
+    [/^\/users$/, () => usersView({ currentUser: () => state.user })],
 ];
 
 // --- navigation: inline when the whole row fits, a popover menu when not ----
@@ -80,6 +84,13 @@ async function render() {
     if (!state.user) {
         topbar.hidden = true;
         state.current = loginView({ onLogin });
+        await state.current.render(clear(app));
+        announcePage(false);
+        return;
+    }
+    if (state.mustChangePassword) {
+        topbar.hidden = true;
+        state.current = choosePasswordView({ username: state.user, onDone: onLogin, onSignOut: signOut });
         await state.current.render(clear(app));
         announcePage(false);
         return;
@@ -216,7 +227,7 @@ function connectStream() {
         }
         state.current?.onEvent?.(evt);
     };
-    for (const type of ['event', 'server.health', 'database.changed', 'replica.changed', 'backup.finished', 'restore.finished', 'operation.updated', 'alert.changed', 'backup.failed', 'discovery.changed', 'foreign.detected']) {
+    for (const type of ['event', 'server.health', 'database.changed', 'replica.changed', 'backup.finished', 'restore.finished', 'operation.updated', 'alert.changed', 'backup.failed', 'discovery.changed', 'foreign.detected', 'users.changed']) {
         es.addEventListener(type, dispatch);
     }
 }
@@ -230,28 +241,49 @@ function disconnectStream() {
     live.status = null; // signed out: the top bar is hidden, and the next sign-in starts at Connecting
 }
 
+// The account menu in the top bar: who is signed in, Change password, Sign out.
+const account = document.getElementById('account');
+function renderAccount() {
+    const label = [h('span.visually-hidden', 'Signed in as '), state.user];
+    account.replaceChildren(
+        ...menuButton(
+            label,
+            [
+                { label: 'Change password', onSelect: () => changePasswordDialog(state.user) },
+                { label: 'Sign out', onSelect: signOut },
+            ],
+            { className: '.link' },
+        ),
+    );
+}
+
 function onLogin(me) {
+    const wasUser = state.user;
     state.user = me.user;
+    state.mustChangePassword = !!me.mustChangePassword;
     setCsrf(me.csrfToken);
-    connectStream();
+    if (state.user !== wasUser) renderAccount();
+    if (!state.mustChangePassword) connectStream();
     render();
 }
 
-document.getElementById('logout').addEventListener('click', async () => {
+async function signOut() {
     try {
         await post('/api/auth/logout');
     } catch {
         /* session may already be gone */
     }
     state.user = null;
+    state.mustChangePassword = false;
     setCsrf(null);
     disconnectStream();
     render();
-});
+}
 
 window.addEventListener('auth-required', () => {
     if (!state.user) return;
     state.user = null;
+    state.mustChangePassword = false;
     disconnectStream();
     toast('Your session has ended. Please sign in again.');
     render();

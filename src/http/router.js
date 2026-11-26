@@ -17,7 +17,8 @@ export class Router {
      * @param {string} method
      * @param {string} pattern e.g. '/api/servers/:id'
      * @param {(ctx:object)=>any} handler
-     * @param {{auth?:boolean, csrf?:boolean}} [opts] both default to true
+     * @param {{auth?:boolean, csrf?:boolean, beforePasswordChange?:boolean}} [opts] auth and csrf default to true;
+     *   beforePasswordChange: allowed for a user who must change their password first (default false)
      */
     add(method, pattern, handler, opts = {}) {
         const keys = [];
@@ -29,7 +30,7 @@ export class Router {
                 }) +
                 '/?$',
         );
-        this.routes.push({ method, re, keys, handler, auth: opts.auth !== false, csrf: opts.csrf !== false });
+        this.routes.push({ method, re, keys, handler, auth: opts.auth !== false, csrf: opts.csrf !== false, beforePasswordChange: opts.beforePasswordChange === true });
         return this;
     }
 
@@ -71,4 +72,9 @@ export function idParam(v, name = 'id') {
     const n = Number(v);
     if (!Number.isInteger(n) || n < 1) throw new HttpError(400, `Invalid ${name}`);
     return n;
+}
+
+/** The user behind a request, for the audit trail (null when not logged in). */
+export function actorOf(ctx) {
+    return ctx.session?.username ?? null;
 }

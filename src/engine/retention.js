@@ -130,7 +130,8 @@ async function purgeMsdbHistory() {
     }
 }
 
-export async function runAll({ dryRun = false } = {}) {
+/** actor: the user who started this run by hand (null for the regular runs). */
+export async function runAll({ dryRun = false, actor = null } = {}) {
     const results = [];
     const dropped = new Set(databases.listDropped().map((d) => d.id));
     for (const db of [...databases.list(), ...databases.listDropped()]) {
@@ -140,6 +141,7 @@ export async function runAll({ dryRun = false } = {}) {
             events.add('info', 'retention', `Retention removed ${r.deleted.length} backup file(s) of ${databases.label(db)}`, {
                 databaseId: db.id,
                 data: { files: r.deleted.map((d) => d.rel_path) },
+                actor,
             });
             publish('database.changed', { databaseId: db.id });
             if (dropped.has(db.id) && !backups.present(db.id).length) {

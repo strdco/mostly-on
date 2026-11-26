@@ -56,10 +56,13 @@ async function shipTo(secondary) {
     });
 }
 
-async function failover(target, body) {
-    const { operation } = await api.post(`/api/databases/${dbId}/failover`, { server_id: ids[target], ...body });
-    return succeeded(api.waitOp(operation.id));
+async function failover(target, body, as = api) {
+    const { operation } = await as.post(`/api/databases/${dbId}/failover`, { server_id: ids[target], ...body });
+    return succeeded(as.waitOp(operation.id));
 }
+
+/** The Mostly-On lines in a server's current error log. */
+const errorLogLines = async (server) => (await q(server, "EXEC sys.xp_readerrorlog 0, 1, N'Mostly-On:';")).map((r) => r.Text);
 
 before(async () => {
     secrets = await startStack();
@@ -182,10 +185,25 @@ test('2. a shipped row is on sql2 after a failover with a tail-log backup', asyn
     assert.ok(events.some((e) => /is now owned by sa: app_owner/.test(e.message)), 'the fallback is reported');
 });
 
-test('3. fail back to sql1', async () => {
+test('3. fail back to sql1, as another user: the audit trail and both error logs name them', async () => {
+    await api.post('/api/users', { username: 'alice', password: 'alice-first-1' });
+    const alice = new Api();
+    assert.equal((await alice.login('alice-first-1', 'alice')).mustChangePassword, true);
+    await assert.rejects(alice.post(`/api/databases/${dbId}/backups`, { type: 'LOG' }), /403/, 'nothing before she chooses her own password');
+    await alice.post('/api/auth/password', { current: 'alice-first-1', password: 'alice-own-pass' });
+
     await insertRow('sql2', 'written on sql2');
     await shipTo('sql1'); // backups on sql2 (owned by the stand-in sa) must not replace the remembered owner
-    await failover('sql1', { tail_log: true });
+    const op = await failover('sql1', { tail_log: true }, alice);
+    assert.equal(op.created_by, 'alice');
+    const opEvents = await api.get(`/api/events?operation_id=${op.id}&limit=50`);
+    assert.ok(opEvents.length && opEvents.every((e) => e.actor === 'alice'), 'every event of her failover names her');
+    for (const server of ['sql1', 'sql2']) {
+        await waitFor(`the failover in the error log of ${server}`, async () => {
+            const lines = await errorLogLines(server);
+            return lines.some((l) => l.includes(`(by alice, operation #${op.id})`) && /Failover of .* started/.test(l)) && lines.some((l) => /Failover of .* completed/.test(l));
+        }, { timeout: 30_000 });
+    }
     assert.equal(await primaryName(), 'sql1');
     assert.equal(await dbOwner('sql1'), 'app_owner', 'failing back restores the real owner (same SID on sql1)');
     assert.equal(await rowCount('sql1', 'written on sql2'), 1);

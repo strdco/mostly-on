@@ -32,20 +32,23 @@ export function canResolve(op) {
     return CLOSABLE.includes(op.status) && op.type !== 'backup';
 }
 
-/** Re-runs the operation from its first unfinished step (each step checks before it runs). */
-export async function resumeOperation(id) {
+/**
+ * Re-runs the operation from its first unfinished step (each step checks before it runs).
+ * The operation keeps the user who started it; actor is who resumed it.
+ */
+export async function resumeOperation(id, { actor = null } = {}) {
     const op = opsRepo.get(id);
     if (!op) throw fail(404, 'Operation not found');
     if (!canResume(op)) throw fail(409, `Operation #${id} (${op.type}, ${op.status}) cannot be resumed`);
     if (op.parent_id && ['running', 'queued'].includes(opsRepo.get(op.parent_id)?.status)) {
         throw fail(409, `Operation #${id} is part of the running operation #${op.parent_id}`);
     }
-    const { operation } = await RESUMERS[op.type](op);
+    const { operation } = await RESUMERS[op.type](op, { actor });
     return operation;
 }
 
 /** The user has dealt with a failed or interrupted operation by hand. */
-export function resolveOperation(id, note = '') {
+export function resolveOperation(id, note = '', { actor = null } = {}) {
     const op = opsRepo.get(id);
     if (!op) throw fail(404, 'Operation not found');
     if (!canResolve(op)) throw fail(409, `Operation #${id} (${op.type}, ${op.status}) cannot be marked resolved`);
@@ -54,6 +57,8 @@ export function resolveOperation(id, note = '') {
         databaseId: op.database_id,
         serverId: op.server_id,
         operationId: id,
+        actor,
+        errorLog: [op.server_id, op.params?.oldPrimaryServerId, op.params?.fromServerId],
     });
     publish('operation.updated', { id, type: op.type, status: 'resolved', databaseId: op.database_id, steps: saved.steps });
     return saved;

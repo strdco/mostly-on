@@ -60,13 +60,12 @@ export function loadConfig({ requireSecrets = true } = {}) {
     if (!/^[A-Za-z0-9_.@-]{1,64}$/.test(cfg.adminUser)) {
         throw new Error('ADMIN_USER may only contain letters, digits and _ . @ -');
     }
+    // ADMIN_USER and ADMIN_PASSWORD_HASH only create the first user; whether
+    // they are needed is known once the catalog is open (users.ensureFirstUser).
+    if (cfg.adminPasswordHash && !cfg.adminPasswordHash.startsWith('scrypt:')) {
+        throw new Error('ADMIN_PASSWORD_HASH has an unknown format. Generate one with: npm run hash-password');
+    }
     if (requireSecrets) {
-        if (!cfg.adminPasswordHash) {
-            throw new Error('ADMIN_PASSWORD_HASH is required. Generate one with: npm run hash-password');
-        }
-        if (!cfg.adminPasswordHash.startsWith('scrypt:')) {
-            throw new Error('ADMIN_PASSWORD_HASH has an unknown format. Generate one with: npm run hash-password');
-        }
         const key = Buffer.from(cfg.secretKey, 'base64');
         if (key.length !== 32) {
             throw new Error('SECRET_KEY must be 32 random bytes, base64-encoded. Generate one with: npm run gen-secret');

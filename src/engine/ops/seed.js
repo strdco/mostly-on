@@ -113,7 +113,7 @@ export async function seedPreflight(databaseId, targetServerId, { reseed = false
  */
 export async function startSeed(
     databaseId,
-    { serverId, source = 'new_full', restoreMode = 'norecovery', overwrite = false, confirm = null, reseed = false, safetyBackup = false },
+    { serverId, source = 'new_full', restoreMode = 'norecovery', overwrite = false, confirm = null, reseed = false, safetyBackup = false, actor = null },
 ) {
     if (!SOURCES.includes(source)) throw fail(400, `source must be one of ${SOURCES.join(', ')}`);
     if (!RESTORE_MODES.includes(restoreMode)) throw fail(400, `restore_mode must be one of ${RESTORE_MODES.join(', ')}`);
@@ -152,12 +152,12 @@ export async function startSeed(
         };
         databases.addSecondary({ databaseId: db.id, serverId: target.id, restoreMode });
         const stepDefs = seedSteps({ db, target, params });
-        const operation = createOperation({ type: reseed ? 'reseed' : 'seed', databaseId: db.id, serverId: target.id, params, stepDefs });
+        const operation = createOperation({ type: reseed ? 'reseed' : 'seed', databaseId: db.id, serverId: target.id, params, stepDefs, createdBy: actor });
         events.add(
             reseed ? 'warn' : 'info',
             'seed',
             `${reseed ? 'Reseeding' : 'Seeding'} ${db.name} on ${target.name} from ${source === 'new_full' ? 'a fresh FULL backup' : 'the latest FULL (+ DIFF)'}${params.overwrite ? ', replacing the existing copy' : ''}${params.safetyBackup ? ' after a safety backup of it' : ''}`,
-            { databaseId: db.id, serverId: target.id, operationId: operation.id },
+            { databaseId: db.id, serverId: target.id, operationId: operation.id, errorLog: [target.id] },
         );
         publish('replica.changed', { databaseId: db.id, serverId: target.id });
         return { operation, done: execute(operation.id, stepDefs, release, db, target) };
@@ -168,7 +168,7 @@ export async function startSeed(
 }
 
 /** Re-runs a failed or interrupted seed from its first unfinished step. */
-export async function resumeSeed(op) {
+export async function resumeSeed(op, { actor = null } = {}) {
     const db = databases.get(op.database_id);
     const target = serversRepo.get(op.params.targetServerId);
     if (!db || db.status !== 'managed' || !target) throw fail(409, 'The database or the target server no longer exists');
@@ -179,7 +179,7 @@ export async function resumeSeed(op) {
     const release = tryAcquire(db.id, `restore:${target.id}`);
     if (!release) throw new BusyError(db.id, `seed on ${target.name}`, holders(db.id));
     databases.updateReplica(db.id, target.id, { chain_reason: null });
-    events.add('info', 'seed', `Resuming adding ${target.name} as a secondary of ${db.name} (operation #${op.id})`, { databaseId: db.id, serverId: target.id, operationId: op.id });
+    events.add('info', 'seed', `Resuming adding ${target.name} as a secondary of ${db.name} (operation #${op.id})`, { databaseId: db.id, serverId: target.id, operationId: op.id, actor });
     const stepDefs = seedSteps({ db, target, params: op.params });
     return { operation: op, done: execute(op.id, stepDefs, release, db, target) };
 }

@@ -27,9 +27,10 @@ function fail(status, message) {
  * starts its chain right away.
  *   trigger: 'manage' (a person) or 'auto' (automatic management)
  *   autoSeed: give it a secondary on its server's default target once that FULL is there
+ *   actor: the user who asked for it (NULL for automatic management)
  * Returns { db, operation, warning } (warning: the first FULL could not start).
  */
-export async function manageDatabase({ serverId, name, trigger = 'manage', autoSeed = false }) {
+export async function manageDatabase({ serverId, name, trigger = 'manage', autoSeed = false, actor = null }) {
     const server = serversRepo.get(serverId);
     if (!server) throw fail(404, 'Server not found');
     // A log-shipped name is one database on every server.
@@ -76,14 +77,14 @@ export async function manageDatabase({ serverId, name, trigger = 'manage', autoS
         backupOnly
             ? `Started backing up ${realName} on ${server.name}${how} (backups only: no secondaries, no restores)`
             : `Started managing ${realName} with primary ${server.name}${how}`,
-        { databaseId: db.id, serverId },
+        { databaseId: db.id, serverId, actor },
     );
     publish('database.changed', { databaseId: db.id });
 
     let operation = null;
     let warning = null;
     try {
-        const started = await startBackup(db.id, 'FULL', { trigger: 'manage' });
+        const started = await startBackup(db.id, 'FULL', { trigger: 'manage', actor });
         operation = started.operation;
     } catch (err) {
         warning = `Initial FULL backup could not start: ${err.message}`;

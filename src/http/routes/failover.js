@@ -1,6 +1,6 @@
 // Failovers, switch-over of a whole server, reseed, handling of diverged copies
 // and point-in-time restores.
-import { HttpError, idParam } from '../router.js';
+import { HttpError, idParam, actorOf } from '../router.js';
 import * as databases from '../../store/repos/databases.js';
 import * as serversRepo from '../../store/repos/servers.js';
 import * as events from '../../store/repos/events.js';
@@ -30,6 +30,7 @@ export function failoverRoutes(router) {
             serverId: idParam(b.server_id, 'server_id'),
             tailLog: b.tail_log !== false,
             acceptDataLoss: b.accept_data_loss === true,
+            actor: actorOf(ctx),
         });
         ctx.status = 202;
         return { operation: started.operation };
@@ -47,6 +48,7 @@ export function failoverRoutes(router) {
             targetServerId: b.mode === 'copy' ? idParam(b.target_server_id, 'target_server_id') : null,
             newName: b.new_name,
             confirm: b.confirm,
+            actor: actorOf(ctx),
         });
         ctx.status = 202;
         return { operation: started.operation };
@@ -62,6 +64,7 @@ export function failoverRoutes(router) {
             confirm: typeof b.confirm === 'string' ? b.confirm : null,
             reseed: true,
             safetyBackup: b.safety_backup !== false,
+            actor: actorOf(ctx),
         });
         ctx.status = 202;
         return { operation: started.operation };
@@ -79,7 +82,12 @@ export function failoverRoutes(router) {
         } catch (err) {
             throw new HttpError(502, `Could not take ${db.name} offline on ${rep.server_name}: ${sqlErrorText(err)}`);
         }
-        events.add('warn', 'failover', `The old, out-of-sync copy of ${db.name} on ${rep.server_name} was taken offline`, { databaseId: db.id, serverId: rep.server_id });
+        events.add('warn', 'failover', `The old, out-of-sync copy of ${db.name} on ${rep.server_name} was taken offline`, {
+            databaseId: db.id,
+            serverId: rep.server_id,
+            actor: actorOf(ctx),
+            errorLog: [rep.server_id],
+        });
         publish('replica.changed', { databaseId: db.id, serverId: rep.server_id });
         return { ok: true };
     });
@@ -97,6 +105,7 @@ export function failoverRoutes(router) {
             fromServerId: idParam(ctx.params.id),
             toServerId: idParam(ctx.body?.to_server_id, 'to_server_id'),
             confirm: ctx.body?.confirm,
+            actor: actorOf(ctx),
         });
         ctx.status = 202;
         return { operation: started.operation };

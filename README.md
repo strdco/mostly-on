@@ -38,7 +38,7 @@ The included `docker-compose.yml` starts three SQL Server Express containers (`s
 
 2. Fill in the four required values in `.env`:
 
-   - `ADMIN_PASSWORD_HASH`: the dashboard password, hashed. Generate it with Node (`npm run hash-password`) or without Node installed:
+   - `ADMIN_PASSWORD_HASH`: the password of the first dashboard user (`ADMIN_USER`, default `admin`), hashed. Once Mostly-On has started, you add everyone else on its **Users** page. Generate it with Node (`npm run hash-password`) or without Node installed:
 
      ```sh
      docker build -t mostly-on:dev .
@@ -199,9 +199,9 @@ Everything is set through environment variables (see `.env.example`). Everything
 
 | Variable | Required | Default | What it is |
 |---|---|---|---|
-| `ADMIN_PASSWORD_HASH` | yes | | Hash of the dashboard password (`npm run hash-password`). |
+| `ADMIN_PASSWORD_HASH` | first start | | Hash of the first user's password (`npm run hash-password`). Only used while there are no users yet; after that, users are managed on the **Users** page and it is ignored. |
 | `SECRET_KEY` | yes | | 32 random bytes, base64. Encrypts the SQL Server passwords in the catalog. If you lose it, you have to re-enter every server password. |
-| `ADMIN_USER` | | `admin` | Dashboard user name. |
+| `ADMIN_USER` | | `admin` | The first user's name (see `ADMIN_PASSWORD_HASH`). |
 | `PUBLIC_URL` | | `http://localhost:8080` | The address people use to reach the dashboard. Used for the cross-site request check and for links in notifications. |
 | `COOKIE_SECURE` | | on for `https://` | Mark the login cookie Secure. |
 | `SESSION_TTL_HOURS` | | `12` | How long a login lasts. |
@@ -363,11 +363,31 @@ The tail-log backup and the other backups from after the point-in-time stay on t
 
 ---
 
+## Users and the audit trail
+
+Give everyone who works with Mostly-On an account of their own (**Users** page), so you can tell who did what. Every user can do everything, including adding users, setting their passwords and disabling them. A user whose password someone else chose (a new account, or **Set password**) has to choose their own at the next sign-in. Accounts are disabled, never deleted, so their names keep meaning something in the log.
+
+The first user comes from `ADMIN_USER` and `ADMIN_PASSWORD_HASH` when Mostly-On starts with an empty catalog. If nobody can sign in any more (say the only other user left, and you forgot your password), set a new password from the command line. It enables the account again, and its user chooses their own password at the next sign-in:
+
+```sh
+docker compose exec controller npm run reset-password -- <user>   # without a user name: lists the users
+```
+
+**Who did what** is recorded in three places:
+
+- **Events page.** Every event has a **Who** column: a user, or *Mostly-On* for what it does by itself. Tick **Only what people did** for the audit trail: failovers, rollbacks, secondaries added and removed, settings and schedules changed, sign-ins, user changes, and so on, without the scheduled backups and log shipping. Events that belong to an operation (a failover completing, say) name the user who started it. The **Operations** page shows who started each one.
+- **The container's log** (stdout, JSON lines). Each event is one line, with an `actor` field when a user did it. Docker's log drivers, and tools such as Loki, Datadog, Splunk or Elastic, can collect it from there.
+- **The SQL Server error log** of the servers involved, for key actions only: failovers, switch-overs, rollbacks and copies to a point in time, adding or reinitializing a secondary, removing one, no longer managing a database, failed operations of these kinds, and operations marked resolved by hand. The lines start with `Mostly-On:` and say who did it, for example `Mostly-On: Failover of Sales from SQL1 to SQL2 started (with a tail-log backup: no data loss) (by alice, operation #42)`. On Windows they also land in the Application event log, where monitoring tools that watch it pick them up. This is a best-effort copy: a server that is down at that moment (the old primary in a forced failover, typically) doesn't get the line, and SQL Server recycles its error log at every restart (6 old files by default). The Events page is the complete record.
+
+To find the lines on a server: `EXEC sys.xp_readerrorlog 0, 1, N'Mostly-On';`
+
+---
+
 ## Upgrading
 
 Pull or build the new image and restart the container.
 
-**Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5, and the one that drops copies and brings read-only copies online is version 6). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
+**Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5, the one that drops copies and brings read-only copies online is version 6, and the one that writes key actions to the SQL Server error log is version 7). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
 
 The catalog in `/data` upgrades itself on start:
 

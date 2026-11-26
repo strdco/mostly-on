@@ -94,7 +94,7 @@ export function effectiveType(requested, state, db) {
  * created; `done` settles when the backup has finished (or failed).
  * @returns {Promise<{operation:object, type:string, done:Promise<{operation:object, file:object|null}>}>}
  */
-export async function startBackup(databaseId, requestedType, { trigger = 'manual', parentId = null, priority = false } = {}) {
+export async function startBackup(databaseId, requestedType, { trigger = 'manual', parentId = null, priority = false, actor = null } = {}) {
     if (!BACKUP_TYPES.includes(requestedType)) throw fail(400, `Unknown backup type ${requestedType}`);
     const db = databases.get(databaseId);
     if (!db || db.status !== 'managed') throw fail(404, 'Database is not managed');
@@ -140,6 +140,7 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
             params: { type, requestedType, trigger, reason },
             ctx: { relPath },
             stepDefs,
+            createdBy: actor,
         });
         if (reason) {
             events.add('info', 'backup', `Taking a FULL backup of ${databases.label(db)} instead of ${requestedType}: ${reason}`, { databaseId: db.id, serverId: server.id, operationId: operation.id });

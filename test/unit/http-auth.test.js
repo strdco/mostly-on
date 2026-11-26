@@ -1,5 +1,5 @@
 // Exercises the HTTP layer end to end (no SQL Server needed): login,
-// session cookie, CSRF and origin checks, auth guard.
+// session cookie, CSRF and origin checks, auth guard, user accounts.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -9,6 +9,9 @@ import { hashPassword } from '../../src/crypto.js';
 import { createHttpServer } from '../../src/http/server.js';
 import { authRoutes } from '../../src/http/routes/auth.js';
 import { miscRoutes } from '../../src/http/routes/misc.js';
+import { userRoutes } from '../../src/http/routes/users.js';
+import * as users from '../../src/store/repos/users.js';
+import * as events from '../../src/store/repos/events.js';
 import { setLogLevel } from '../../src/log.js';
 
 setLogLevel('error');
@@ -22,9 +25,12 @@ before(async () => {
     process.env.PUBLIC_URL = 'http://localhost:1';
     const cfg = loadConfig();
     openDb(':memory:');
+    assert.equal(users.ensureFirstUser(cfg), 'created');
+    assert.equal(users.ensureFirstUser(cfg), 'exists');
     server = createHttpServer(cfg, (r) => {
         authRoutes(r, { cfg });
         miscRoutes(r, { cfg });
+        userRoutes(r, { cfg });
     });
     await new Promise((res) => server.listen(0, '127.0.0.1', res));
     base = `http://127.0.0.1:${server.address().port}`;
@@ -35,11 +41,11 @@ after(() => {
     closeDb();
 });
 
-async function login(password = 'test-password') {
+async function login(password = 'test-password', username = 'admin') {
     const res = await fetch(`${base}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'admin', password }),
+        body: JSON.stringify({ username, password }),
     });
     const body = await res.json();
     const cookie = res.headers.get('set-cookie')?.split(';')[0];
@@ -100,4 +106,80 @@ test('static files and security headers', async () => {
     assert.equal(res.headers.get('x-frame-options'), 'DENY');
     assert.equal((await fetch(`${base}/../package.json`)).status, 404);
     assert.equal((await fetch(`${base}/%2e%2e/package.json`)).status, 404);
+});
+
+/** A logged-in client: call(method, path, body) with cookie and CSRF token. */
+async function as(username, password) {
+    const { res, body, cookie } = await login(password, username);
+    assert.equal(res.status, 200, `login as ${username}`);
+    const call = async (method, path, payload) => {
+        const r = await fetch(`${base}${path}`, {
+            method,
+            headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': body.csrfToken },
+            body: payload === undefined ? undefined : JSON.stringify(payload),
+        });
+        return { status: r.status, body: await r.json() };
+    };
+    return { call, me: body, cookie };
+}
+
+test('users: a new user must choose a password first, and actions carry their name', async () => {
+    const admin = await as('admin', 'test-password');
+    assert.equal(admin.me.mustChangePassword, false);
+    const created = await admin.call('POST', '/api/users', { username: 'alice', password: 'first-pass-1' });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.createdBy, 'admin');
+    assert.equal(created.body.mustChangePassword, true);
+    assert.equal((await admin.call('POST', '/api/users', { username: 'ALICE', password: 'first-pass-1' })).status, 409, 'names ignore case');
+    assert.equal((await admin.call('POST', '/api/users', { username: 'bob', password: '   ' })).status, 400, 'not blank');
+    assert.equal((await admin.call('POST', '/api/users', { username: 'bob', password: 'abc' })).status, 201, 'a short first password is fine');
+    const bob = await as('bob', 'abc');
+    assert.equal((await bob.call('POST', '/api/auth/password', { current: 'abc', password: 'short' })).status, 400, 'their own password needs 8 characters');
+
+    const alice = await as('alice', 'first-pass-1');
+    assert.equal(alice.me.mustChangePassword, true);
+    const blocked = await alice.call('PUT', '/api/settings', { 'alerts.reminder_hours': 3 });
+    assert.equal(blocked.status, 403);
+    assert.match(blocked.body.error, /Change your password/);
+    assert.equal((await alice.call('POST', '/api/auth/password', { current: 'wrong', password: 'alice-own-pass' })).status, 400);
+    const changed = await alice.call('POST', '/api/auth/password', { current: 'first-pass-1', password: 'alice-own-pass' });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.mustChangePassword, false);
+    assert.equal((await alice.call('PUT', '/api/settings', { 'alerts.reminder_hours': 3 })).status, 200, 'same session works after the change');
+
+    const audit = events.list({ peopleOnly: true });
+    assert.ok(audit.some((e) => e.actor === 'alice' && e.category === 'settings'));
+    assert.ok(audit.some((e) => e.actor === 'admin' && /User alice created/.test(e.message)));
+    assert.ok(audit.every((e) => e.actor), 'peopleOnly leaves out what Mostly-On did by itself');
+});
+
+test('users: disabling ends sessions and blocks login; the last enabled user and yourself stay', async () => {
+    const admin = await as('admin', 'test-password');
+    const carol = (await admin.call('POST', '/api/users', { username: 'carol', password: 'carol-pass-1' })).body;
+    const c = await as('carol', 'carol-pass-1');
+    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: c.cookie } })).status, 200);
+    assert.equal((await admin.call('POST', `/api/users/${carol.id}/disable`)).status, 200);
+    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: c.cookie } })).status, 401, 'her session ended');
+    const denied = await login('carol-pass-1', 'carol');
+    assert.equal(denied.res.status, 401);
+    assert.equal(denied.body.error, (await login('whatever', 'nobody')).body.error, 'same answer as an unknown user');
+
+    const self = users.getByName('admin');
+    assert.equal((await admin.call('POST', `/api/users/${self.id}/disable`)).status, 409);
+    assert.equal((await admin.call('POST', `/api/users/${carol.id}/enable`)).status, 200);
+    assert.equal((await login('carol-pass-1', 'carol')).res.status, 200);
+});
+
+test('users: a reset password logs the user out and must be changed', async () => {
+    const admin = await as('admin', 'test-password');
+    const dave = (await admin.call('POST', '/api/users', { username: 'dave', password: 'dave-pass-1' })).body;
+    const d = await as('dave', 'dave-pass-1');
+    await d.call('POST', '/api/auth/password', { current: 'dave-pass-1', password: 'dave-own-pass' });
+    assert.equal((await admin.call('POST', `/api/users/${dave.id}/password`, { password: '' })).status, 400);
+    const reset = await admin.call('POST', `/api/users/${dave.id}/password`, { password: 'dave-temp-pass' });
+    assert.equal(reset.status, 200);
+    assert.equal(reset.body.mustChangePassword, true);
+    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: d.cookie } })).status, 401);
+    const again = await as('dave', 'dave-temp-pass');
+    assert.equal(again.me.mustChangePassword, true);
 });

@@ -89,6 +89,8 @@ export function createHttpServer(cfg, registerRoutes) {
             if (!isSafeMethod(req.method)) {
                 if (!originAllowed(cfg, req)) throw new HttpError(403, 'Cross-origin request rejected');
                 if (route.csrf && !csrfValid(session, req)) throw new HttpError(403, 'Missing or invalid CSRF token');
+                // Someone else chose this user's password: nothing changes until they pick their own.
+                if (session?.mustChangePassword && !route.beforePasswordChange) throw new HttpError(403, 'Change your password first.');
             }
 
             const body = isSafeMethod(req.method) ? {} : await readBody(req);

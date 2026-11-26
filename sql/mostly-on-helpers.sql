@@ -1,5 +1,5 @@
 /*
-    Mostly-On helper procedures, version 6.
+    Mostly-On helper procedures, version 7.
 
     Mostly-On never needs a sysadmin login. Everything that needs high privileges
     (BACKUP, RESTORE, ALTER DATABASE, KILL) happens inside the procedures in the
@@ -99,7 +99,7 @@ CREATE FUNCTION mostly_on.helper_version()
 RETURNS int
 AS
 BEGIN;
-    RETURN 6;
+    RETURN 7;
 END;
 GO
 
@@ -508,6 +508,18 @@ SET NOCOUNT ON;
 IF (@keep_days IS NULL OR @keep_days<1) THROW 50040, N'Keep at least one day of backup history.', 1;
 DECLARE @oldest datetime2(0)=DATEADD(day, -@keep_days, GETDATE());
 EXEC msdb.dbo.sp_delete_backuphistory @oldest_date=@oldest;
+GO
+
+-- A line in the error log (and on Windows the Application event log) for key
+-- actions, such as a failover, with the Mostly-On user who started it. WITH LOG
+-- needs ALTER TRACE, which only RAISERROR (not THROW) can use for this. The
+-- message is an argument, not the format string, so a % in it is harmless.
+CREATE PROCEDURE mostly_on.write_errorlog
+    @message            nvarchar(1800)
+AS
+SET NOCOUNT ON;
+IF (@message IS NULL) RETURN;
+RAISERROR(N'Mostly-On: %s', 10, 1, @message) WITH LOG;
 GO
 
 -- --- signing ------------------------------------------------------------------

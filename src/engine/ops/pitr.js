@@ -518,7 +518,7 @@ async function rollbackSecondaries(ctx, db, at) {
  *   mode 'copy':     { at, targetServerId, newName }
  *   mode 'rollback': { at, confirm } (confirm must be the database name)
  */
-export async function startPointInTime(databaseId, { mode, at, targetServerId, newName, confirm }) {
+export async function startPointInTime(databaseId, { mode, at, targetServerId, newName, confirm, actor = null }) {
     if (!MODES.includes(mode)) throw fail(400, `mode must be one of ${MODES.join(', ')}`);
     const range = restoreRange(databaseId);
     const moment = checkMoment(range, at, { mode });
@@ -538,8 +538,13 @@ export async function startPointInTime(databaseId, { mode, at, targetServerId, n
         if (existing) throw fail(409, `A database named ${name} already exists on ${target.name}`);
         const params = { mode, at: moment, targetServerId: target.id, newName: name };
         const stepDefs = copySteps({ db, target, params });
-        const operation = createOperation({ type: 'pitr_copy', databaseId: db.id, serverId: target.id, params, stepDefs });
-        events.add('info', 'restore', `Restoring a copy of ${db.name} as it was at ${moment}: ${name} on ${target.name}`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
+        const operation = createOperation({ type: 'pitr_copy', databaseId: db.id, serverId: target.id, params, stepDefs, createdBy: actor });
+        events.add('info', 'restore', `Restoring a copy of ${db.name} as it was at ${moment}: ${name} on ${target.name}`, {
+            databaseId: db.id,
+            serverId: target.id,
+            operationId: operation.id,
+            errorLog: [target.id],
+        });
         return { operation, done: executeCopy(operation.id, stepDefs, db, params, target) };
     }
 
@@ -547,8 +552,13 @@ export async function startPointInTime(databaseId, { mode, at, targetServerId, n
     const params = { mode, at: moment, primaryServerId: primaryServer.id };
     const holder = lockHolder(db);
     const stepDefs = rollbackSteps({ db, primaryServer, params, holder });
-    const operation = createOperation({ type: 'pitr_rollback', databaseId: db.id, serverId: primaryServer.id, params, stepDefs });
-    events.add('warn', 'restore', `Rolling ${db.name} back to ${moment} on ${primaryServer.name} and its secondaries`, { databaseId: db.id, serverId: primaryServer.id, operationId: operation.id });
+    const operation = createOperation({ type: 'pitr_rollback', databaseId: db.id, serverId: primaryServer.id, params, stepDefs, createdBy: actor });
+    events.add('warn', 'restore', `Rolling ${db.name} back to ${moment} on ${primaryServer.name} and its secondaries`, {
+        databaseId: db.id,
+        serverId: primaryServer.id,
+        operationId: operation.id,
+        errorLog: [primaryServer.id],
+    });
     return { operation, done: executeRollback(operation.id, stepDefs, holder, db, params) };
 }
 
@@ -569,7 +579,7 @@ function executeRollback(opId, stepDefs, holder, db, params) {
     return runOperation(opId, stepDefs)
         .then((op) => {
             if (op.status === 'succeeded') {
-                events.add('info', 'restore', `Rollback of ${db.name} to ${params.at} completed`, { databaseId: db.id, operationId: op.id });
+                events.add('info', 'restore', `Rollback of ${db.name} to ${params.at} completed`, { databaseId: db.id, operationId: op.id, errorLog: [params.primaryServerId] });
             }
             publish('database.changed', { databaseId: db.id });
             return op;
@@ -581,14 +591,14 @@ function executeRollback(opId, stepDefs, holder, db, params) {
 }
 
 /** Re-runs a failed or interrupted point-in-time restore from its first unfinished step. */
-export async function resumePointInTime(op) {
+export async function resumePointInTime(op, { actor = null } = {}) {
     const db = databases.get(op.database_id);
     if (!db || db.status !== 'managed') throw fail(409, 'The database is no longer managed');
     if (op.type === 'pitr_copy') {
         const target = serversRepo.get(op.params.targetServerId);
         if (!target) throw fail(409, 'The server no longer exists');
         const stepDefs = copySteps({ db, target, params: op.params });
-        events.add('info', 'restore', `Resuming the copy of ${db.name} (#${op.id})`, { databaseId: db.id, serverId: target.id, operationId: op.id });
+        events.add('info', 'restore', `Resuming the copy of ${db.name} (#${op.id})`, { databaseId: db.id, serverId: target.id, operationId: op.id, actor });
         return { operation: op, done: executeCopy(op.id, stepDefs, db, op.params, target) };
     }
     const primaryServer = serversRepo.get(op.params.primaryServerId);
@@ -597,6 +607,6 @@ export async function resumePointInTime(op) {
     opsRepo.save(op.id, { steps: op.steps.map((s) => (s.name === 'lock' ? { ...s, status: 'pending', detail: undefined } : s)) });
     const holder = lockHolder(db);
     const stepDefs = rollbackSteps({ db, primaryServer, params: op.params, holder });
-    events.add('warn', 'restore', `Resuming the rollback of ${db.name} (#${op.id})`, { databaseId: db.id, serverId: primaryServer.id, operationId: op.id });
+    events.add('warn', 'restore', `Resuming the rollback of ${db.name} (#${op.id})`, { databaseId: db.id, serverId: primaryServer.id, operationId: op.id, actor });
     return { operation: op, done: executeRollback(op.id, stepDefs, holder, db, op.params) };
 }

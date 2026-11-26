@@ -12,6 +12,9 @@ import { publish } from '../bus.js';
 import { nowIso } from '../store/db.js';
 import { sqlErrorText } from '../sql/pool.js';
 
+/** Operation types whose failure is copied to the SQL Server error log (not backups). */
+const ERROR_LOG_TYPES = new Set(['seed', 'reseed', 'planned_failover', 'forced_failover', 'switchover_all', 'pitr_copy', 'pitr_rollback']);
+
 function emit(op) {
     publish('operation.updated', {
         id: op.id,
@@ -24,7 +27,7 @@ function emit(op) {
 }
 
 /** Creates the journal entry. Step definitions only need name/label here. */
-export function createOperation({ type, databaseId, serverId, parentId, params, stepDefs, ctx = {} }) {
+export function createOperation({ type, databaseId, serverId, parentId, params, stepDefs, ctx = {}, createdBy = null }) {
     const op = ops.create({
         type,
         databaseId,
@@ -32,6 +35,7 @@ export function createOperation({ type, databaseId, serverId, parentId, params, 
         parentId,
         params,
         ctx,
+        createdBy,
         status: 'running',
         steps: stepDefs.map((s) => ({ name: s.name, label: s.label || s.name, status: 'pending', ...(s.guidance ? { guidance: s.guidance } : {}) })),
     });
@@ -114,6 +118,7 @@ export async function runOperation(opId, stepDefs, { quiet = false } = {}) {
                     databaseId: op.database_id,
                     serverId: op.server_id,
                     operationId: op.id,
+                    errorLog: ERROR_LOG_TYPES.has(op.type) ? [op.server_id] : undefined,
                 });
             }
             return op;

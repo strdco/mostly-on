@@ -1,5 +1,6 @@
 import { h, clear, dataTable, badge, formatTime, formDialog, field, toast } from '../dom.js';
 import { get, post } from '../api.js';
+import { actorText } from './events.js';
 
 const STATUS_KIND = { succeeded: 'ok', running: '', queued: '', failed: 'err', interrupted: 'err', resolved: 'warn' };
 const STEP_KIND = { done: 'ok', skipped: 'ok', running: '', pending: '', failed: 'err', interrupted: 'err' };
@@ -88,6 +89,7 @@ export function operationsTable(rows, caption = 'Operations', limit = 0) {
                     ),
             },
             { label: 'Started', cell: (o) => formatTime(o.created_at) },
+            { label: 'Started by', cell: (o) => actorText(o.created_by) },
             { label: 'Finished', cell: (o) => formatTime(o.finished_at) },
             ...(rows.some((o) => o.resumable || o.resolvable) ? [{ label: 'Actions', cell: opActions }] : []),
         ],

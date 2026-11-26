@@ -311,7 +311,7 @@ export function deliveryStatus() {
     };
 }
 
-export async function sendTest() {
+export async function sendTest({ actor = null } = {}) {
     const { base } = links();
     const r = await notifier.sendAll({
         title: 'Mostly-On: test notification',
@@ -321,7 +321,7 @@ export async function sendTest() {
         urlTitle: 'Open Mostly-On',
     });
     delivery.lastSentAt = new Date().toISOString();
-    events.add('info', 'notify', `Test notification sent (${r.sent.join(', ')})`);
+    events.add('info', 'notify', `Test notification sent (${r.sent.join(', ')})`, { actor });
     return r;
 }
 

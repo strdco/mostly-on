@@ -142,11 +142,14 @@ export class Api {
         this.csrf = null;
     }
 
-    async login(password) {
-        const r = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password }) });
+    /** Returns the login answer ({ user, csrfToken, mustChangePassword }). */
+    async login(password, username = 'admin') {
+        const r = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
         if (!r.ok) throw new Error(`login failed: HTTP ${r.status} ${await r.text()}`);
         this.cookie = r.headers.get('set-cookie').split(';')[0];
-        this.csrf = (await r.json()).csrfToken;
+        const me = await r.json();
+        this.csrf = me.csrfToken;
+        return me;
     }
 
     async call(method, url, body) {

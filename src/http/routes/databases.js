@@ -1,4 +1,4 @@
-import { HttpError, idParam } from '../router.js';
+import { HttpError, idParam, actorOf } from '../router.js';
 import * as databases from '../../store/repos/databases.js';
 import * as backups from '../../store/repos/backups.js';
 import * as schedules from '../../store/repos/schedules.js';
@@ -103,7 +103,7 @@ export function databaseRoutes(router) {
         const serverId = idParam(ctx.body?.server_id, 'server_id');
         const name = ctx.body?.name;
         if (typeof name !== 'string' || !name || name.length > 128) throw new HttpError(400, 'name is required');
-        const { db, operation, warning } = await manageDatabase({ serverId, name });
+        const { db, operation, warning } = await manageDatabase({ serverId, name, actor: actorOf(ctx) });
         ctx.status = 201;
         return { database: summary(db), operation, warning };
     });
@@ -116,7 +116,11 @@ export function databaseRoutes(router) {
         if (holders(db.id).length) throw new HttpError(409, `${db.name} is busy (${holders(db.id).join(', ')})`);
         const primary = databases.primaryOf(db.id);
         databases.unmanage(db.id);
-        events.add('warn', 'database', `Stopped managing ${dbLabel(db)}. Backups and schedules for it have stopped; files on disk are kept.`, { databaseId: db.id });
+        events.add('warn', 'database', `Stopped managing ${dbLabel(db)}. Backups and schedules for it have stopped; files on disk are kept.`, {
+            databaseId: db.id,
+            actor: actorOf(ctx),
+            errorLog: [primary?.server_id],
+        });
         // List it as unmanaged right away rather than at the next health check.
         if (primary) syncFromHealth(primary.server_id);
         publish('database.changed', { databaseId: db.id });
@@ -127,7 +131,7 @@ export function databaseRoutes(router) {
         const db = mustGet(idParam(ctx.params.id));
         const type = ctx.body?.type;
         if (!BACKUP_TYPES.includes(type)) throw new HttpError(400, 'type must be FULL, DIFF or LOG');
-        const started = await startBackup(db.id, type, { trigger: 'manual' });
+        const started = await startBackup(db.id, type, { trigger: 'manual', actor: actorOf(ctx) });
         ctx.status = 202;
         return { operation: started.operation, type: started.type };
     });
@@ -141,7 +145,7 @@ export function databaseRoutes(router) {
         }
         const v = validateSchedule(ctx.body || {});
         const s = schedules.update(db.id, type, v);
-        events.add('info', 'schedule', `${type} schedule of ${dbLabel(db)} changed`, { databaseId: db.id, data: v });
+        events.add('info', 'schedule', `${type} schedule of ${dbLabel(db)} changed`, { databaseId: db.id, data: v, actor: actorOf(ctx) });
         publish('database.changed', { databaseId: db.id });
         return s;
     });
@@ -159,7 +163,7 @@ export function databaseRoutes(router) {
     router.post('/api/foreign-backups/:uuid/acknowledge', async (ctx) => {
         if (!foreign.acknowledge(String(ctx.params.uuid).toLowerCase())) throw new HttpError(404, 'Unknown or already acknowledged');
         evaluateSoon();
-        events.add('info', 'foreign-backup', `Backup taken outside Mostly-On acknowledged (backup set ${ctx.params.uuid})`);
+        events.add('info', 'foreign-backup', `Backup taken outside Mostly-On acknowledged (backup set ${ctx.params.uuid})`, { actor: actorOf(ctx) });
         return { ok: true };
     });
 
@@ -179,10 +183,10 @@ export function databaseRoutes(router) {
         const problem = checkRetention(effective);
         if (problem) throw new HttpError(400, problem);
         const updated = databases.setRetention(db.id, own);
-        events.add('info', 'retention', `Backup retention of ${dbLabel(db)}: FULL ${effective.full}, DIFF ${effective.diff}, LOG ${effective.log} days`, { databaseId: db.id, data: own });
+        events.add('info', 'retention', `Backup retention of ${dbLabel(db)}: FULL ${effective.full}, DIFF ${effective.diff}, LOG ${effective.log} days`, { databaseId: db.id, data: own, actor: actorOf(ctx) });
         publish('database.changed', { databaseId: db.id });
         return summary(updated);
     });
 
-    router.post('/api/retention/run', async (ctx) => retention.runAll({ dryRun: ctx.body?.dryRun !== false }));
+    router.post('/api/retention/run', async (ctx) => retention.runAll({ dryRun: ctx.body?.dryRun !== false, actor: actorOf(ctx) }));
 }

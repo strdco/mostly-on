@@ -1,5 +1,5 @@
 // Alerts and notification delivery.
-import { HttpError } from '../router.js';
+import { HttpError, actorOf } from '../router.js';
 import * as alertsRepo from '../../store/repos/alerts.js';
 import { deliveryStatus, sendTest } from '../../notify/alerts.js';
 
@@ -13,8 +13,8 @@ export function alertRoutes(router) {
 
     router.get('/api/notifications', async () => deliveryStatus());
 
-    router.post('/api/notifications/test', async () => {
-        const r = await sendTest();
+    router.post('/api/notifications/test', async (ctx) => {
+        const r = await sendTest({ actor: actorOf(ctx) });
         return { ok: true, sent: r.sent, errors: r.errors };
     });
 }

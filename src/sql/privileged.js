@@ -12,9 +12,10 @@ import { query, T } from './pool.js';
 import { acquireSlot } from './slots.js';
 import * as health from '../engine/health.js';
 import * as serversRepo from '../store/repos/servers.js';
+import { log } from '../log.js';
 
 /** The helper procedure version this controller needs (helper_version() in the script). */
-export const HELPER_VERSION = 6;
+export const HELPER_VERSION = 7;
 
 // The helpers that back up or restore, and so count against a server's limit.
 const WORK = new Set(['take_backup', 'restore_database', 'restore_log', 'recover']);
@@ -101,6 +102,25 @@ export function dropDatabase({ db }) {
 export const headerOnly = ({ path }) => call('header_only', { path: T.nvarchar(path, 400) });
 export const fileListOnly = ({ path }) => call('filelist_only', { path: T.nvarchar(path, 400) });
 export const purgeBackupHistory = ({ keepDays }) => call('purge_backup_history', { keep_days: T.int(keepDays) });
+
+const ERRORLOG_MAX = 1800;
+/** An informational line in the SQL Server error log (and, on Windows, the Application event log). */
+export const writeErrorLog = ({ message }) => call('write_errorlog', { message: T.nvarchar(String(message).slice(0, ERRORLOG_MAX), ERRORLOG_MAX) });
+
+/**
+ * Copies an audit event to a server's error log (events.setErrorLogWriter).
+ * Best effort: a server that is unreachable, disabled or not set up is
+ * skipped, and a failure is only logged at debug level. Never throws.
+ */
+export async function writeErrorLogBestEffort(serverId, message) {
+    try {
+        const s = serversRepo.get(serverId);
+        if (!s || s.removed_at || !s.enabled || !health.getHealth(serverId)?.ok) return;
+        await run(serverId, writeErrorLog({ message }), { timeoutMs: 15_000 });
+    } catch (err) {
+        log.debug('Could not copy an event to the SQL Server error log', { serverId, err });
+    }
+}
 
 /** Throws a plain explanation if the last health check found the helpers missing or out of date. */
 export function assertReady(serverId) {

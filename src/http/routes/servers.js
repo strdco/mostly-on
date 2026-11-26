@@ -1,4 +1,4 @@
-import { HttpError, idParam } from '../router.js';
+import { HttpError, idParam, actorOf } from '../router.js';
 import * as serversRepo from '../../store/repos/servers.js';
 import * as events from '../../store/repos/events.js';
 import * as databases from '../../store/repos/databases.js';
@@ -107,7 +107,7 @@ export function serverRoutes(router, { cfg }) {
         if (existing && !existing.removed_at) throw new HttpError(409, `A server named ${v.name} already exists`);
         // A removed server registered again gets its old record back (and its history), with the new details.
         const s = existing ? serversRepo.revive(existing.id, v, cfg.secretKeyBytes) : serversRepo.create(v, cfg.secretKeyBytes);
-        events.add('info', 'server', `Server ${s.name} ${existing ? 'registered again' : 'registered'} (${s.host}:${s.port})`, { serverId: s.id });
+        events.add('info', 'server', `Server ${s.name} ${existing ? 'registered again' : 'registered'} (${s.host}:${s.port})`, { serverId: s.id, actor: actorOf(ctx) });
         await health.checkServer(s.id);
         evaluateSoon();
         ctx.status = 201;
@@ -131,7 +131,7 @@ export function serverRoutes(router, { cfg }) {
         // New connection details: reconnect. Anything else (a name, folders, the limit) keeps the
         // connections, so running backups and restores are not cut off.
         if (reconnect) await resetPool(id);
-        events.add('info', 'server', `Server ${before.name} updated`, { serverId: id, data: { fields: Object.keys(v).filter((k) => k !== 'password') } });
+        events.add('info', 'server', `Server ${before.name} updated`, { serverId: id, data: { fields: Object.keys(v).filter((k) => k !== 'password') }, actor: actorOf(ctx) });
         await health.checkServer(id);
         evaluateSoon(); // e.g. a setup alert, now that the check has the new settings
         return withHealth(serversRepo.get(id));
@@ -147,7 +147,7 @@ export function serverRoutes(router, { cfg }) {
         await resetPool(id);
         health.forget(id);
         evaluateSoon(); // its alerts (unreachable, setup) no longer apply
-        events.add('info', 'server', `Server ${s.name} removed${how === 'removed' ? '; its backup files and history are kept' : ''}`, { serverId: how === 'removed' ? id : null });
+        events.add('info', 'server', `Server ${s.name} removed${how === 'removed' ? '; its backup files and history are kept' : ''}`, { serverId: how === 'removed' ? id : null, actor: actorOf(ctx) });
         return { ok: true };
     });
 
@@ -183,13 +183,13 @@ export function serverRoutes(router, { cfg }) {
             'info',
             'server',
             on ? `${s.name} manages its databases automatically${target ? `; new ones are log shipped to ${target.name}` : ''}` : `${s.name} no longer manages its databases automatically`,
-            { serverId: s.id },
+            { serverId: s.id, actor: actorOf(ctx) },
         );
         let paired = null;
         if (target && !target.ship_to_server_id) {
             serversRepo.setAutoManage(target.id, { autoManage: true, shipTo: s.id });
             paired = target.name;
-            events.add('info', 'server', `${target.name} manages its databases automatically; new ones are log shipped to ${s.name} (paired with ${s.name})`, { serverId: target.id });
+            events.add('info', 'server', `${target.name} manages its databases automatically; new ones are log shipped to ${s.name} (paired with ${s.name})`, { serverId: target.id, actor: actorOf(ctx) });
         }
         for (const id of [s.id, target?.id].filter(Boolean)) runPass(id).catch((err) => log.error('Automatic management failed', { err }));
         return { server: withHealth(serversRepo.get(s.id)), paired };

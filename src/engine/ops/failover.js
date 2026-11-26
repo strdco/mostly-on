@@ -173,14 +173,14 @@ export async function failoverPreview(databaseId, targetServerId) {
  * needs acceptDataLoss, so a primary that went down after the dialog opened
  * cannot silently turn a lossless failover into a lossy one.
  */
-export async function startFailover(databaseId, { serverId, tailLog, acceptDataLoss }) {
+export async function startFailover(databaseId, { serverId, tailLog, acceptDataLoss, actor = null }) {
     if (tailLog) {
         const pf = await failoverPreview(databaseId, serverId);
-        if (pf.plannedPossible) return startPlannedFailover(databaseId, { serverId });
+        if (pf.plannedPossible) return startPlannedFailover(databaseId, { serverId, actor });
         if (acceptDataLoss !== true) throw fail(409, `A failover without data loss is no longer possible (${pf.plannedBlocker}). Reopen the dialog to see what may be lost.`);
-        return startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog: 'best_effort' });
+        return startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog: 'best_effort', actor });
     }
-    return startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog: 'none' });
+    return startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog: 'none', actor });
 }
 
 // --- shared steps ---------------------------------------------------------------------
@@ -344,7 +344,7 @@ function plannedSteps({ db, oldServer, target, holder }) {
  * Validates and starts a planned failover (switchover) to a secondary.
  * Resolves once the operation exists; `done` settles when it has finished.
  */
-export async function startPlannedFailover(databaseId, { serverId, parentId = null }) {
+export async function startPlannedFailover(databaseId, { serverId, parentId = null, actor = null }) {
     const { db, oldServer, target, rep } = loadTopology(databaseId, serverId);
     if (rep.chain_state !== 'ok') throw fail(409, `Shipping to ${target.name} has stopped, so a failover without data loss is not possible`);
     if (!health.getHealth(oldServer.id)?.ok) throw fail(409, `The primary ${oldServer.name} is unreachable; fail over without a tail-log backup instead`);
@@ -358,8 +358,14 @@ export async function startPlannedFailover(databaseId, { serverId, parentId = nu
         parentId,
         params: { targetServerId: target.id, oldPrimaryServerId: oldServer.id },
         stepDefs,
+        createdBy: actor,
     });
-    events.add('warn', 'failover', `Failover of ${db.name} from ${oldServer.name} to ${target.name} started (with a tail-log backup: no data loss)`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
+    events.add('warn', 'failover', `Failover of ${db.name} from ${oldServer.name} to ${target.name} started (with a tail-log backup: no data loss)`, {
+        databaseId: db.id,
+        serverId: target.id,
+        operationId: operation.id,
+        errorLog: [oldServer.id, target.id],
+    });
     return { operation, done: execute(operation.id, stepDefs, holder, db) };
 }
 
@@ -517,7 +523,7 @@ function forcedSteps({ db, oldServer, target, holder, tailLog = 'best_effort' })
 }
 
 /** Validates and starts a forced failover to a secondary. */
-export async function startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog = 'best_effort' }) {
+export async function startForcedFailover(databaseId, { serverId, acceptDataLoss, tailLog = 'best_effort', actor = null }) {
     const { db, oldServer, target, rep } = loadTopology(databaseId, serverId);
     if (acceptDataLoss !== true) throw fail(400, 'Confirm that transactions not yet shipped to the target may be lost');
     if (!['ok', 'broken'].includes(rep.chain_state)) throw fail(409, `${target.name} cannot become the primary: ${rep.chain_state === 'seeding' ? 'it is still being set up' : 'its copy needs reinitializing'}`);
@@ -530,9 +536,15 @@ export async function startForcedFailover(databaseId, { serverId, acceptDataLoss
         serverId: target.id,
         params: { targetServerId: target.id, oldPrimaryServerId: oldServer.id, tailLog },
         stepDefs,
+        createdBy: actor,
     });
     const how = tailLog === 'none' ? 'without a tail-log backup' : 'with a best-effort tail-log backup';
-    events.add('warn', 'failover', `Failover of ${db.name} from ${oldServer.name} to ${target.name} ${how} started (data may be lost)`, { databaseId: db.id, serverId: target.id, operationId: operation.id });
+    events.add('warn', 'failover', `Failover of ${db.name} from ${oldServer.name} to ${target.name} ${how} started (data may be lost)`, {
+        databaseId: db.id,
+        serverId: target.id,
+        operationId: operation.id,
+        errorLog: [oldServer.id, target.id],
+    });
     return { operation, done: execute(operation.id, stepDefs, holder, db) };
 }
 
@@ -547,6 +559,7 @@ function execute(opId, stepDefs, holder, db) {
                     databaseId: db.id,
                     serverId: p?.server_id,
                     operationId: op.id,
+                    errorLog: [op.params.oldPrimaryServerId, p?.server_id],
                 });
             }
             publish('database.changed', { databaseId: db.id });
@@ -559,7 +572,7 @@ function execute(opId, stepDefs, holder, db) {
 }
 
 /** Re-runs a failed or interrupted failover from its first unfinished step. */
-export async function resumeFailover(op) {
+export async function resumeFailover(op, { actor = null } = {}) {
     const db = databases.get(op.database_id);
     const oldServer = serversRepo.get(op.params.oldPrimaryServerId);
     const target = serversRepo.get(op.params.targetServerId);
@@ -569,6 +582,6 @@ export async function resumeFailover(op) {
     opsRepo.save(op.id, { steps });
     const holder = lockHolder(db);
     const stepDefs = (op.type === 'forced_failover' ? forcedSteps : plannedSteps)({ db, oldServer, target, holder, tailLog: op.params.tailLog });
-    events.add('warn', 'failover', `Resuming ${op.type.replace('_', ' ')} #${op.id} of ${db.name}`, { databaseId: db.id, serverId: target.id, operationId: op.id });
+    events.add('warn', 'failover', `Resuming ${op.type.replace('_', ' ')} #${op.id} of ${db.name}`, { databaseId: db.id, serverId: target.id, operationId: op.id, actor });
     return { operation: op, done: execute(op.id, stepDefs, holder, db) };
 }

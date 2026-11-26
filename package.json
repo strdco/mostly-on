@@ -12,6 +12,7 @@
     "start": "node src/main.js",
     "dev": "node --env-file-if-exists=.env --watch src/main.js",
     "hash-password": "node scripts/hash-password.js",
+    "reset-password": "node scripts/reset-password.js",
     "gen-secret": "node -e \"console.log(require('node:crypto').randomBytes(32).toString('base64'))\"",
     "test": "node --test \"test/unit/**/*.test.js\"",
     "test:integration": "node --test --test-concurrency=1 --test-timeout=1800000 \"test/integration/**/*.test.js\""
