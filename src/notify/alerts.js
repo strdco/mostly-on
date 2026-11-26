@@ -18,8 +18,9 @@
 //   split:<db>:<srv>      ... and it is ONLINE and writable (split-brain risk)
 //   op:<id>               a seed, reseed or failover failed or was interrupted
 // Database conditions are suppressed while a failover or reseed holds the
-// database (their own failure raises op:<id>), and per-database checks on an
-// unreachable server are left to server:<srv>.
+// database (their own failure raises op:<id>), per-database checks on an
+// unreachable server are left to server:<srv>, and restore and lag checks on a
+// server whose setup script is missing or out of date are left to setup:<srv>.
 import * as alertsRepo from '../store/repos/alerts.js';
 import * as databases from '../store/repos/databases.js';
 import * as serversRepo from '../store/repos/servers.js';
@@ -90,12 +91,14 @@ export function collectConditions() {
     const link = links();
 
     const reachable = new Set();
+    const setupMissing = new Set(); // reachable, but restores there cannot run until the setup script is run
     for (const s of serversRepo.list()) {
         if (!s.enabled) continue;
         const h = health.getHealth(s.id);
         if (h?.ok) reachable.add(s.id);
         else if (h) add({ key: `server:${s.id}`, kind: 'server_unreachable', severity: 'error', message: `Server ${s.name} is unreachable: ${h.error}`, serverId: s.id, link: link.server(s.id) });
         if (h?.ok && h.setup && !h.setup.ready) {
+            setupMissing.add(s.id);
             add({
                 key: `setup:${s.id}`,
                 kind: 'setup',
@@ -154,6 +157,8 @@ export function collectConditions() {
             if (!live || !(live.state === 'RESTORING' || (live.state === 'ONLINE' && live.isInStandby))) {
                 add(ref(r, { key: `dbstate:${db.id}:${r.server_id}`, kind: 'db_state', severity: 'error', message: `${db.name} on the secondary ${r.server_name} is ${stateText} instead of receiving (RESTORING)` }));
             }
+            // Its failed restores and growing lag have one cause and one fix: setup:<srv> says what to do.
+            if (setupMissing.has(r.server_id)) continue;
             const l = lags.get(r.server_id);
             const limits = lagLimits(logSchedule, thresholdMinutes, r.restore_delay_minutes);
             // Paused, or catching up after a pause or a lowered delay (restores_paused_until set): behind on purpose.

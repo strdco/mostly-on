@@ -70,7 +70,9 @@ export async function checkServer(serverId) {
         if (result.setup.ready) events.add('info', 'server', `The helper procedures on ${server.name} are ready (version ${result.setup.version})`, { serverId });
         else events.add('error', 'server', `Mostly-On cannot back up or restore on ${server.name}: ${result.setup.problems.join(' ')}`, { serverId });
     }
-    publish('server.health', { serverId, ok: result.ok, checkedAt });
+    // setupFixed: restores held back by the setup script retry at once instead of waiting out their backoff.
+    const setupFixed = !!(result.ok && result.setup?.ready && prev?.setup && !prev.setup.ready);
+    publish('server.health', { serverId, ok: result.ok, checkedAt, setupFixed });
     return result;
 }
 

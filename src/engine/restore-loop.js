@@ -371,10 +371,12 @@ export function start() {
         try {
             if (evt.type === 'backup.finished' && evt.payload.databaseId) {
                 nudgeDatabase(evt.payload.databaseId);
-            } else if (evt.type === 'server.health' && evt.payload.ok && waitingForServer.has(evt.payload.serverId)) {
+            } else if (evt.type === 'server.health' && evt.payload.ok && (evt.payload.setupFixed || waitingForServer.has(evt.payload.serverId))) {
                 waitingForServer.delete(evt.payload.serverId);
+                // Setup script just run: the failures were all for that reason, so skip the backoff.
+                const force = !!evt.payload.setupFixed;
                 for (const r of databases.replicasOnServer(evt.payload.serverId)) {
-                    if (r.role === 'secondary' && r.chain_state === 'ok') nudge(r.database_id, r.server_id);
+                    if (r.role === 'secondary' && r.chain_state === 'ok') nudge(r.database_id, r.server_id, { force });
                 }
             }
         } catch (err) {

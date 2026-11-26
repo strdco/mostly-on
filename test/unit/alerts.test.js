@@ -284,3 +284,46 @@ test('a log-shipped database out of FULL recovery: an error in SIMPLE, a warning
     health.forget(s1.id);
     closeDb();
 });
+
+test('restore and lag alerts on a server whose setup script is out of date are left to the setup alert', async () => {
+    const crypto = await import('node:crypto');
+    const { openDb, closeDb } = await import('../../src/store/db.js');
+    const servers = await import('../../src/store/repos/servers.js');
+    const databases = await import('../../src/store/repos/databases.js');
+    const backups = await import('../../src/store/repos/backups.js');
+    const restores = await import('../../src/store/repos/restores.js');
+    const health = await import('../../src/engine/health.js');
+    const { setEngineConfig } = await import('../../src/engine/context.js');
+    const { collectConditions, confirmedFixed } = await import('../../src/notify/alerts.js');
+    openDb(':memory:');
+    setEngineConfig({ publicUrl: 'http://mo.test' });
+    const mk = (name) => servers.create(servers.validate({ name, host: name, username: 'u', password: 'p', sql_backup_root: '/b' }), crypto.randomBytes(32));
+    const s1 = mk('sql1');
+    const s3 = mk('sql3');
+    const big = databases.manage({ name: 'Big', familyGuid: null, primaryServerId: s1.id });
+    databases.addSecondary({ databaseId: big.id, serverId: s3.id, restoreMode: 'norecovery' });
+    databases.updateReplica(big.id, s3.id, { chain_state: 'ok' });
+    const file = backups.insert({
+        database_id: big.id, server_id: s1.id, type: 'LOG', rel_path: 'Big/LOG/1.trn', first_lsn: '1', last_lsn: '2', checkpoint_lsn: '1',
+        database_backup_lsn: '1', family_guid: 'f', recovery_fork_guid: 'r', first_recovery_fork_guid: 'r', backup_set_uuid: 'b1',
+        backup_start: '2026-11-26T10:00:00Z', backup_finish: '2026-11-26T10:00:01Z', size_bytes: 1, has_checksum: 1, is_copy_only: 0,
+    });
+    const r = restores.start({ backupFileId: file.id, databaseId: big.id, serverId: s3.id });
+    restores.finish(r, 'failed', 'Mostly-On cannot back up or restore on sql3: the helper procedures are version 6');
+
+    const dbs = [{ name: 'Big', databaseId: 9, state: 'RESTORING', recoveryModel: 'FULL', isInStandby: false }];
+    health._setForTests(s1.id, { ok: true, databases: [{ ...dbs[0], state: 'ONLINE' }], setup: { ready: true, problems: [] } });
+    health._setForTests(s3.id, { ok: true, databases: dbs, setup: { ready: false, problems: ['the helper procedures are version 6.'] } });
+    let c = collectConditions();
+    assert.ok(c.has(`setup:${s3.id}`));
+    assert.equal(c.has(`restore:${big.id}:${s3.id}`), false, 'one cause, one alert');
+
+    health._setForTests(s3.id, { ok: true, databases: dbs, setup: { ready: true, problems: [] } });
+    c = collectConditions();
+    assert.equal(c.has(`setup:${s3.id}`), false);
+    assert.ok(confirmedFixed().has(`setup:${s3.id}`));
+    assert.ok(c.has(`restore:${big.id}:${s3.id}`), 'once the setup is fixed, a failed restore counts again until one succeeds');
+    health.forget(s1.id);
+    health.forget(s3.id);
+    closeDb();
+});
