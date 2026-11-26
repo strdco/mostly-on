@@ -215,9 +215,68 @@ Mostly-On's own `/data` needs no preparation: the named volume `controller-data`
 
 **SQL Server installed on Windows.** The backup folder is an SMB share on a file server or NAS, for example `\\fileserver\sqlbackup`. Windows decides who may write there, from the rights on the share and its folder, so there's nothing to `chown`.
 
+**On each SQL Server:**
+
 - [ ] Give SQL Server's service account **Modify** rights on the share and its folder. The default virtual account (`NT Service\MSSQL$<instance>`) reaches the network as the machine's computer account, so grant `DOMAIN\MACHINE$`. Better: run SQL Server as a group managed service account (gMSA), and grant that.
 - [ ] Register the server in Mostly-On with the share's path, `\\fileserver\sqlbackup`, as its backup folder.
-- [ ] Mostly-On runs on Linux: on its host, mount the same share as in [Permissions: Linux host](#permissions-linux-host) (SMB, steps 2 and 3). The same goes for Linux SQL Server hosts in the same setup.
+
+**On the machine that runs Mostly-On:**
+
+Mostly-On runs in a container, and a container only sees the folders you hand it. So you mount the share on the machine that runs the container, then hand that folder to the container as `/backup`. Run these commands on that machine. On a Windows machine, Mostly-On runs in Docker inside WSL 2 (see below): run them in its Linux terminal (type `wsl` in a command prompt).
+
+- [ ] Install the SMB client:
+
+  ```sh
+  sudo apt install cifs-utils        # or: sudo dnf install cifs-utils
+  ```
+
+- [ ] Store the share's account in a file that only root can read:
+
+  ```sh
+  sudo install -m 600 /dev/null /etc/sqlbackup.cred
+  sudo nano /etc/sqlbackup.cred
+  ```
+
+  with these three lines:
+
+  ```
+  username=sqlbackup
+  password=...
+  domain=EXAMPLE
+  ```
+
+- [ ] Create the folder to mount the share on, and lock it while it's empty. If the share ever fails to mount, nothing can then land on the local disk by mistake:
+
+  ```sh
+  sudo mkdir -p /mnt/sqlbackup
+  sudo chattr +i /mnt/sqlbackup
+  ```
+
+- [ ] Add this line to `/etc/fstab`, so the share is mounted at every start. `uid=10001,gid=0` makes the files appear owned by the user Mostly-On runs as:
+
+  ```
+  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=10001,gid=0,file_mode=0660,dir_mode=0770,vers=3.0,_netdev  0  0
+  ```
+
+- [ ] Mount it now:
+
+  ```sh
+  sudo mount /mnt/sqlbackup
+  ```
+
+- [ ] Hand the folder to the container. In `docker-compose.yml`, change `- backup:/backup` to `- /mnt/sqlbackup:/backup`, and remove the `backup:` line under `volumes:` at the bottom. Then restart Mostly-On:
+
+  ```sh
+  docker compose up -d
+  ```
+
+- [ ] Check that Mostly-On can write and delete on the share:
+
+  ```sh
+  docker compose exec controller sh -c 'touch /backup/.test && rm /backup/.test && echo OK'
+  ```
+
+Linux SQL Server hosts in the same setup mount the share as in [Permissions: Linux host](#permissions-linux-host).
 
 The other settings a Windows SQL Server needs (TCP/IP, firewall, mixed-mode authentication) are under [On a Windows machine](#on-a-windows-machine).
 
@@ -229,6 +288,7 @@ The other settings a Windows SQL Server needs (TCP/IP, firewall, mixed-mode auth
 
 - [ ] Mount the share inside WSL and bind it into the containers, as in [Permissions: Linux host](#permissions-linux-host), steps 2 and 3. Don't use a Windows or mapped drive through `/mnt/...`: it doesn't keep Linux owners either.
 - [ ] Make sure WSL starts with Windows and keeps running, for example with a scheduled task at startup. WSL is built for interactive use and doesn't start by itself, so without that, Mostly-On stays down after a reboot.
+
 ---
 
 ## SQL Server outside containers
