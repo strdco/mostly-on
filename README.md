@@ -2,6 +2,8 @@
 
 SQL Server backup and log shipping for people who don't have SQL Server Agent or just don't have the patience for shell scripts and cron jobs.
 
+<img width="2764" height="1664" alt="image" src="https://github.com/user-attachments/assets/05361da9-5abd-4537-b2a7-8b61f9f2f891" />
+
 SQL Server Express Edition has no SQL Server Agent, and for anything less than Enterprise Edition, you won't have any kind of out-of-the-box high availability. Mostly-On is a small orchestrator, running in its own container, that takes care of:
 
 - **Backing up** your databases on a schedule (FULL, DIFF and LOG), with checksums, to a shared backup folder. That includes the system databases (master, model, msdb) and databases in SIMPLE recovery, so one tool covers every database.
@@ -22,57 +24,56 @@ SQL Server Express Edition has no SQL Server Agent, and for anything less than E
 > This project was largely vibe-coded and is in early beta. Please test it properly
 > before deploying to important or sensitive environments.
 
-Contents: [Quick start demo](#quick-start-demo) · [Deploying](#deploying) · [The shared backup folder](#the-shared-backup-folder) · [Configuration](#configuration) · [SQL Server requirements](#sql-server-requirements) · [How it works](#how-it-works) · [Failover, step by step](#failover-step-by-step) · [Upgrading](#upgrading) · [Development and tests](#development-and-tests) · [Known limitations](#known-limitations) · [License](#license)
+Contents: [Quick start demo](#quick-start-trying-it-out-in-a-sandbox) · [Deploying](#deploying) · [The shared backup folder](#the-shared-backup-folder) · [Configuration](#configuration) · [SQL Server requirements](#sql-server-requirements) · [How it works](#how-it-works) · [Failover, step by step](#failover-step-by-step) · [Upgrading](#upgrading) · [Development and tests](#development-and-tests) · [Known limitations](#known-limitations) · [License](#license)
 
 ---
 
-## Quick start (demo)
+## Quick start (trying it out in a sandbox)
 
 Mostly-On is published as a container image, `ghcr.io/strdco/mostly-on`. The demo starts it together with three SQL Server Express containers (`sql1`, `sql2`, `sql3`) and a shared backup volume. You need `docker-compose.yml`, `docker-compose.demo.yml`, `.env.example` and the `sql` folder from this repository; cloning it is easiest.
 
-1. Create your settings file:
+- [ ] Create your settings file:
 
    ```sh
    cp .env.example .env
    ```
 
-2. Fill in the four required values in `.env`:
-
-   - `ADMIN_PASSWORD_HASH`: the password of the first dashboard user (`ADMIN_USER`, default `admin`), hashed. Once Mostly-On has started, you add everyone else on its **Users** page. Generate it with Node (`npm run hash-password`) or without Node installed:
+- [ ] Generate a password hash for your admin account:
 
      ```sh
      docker run --rm -it ghcr.io/strdco/mostly-on:latest node scripts/hash-password.js
      ```
 
-     (`docker compose` itself refuses to start until these values are set, hence plain `docker`.)
+- [ ] Fill in the four required values in `.env`:
 
+   - `ADMIN_PASSWORD_HASH`: the hashed password you just generated. Once the Mostly-On container is up and running, you add users in the interface.
    - `SECRET_KEY`: 32 random bytes, base64. `openssl rand -base64 32` or `npm run gen-secret`.
    - `MSSQL_SA_PASSWORD`: the `sa` password for the demo SQL Servers (at least 8 characters, with three of: upper case, lower case, digits, symbols).
    - `MOSTLY_ON_SQL_PASSWORD`: the password of `mostly_on`, the restricted login Mostly-On uses on the demo servers (same rules). The demo's one-shot `sql-setup` service creates that login and runs the setup script on all three servers; see [SQL Server requirements](#sql-server-requirements).
 
-3. Start everything:
+- [ ] Start everything, and wait for all the services to come online:
 
    ```sh
    docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d
    ```
 
-   The first start of SQL Server takes a minute or two.
-
-4. Open <http://localhost:8080> and sign in as `admin`.
-
-5. On the **Servers** page, register your SQL Servers:
+- [ ] Open <http://localhost:8080> and sign in as `admin`.
+- [ ] On the **Servers** page, register your SQL Servers:
 
    | Field | Value |
    |---|---|
    | Name / Host | `sql1`, `sql2` or `sql3` |
-   | SQL login / Password | `mostly_on` / your `MOSTLY_ON_SQL_PASSWORD` |
+   | SQL login | `mostly_on` |
+   | SQL password | your `MOSTLY_ON_SQL_PASSWORD` |
    | Shared backup folder, as this SQL Server sees it | `/var/opt/mssql/backup` |
 
-6. Create a database on `sql1` (any tool; it must use FULL recovery model). It appears on the **Overview**, under `sql1`'s **Not managed** list. Press its manage control (**Manage**), then on the database's page press **Add secondary** and pick `sql2` and/or `sql3`.
+- [ ] Connect to one of the SQL Server containers with SSMS or your tool of choice (localhost, ports 14331, 14332 or 14333) and create a database. It will appear on the **Overview** page, under your server's **Not managed** list.
+- [ ] Click the database's on/off toggle switch, and follow the on-screen instructions to manage the database. This starts the process of backing up the database.
+- [ ] Click on the database in the overview list, then on **Add secondary** and select a secondary server to start the log shipping.
 
-   The manage control shows how Mostly-On manages each database: **O** not managed, **I** managed without secondaries, **II** log shipped to secondaries. To stop managing a database, press its control. That requires any secondaries be removed first (database page, Replicas table, **Remove**), so no copy is left waiting for log backups that never come. The system databases (master, model, msdb) and databases in SIMPLE or BULK_LOGGED recovery can be managed too: they are tagged **backups only**, and are backed up on their own server, never shipped or restored (see [How it works](#how-it-works)).
+   The icon next to the database shows how Mostly-On manages the database: **O** not managed, **I** managed without secondaries (only backed up), **II** log-shipped to one or more secondaries. To stop managing a database, press the toggle switch. System databases (master, model, msdb) and databases in SIMPLE or BULK_LOGGED recovery can be managed, too, but they are tagged **backups only** because they cannot be log-shipped (see [How it works](#how-it-works)).
 
-From here on, Mostly-On backs the database up on a schedule and keeps `sql2` up to date. Try **Failover** on the secondary's row.
+- [ ] You can fail over a database to it's secondary replica by clicking on the database, and then the **Failover** button for one of its secondary replicas. This makes the secondary the new primary, and the former primary becomes a secondary.
 
 ---
 
@@ -81,25 +82,23 @@ From here on, Mostly-On backs the database up on a schedule and keeps `sql2` up 
 A production setup has three parts:
 
 1. **Your SQL Server instances**, must be version 2019 or newer.
-2. **One shared backup folder** that every SQL Server and the Mostly-On container can read and write, typically a network share or a shared volume.
+2. **A shared backup folder** that every SQL Server and the Mostly-On container can read and write, typically a network share or a shared volume.
 3. **The Mostly-On container**, with:
    - a persistent volume at `/data` for its catalog (settings, history, operation journal);
    - the shared backup folder mounted, by default at `/backup`;
-   - network access to each SQL Server's port (1433 by default; for a named instance found through SQL Server Browser, also UDP 1434);
+   - network access from the container to each SQL Server's port (1433 by default; for a named instance found through SQL Server Browser, also UDP 1434);
    - the environment variables below.
+
+Use `docker-compose.yml` as a template. It runs only the Mostly-On container, from the published image:
+
+- [ ] Replace the `backup` volume with your shared backup folder (see [The shared backup folder](#the-shared-backup-folder)).
+- [ ] Keep `restart: unless-stopped` so the controller comes back after a reboot or failure.
+- [ ] *Recommended:* put a TLS-terminating reverse proxy (nginx, Caddy, Traefik) in front of port 8080 for anything but a lab, and set `PUBLIC_URL` to the client-facing `https://` address. Auth cookies are then marked Secure automatically.
 
 > [!IMPORTANT]
 > Using container volumes is critical to persisting Mostly-On's metadata and catalog.
 > If you don't use persistent volumes, all this data will be lost when you update the
 > Docker image.
-
-Use `docker-compose.yml` as a template. It runs only the Mostly-On container, from the published image:
-
-- [ ] Replace the `backup` volume with your shared backup folder (see [The shared backup folder](#the-shared-backup-folder)).
-
-- [ ] Keep `restart: unless-stopped` so the controller comes back after a reboot.
-
-- [ ] Put a TLS-terminating reverse proxy (Caddy, nginx, Traefik, ...) in front of port 8080 for anything but a lab, and set `PUBLIC_URL` to the `https://` address people use. Auth cookies are then marked Secure automatically.
 
 The catalog in `/data` holds the history and the intent ("which server should be the primary"). SQL Server itself remains the source of truth for the state of each database. Back up `/data` like any other application data.
 
@@ -114,12 +113,12 @@ In order to be able to ship logs and fail over from one server to another, all p
 <backup root>/<database>/DIFF/<database>_DIFF_<yyyyMMdd_HHmmss>_<server>.bak
 <backup root>/<database>/LOG/<database>_LOG_<yyyyMMdd_HHmmss>_<server>.trn
 <backup root>/<database>/DIVERGED/...   (safety backups of out-of-sync copies; never deleted automatically)
-<backup root>/<database>@<server>/FULL/... (and DIFF, LOG: databases backed up on one server only)
+<backup root>/<database>@<server>/... (FULL, DIFF and LOG for databases backed up but not log-shipped)
 ```
 
 A log-shipped database has one folder, whichever server is its primary. A **backups-only** database (a system database, or one not in FULL recovery) belongs to one server, so its folder carries that server's name: every server has its own `master`, for example `master@sql1` and `master@sql2`.
 
-**The folder can have a different path on each machine.** When you register a server, you tell Mostly-On where the folder is *as that SQL Server sees it* (for example `/var/opt/mssql/backup`). If the controller has it somewhere other than what you've configured as `BACKUP_ROOT`, set that path on the server too.
+**The folder can have a different path on each machine.** When you register a server, you tell Mostly-On where the folder is *as that SQL Server sees it*. This is important when your database server runs in a container where, for example, `/var/opt/mssql/backup` might map to an SMB share. If the controller has it somewhere other than what you've configured as `BACKUP_ROOT`, set that path on the server too.
 
 ### Permissions
 
