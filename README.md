@@ -182,7 +182,7 @@ On every SQL Server host and on the Mostly-On host:
   ```sh
   sudo apt install cifs-utils        # or: sudo dnf install cifs-utils
   sudo install -m 600 /dev/null /etc/sqlbackup.cred
-  sudoedit /etc/sqlbackup.cred       # username=sqlbackup, password=..., domain=EXAMPLE (one per line)
+  sudo nano /etc/sqlbackup.cred      # username=sqlbackup, password=..., domain=EXAMPLE (one per line)
   ```
 
   ```
@@ -198,7 +198,12 @@ On every SQL Server host and on the Mostly-On host:
 
 #### 3. Bind it into the containers
 
-- [ ] On each SQL Server host, bind the share into the SQL Server container: `- /mnt/sqlbackup:/var/opt/mssql/backup` under its `volumes`.
+- [ ] On each SQL Server host, bind the share into the SQL Server container in the .yml file, under "volumes":
+
+  ```yml
+  - /mnt/sqlbackup:/var/opt/mssql/backup
+  ```
+
 - [ ] On the Mostly-On host, in `docker-compose.yml`, replace `- backup:/backup` with `- /mnt/sqlbackup:/backup`, and remove `backup:` from the `volumes` list at the bottom.
 - [ ] Register each SQL Server in Mostly-On with `/var/opt/mssql/backup` as its backup folder.
 
