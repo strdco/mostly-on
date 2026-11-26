@@ -102,10 +102,19 @@ export function replica(databaseId, serverId) {
 }
 
 /** Every replica on a server, with the database name. */
+/**
+ * Every managed database's copy on one server. secondary_names: the servers
+ * the database is log shipped to ("sql2, sql3"; null without secondaries), so
+ * a server's page can tell a shipping primary from one that is backed up only.
+ */
 export function replicasOnServer(serverId) {
     return getDb()
         .prepare(
-            `SELECT ${REPLICA_COLS}, d.name AS database_name, d.backup_only_server_id FROM database_replicas AS r
+            `SELECT ${REPLICA_COLS}, d.name AS database_name, d.backup_only_server_id,
+                    (SELECT group_concat(name, ', ') FROM (
+                        SELECT ss.name FROM database_replicas AS o JOIN servers AS ss ON ss.id=o.server_id
+                        WHERE o.database_id=r.database_id AND o.role='secondary' ORDER BY ss.name COLLATE NOCASE)) AS secondary_names
+             FROM database_replicas AS r
              JOIN servers AS s ON s.id=r.server_id JOIN databases AS d ON d.id=r.database_id
              WHERE r.server_id=? AND d.status='managed' ORDER BY d.name`,
         )

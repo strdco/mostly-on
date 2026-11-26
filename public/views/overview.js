@@ -177,17 +177,15 @@ export function lagTipBadge(lag, limits, rep = null) {
 }
 
 /**
- * A neutral "backups only" tag (engine/backup-rules.js), with what it means as
- * a tooltip. d: a managed database (summary) or a discovered one that would be
- * managed that way (manage_as).
+ * A neutral "backups only" tag (engine/backup-rules.js) for a managed
+ * database, with what it means as a tooltip. Never on an unmanaged database:
+ * it would read as if that one were backed up.
  */
 export function backupOnlyTag(d) {
-    const what = d.system ? 'A system database' : `In ${d.recovery_model ?? 'SIMPLE'} recovery`;
-    const help = d.managed
-        ? `${d.system ? 'A system database, backed' : 'Backed'} up on ${d.server_name} only, in the folder ${d.folder} on the backup share. ` +
-          'No secondaries, no failover. Mostly-On cannot perform managed restores of system databases.' +
-          (d.can_ship ? ' Database is in FULL recovery now: to give it secondaries, stop managing it, then manage it again.' : '')
-        : `${what}: Mostly-On would back it up on ${d.server_name} only. No secondaries, no failover, and Mostly-On never restores it.`;
+    const help =
+        `${d.system ? 'A system database, backed' : 'Backed'} up on ${d.server_name} only, in the folder ${d.folder} on the backup share. ` +
+        'No secondaries, no failover. Mostly-On cannot perform managed restores of system databases.' +
+        (d.can_ship ? ' Database is in FULL recovery now: to give it secondaries, stop managing it, then manage it again.' : '');
     return tipBadge('backups only', '', help);
 }
 
@@ -276,11 +274,13 @@ const MANAGE_STATE_TEXT = { off: 'not managed', local: 'managed, no secondaries'
  * stays focusable; its reason is a tooltip (on hover, focus, or a tap) and its
  * accessible description.
  *   state: 'off' | 'local' | 'shipped'
+ *   system: a system database (its own colour; app.css)
  */
-function manageControl({ state, who, reason, onActivate }) {
+function manageControl({ state, system = false, who, reason, onActivate }) {
     const button = h('button.manage-state', {
         type: 'button',
         'data-state': state,
+        'data-system': system ? '' : null,
         'aria-label': `${who}: ${MANAGE_STATE_TEXT[state]}`,
         'aria-disabled': reason ? 'true' : null,
     });
@@ -347,7 +347,7 @@ export function overviewView() {
                     {
                         label: 'Secondaries',
                         cell: (d) => {
-                            if (!d.managed) return d.manage_as === 'backup_only' ? backupOnlyTag(d) : null;
+                            if (!d.managed) return null; // nothing is backed up yet, so no "backups only" tag either
                             if (d.backup_only) return backupOnlyTag(d); // why there are none
                             const sec = d.replicas.filter((r) => r.role !== 'primary');
                             return sec.length
@@ -408,6 +408,7 @@ export function overviewView() {
         const sw = d.managed
             ? manageControl({
                   state: d.replicas.some((r) => r.role !== 'primary') ? 'shipped' : 'local',
+                  system: !!d.system,
                   who: d.label ?? d.name,
                   reason: stopManagingBlocker(d) ? `To stop managing this database, first remove its secondaries (${d.replicas.filter((r) => r.role !== 'primary').map((r) => r.server_name).join(', ')}) on its page.` : null,
                   onActivate: () => stopManaging(d),

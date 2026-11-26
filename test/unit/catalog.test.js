@@ -78,6 +78,22 @@ test('a database with other copies cannot stop being managed until they are remo
     closeDb();
 });
 
+test("a server's copies name the secondaries a database is shipped to, so a shipping primary stands apart", () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const mk = (name) => servers.create(servers.validate({ name, host: name, username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const [a, b, c] = [mk('a'), mk('C'), mk('b')];
+    const shipped = databases.manage({ name: 'Sales', familyGuid: null, primaryServerId: a.id });
+    databases.manage({ name: 'Local', familyGuid: null, primaryServerId: a.id });
+    databases.addSecondary({ databaseId: shipped.id, serverId: b.id, restoreMode: 'norecovery' });
+    databases.addSecondary({ databaseId: shipped.id, serverId: c.id, restoreMode: 'norecovery' });
+    const onA = Object.fromEntries(databases.replicasOnServer(a.id).map((r) => [r.database_name, r.secondary_names]));
+    assert.deepEqual(onA, { Local: null, Sales: 'b, C' }, 'sorted by name, ignoring case');
+    getDb().prepare("UPDATE database_replicas SET role='diverged' WHERE server_id=?").run(b.id);
+    assert.equal(databases.replicasOnServer(a.id).find((r) => r.database_name === 'Sales').secondary_names, 'b', 'an out-of-sync copy is not shipped to');
+    closeDb();
+});
+
 test('Remove: a server without history is deleted; one with history is hidden but kept, and comes back when registered again', () => {
     openDb(':memory:');
     const key = crypto.randomBytes(32);

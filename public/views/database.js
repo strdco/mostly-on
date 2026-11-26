@@ -836,7 +836,7 @@ export function databaseView(id) {
         // Native append() would render null as the text "null"; h() skips it.
         clear(root).append(
             ...[
-            h('h1', db.label ?? db.name, db.backup_only ? [' ', backupOnlyTag({ ...db, managed: true })] : null),
+            h('h1', db.label ?? db.name, db.backup_only ? [' ', backupOnlyTag(db)] : null),
             // Backups only: never shipped or restored, so no Restore… and no Add secondary.
             h(
                 'div.actions',
@@ -941,7 +941,8 @@ export function databaseView(id) {
                 rows: db.replicas,
                 columns: [
                     { label: 'Server', header: true, cell: (r) => h('a', { href: `#/servers/${r.server_id}` }, r.server_name) },
-                    { label: 'Role', cell: (r) => ROLE_TEXT[r.role] || r.role },
+                    // Without a secondary, the primary is backed up only (as on the server's page).
+                    { label: 'Role', cell: (r) => (r.role === 'primary' && !db.replicas.some((x) => x.role === 'secondary') ? 'backups only' : ROLE_TEXT[r.role] || r.role) },
                     { label: 'State', cell: (r) => stateTipBadge(r.live, r.role, r.restore_delay_minutes) },
                     { label: 'Reachable', cell: (r) => (r.reachable ? badge('yes', 'ok') : badge('no', 'err')) },
                     {

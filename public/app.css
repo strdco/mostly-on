@@ -12,8 +12,13 @@
     --border-light: #d9dce3;    --border-dark: #343944;
     --accent-light: #2f5bd3;    --accent-dark: #86a6ff;
     --accent-text-light: #ffffff; --accent-text-dark: #0d1530;
-    /* A managed database's control: lighter than the accent, still 3:1 against its white knob. */
-    --manage-on-light: #6d8ce0; --manage-on-dark: #86a6ff;
+    /* Managed databases' controls, one colour per kind (none of them a status
+       colour): log shipped, backed up on its own server, system database. At
+       least 3:1 against the knob (--accent-text) and the page; the grey of
+       system databases is the lightest that keeps that. */
+    --manage-shipped-light: #2f5bd3; --manage-shipped-dark: #86a6ff;
+    --manage-local-light: #0f7c8c;   --manage-local-dark: #4fc6d4;
+    --manage-system-light: #8b919c;  --manage-system-dark: #9ca3af;
     --ok-light: #18794e;        --ok-dark: #4cc38a;
     --warn-light: #9a5b00;      --warn-dark: #f0b44c;
     --err-light: #c4271c;       --err-dark: #ff7a6e;
@@ -29,7 +34,9 @@
     --border: var(--border-light);
     --accent: var(--accent-light);
     --accent-text: var(--accent-text-light);
-    --manage-on: var(--manage-on-light);
+    --manage-shipped: var(--manage-shipped-light);
+    --manage-local: var(--manage-local-light);
+    --manage-system: var(--manage-system-light);
     --ok: var(--ok-light);
     --warn: var(--warn-light);
     --err: var(--err-light);
@@ -46,7 +53,9 @@
         --border: var(--border-dark);
         --accent: var(--accent-dark);
         --accent-text: var(--accent-text-dark);
-        --manage-on: var(--manage-on-dark);
+        --manage-shipped: var(--manage-shipped-dark);
+        --manage-local: var(--manage-local-dark);
+        --manage-system: var(--manage-system-dark);
         --ok: var(--ok-dark);
         --warn: var(--warn-dark);
         --err: var(--err-dark);
@@ -64,7 +73,9 @@
         --border: light-dark(var(--border-light), var(--border-dark));
         --accent: light-dark(var(--accent-light), var(--accent-dark));
         --accent-text: light-dark(var(--accent-text-light), var(--accent-text-dark));
-        --manage-on: light-dark(var(--manage-on-light), var(--manage-on-dark));
+        --manage-shipped: light-dark(var(--manage-shipped-light), var(--manage-shipped-dark));
+        --manage-local: light-dark(var(--manage-local-light), var(--manage-local-dark));
+        --manage-system: light-dark(var(--manage-system-light), var(--manage-system-dark));
         --ok: light-dark(var(--ok-light), var(--ok-dark));
         --warn: light-dark(var(--warn-light), var(--warn-dark));
         --err: light-dark(var(--err-light), var(--err-dark));
@@ -90,7 +101,11 @@ body {
     overflow-wrap: break-word; /* long file paths and LSNs must not push the page sideways */
 }
 
-a { color: var(--accent); }
+/* Links: underlined on hover and focus. In running text the colour alone does
+   not set a link apart (under 3:1 against the text), so there it stays underlined. */
+a { color: var(--accent); text-decoration: none; }
+a:hover, a:focus-visible { text-decoration: underline; }
+:where(p, li, .callout, .small) a { text-decoration: underline; }
 code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
 h1 { font-size: 1.4rem; margin: 0 0 var(--gap); }
 h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
@@ -248,14 +263,16 @@ input.switch:focus-visible { outline: 3px solid var(--accent); outline-offset: 3
 /* Manage control (overview.js manageControl()): a button drawn as a slider
    with three positions. O, knob at the start: not managed. I, knob in the
    middle: managed, no secondaries. II, knob at the end: log shipped to
-   secondaries. Off keeps the switch's outlined look; both managed positions
-   are filled. */
+   secondaries. Off keeps the switch's outlined look; the managed positions
+   are filled, in the colour of their kind (shipped, own server, system
+   database). The marks, not the colours, carry the state. */
 button.manage-state {
     --track: 3.75rem;
     --knob: 1.05rem;
     --pad: 0.2rem;
     --travel: calc(var(--track) - 2px - var(--knob) - 2 * var(--pad)); /* 2px: the borders */
     --dir: 1; /* translate runs left to right; -1 in right-to-left text */
+    --fill: var(--manage-local);
     flex: none;
     position: relative;
     inline-size: var(--track);
@@ -298,8 +315,10 @@ button.manage-state[data-state="local"]::after { translate: calc(var(--dir) * (v
 button.manage-state[data-state="shipped"]::after { translate: calc(var(--dir) * var(--travel)) -50%; }
 button.manage-state:dir(rtl) { --dir: -1; }
 /* Managed (either position): filled. Also on hover, which would otherwise grey every button. */
+button.manage-state[data-state="shipped"] { --fill: var(--manage-shipped); }
+button.manage-state[data-system] { --fill: var(--manage-system); }
 button.manage-state:is([data-state="local"], [data-state="shipped"]),
-button.manage-state:is([data-state="local"], [data-state="shipped"]):hover { background: var(--manage-on); border-color: var(--manage-on); }
+button.manage-state:is([data-state="local"], [data-state="shipped"]):hover { background: var(--fill); border-color: var(--fill); }
 button.manage-state:is([data-state="local"], [data-state="shipped"])::before { color: var(--accent-text); }
 button.manage-state:is([data-state="local"], [data-state="shipped"])::after { background: var(--accent-text); }
 button.manage-state[data-state="off"]:hover { background: var(--surface-2); }
