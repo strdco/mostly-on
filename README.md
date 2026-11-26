@@ -131,9 +131,16 @@ How you set it up depends on the machine your containers run on.
 
 ### Permissions: Linux host
 
-Mostly-On and the SQL Server containers run on separate Linux machines, and the backup folder is an NFS share that all of them mount. SQL Server containers and Mostly-On all run as user 10001, so the files have the same owner on every machine and nothing needs translating.
+Mostly-On and the SQL Server containers run on separate Linux machines and share the backup folder over the network. Every machine mounts the share at the same place, `/mnt/sqlbackup`, and binds it into its containers. All the containers run as user 10001, so that's who must be able to write to the share.
 
-**On the NFS server:**
+Pick NFS or SMB:
+
+- **NFS** is native to Linux and needs no passwords. But the server trusts any listed host and whatever user ID it claims, and traffic isn't encrypted (short of setting up Kerberos). Use it on a network you control.
+- **SMB** protects the share with a password, can encrypt traffic (SMB 3), and Windows SQL Servers can use the same share. Each host needs `cifs-utils` and a credentials file.
+
+#### 1. Prepare the share
+
+**NFS**, on the NFS server:
 
 - [ ] Create the folder and give it to user 10001, group 0. The 2 in `2770` (the setgid bit) makes new folders inside it keep group 0:
 
@@ -143,45 +150,63 @@ Mostly-On and the SQL Server containers run on separate Linux machines, and the 
   sudo chmod 2770 /srv/sqlbackup
   ```
 
-- [ ] Share it with the SQL Server hosts and the Mostly-On host: add a line to `/etc/exports`, then run `sudo exportfs -ra`.
+- [ ] Export it to the SQL Server hosts and the Mostly-On host, by name (never `*`): add a line to `/etc/exports`, then run `sudo exportfs -ra`.
 
   ```
   /srv/sqlbackup  sql1(rw,sync) sql2(rw,sync) mostly-on-host(rw,sync)
   ```
 
-**On each SQL Server host:**
+**SMB**, on the file server or NAS:
 
-- [ ] Mount the share, for example at `/mnt/sqlbackup`, with a line in `/etc/fstab` (then `sudo mount /mnt/sqlbackup`):
+- [ ] Create the share, and an account for it (for example `sqlbackup`) with **Modify** rights on the share and its folder. No `chown` or `chmod`: on the Linux side, the mount options in step 2 decide who owns the files.
+
+#### 2. Mount it on every host
+
+On every SQL Server host and on the Mostly-On host:
+
+- [ ] Create the mount point and lock it while it's empty, so nothing can write there while the share isn't mounted. A backup then fails loudly instead of quietly landing on the local disk:
+
+  ```sh
+  sudo mkdir -p /mnt/sqlbackup
+  sudo chattr +i /mnt/sqlbackup
+  ```
+
+- [ ] **NFS:** add the share to `/etc/fstab`:
 
   ```
   nfs-server:/srv/sqlbackup  /mnt/sqlbackup  nfs  rw,nfsvers=4.1,_netdev  0  0
   ```
 
-- [ ] Bind it into the SQL Server container at `/var/opt/mssql/backup` (in compose: `- /mnt/sqlbackup:/var/opt/mssql/backup`).
-- [ ] Register the server in Mostly-On with `/var/opt/mssql/backup` as its backup folder.
+- [ ] **SMB:** install `cifs-utils`, put the account in a credentials file that only root can read, and add the share to `/etc/fstab`. `uid=10001,gid=0` makes every file on the share appear owned by user 10001. Add `seal` to the options to encrypt traffic.
 
-**On the Mostly-On host:**
-
-- [ ] Let Docker mount the share as the `backup` volume. In `docker-compose.yml`:
-
-  ```yaml
-  volumes:
-    controller-data:
-    backup:
-      driver: local
-      driver_opts:
-        type: nfs
-        o: addr=nfs-server,rw,nfsvers=4.1
-        device: ":/srv/sqlbackup"
+  ```sh
+  sudo apt install cifs-utils        # or: sudo dnf install cifs-utils
+  sudo install -m 600 /dev/null /etc/sqlbackup.cred
+  sudoedit /etc/sqlbackup.cred       # username=sqlbackup, password=..., domain=EXAMPLE (one per line)
   ```
 
-  Docker reads these options only when it first creates the volume. If you change them later, run `docker compose down` and `docker volume rm mostly-on_backup` (that removes Docker's record of the volume, not the files on the share), then start again. Or mount the share on the host instead, as on the SQL Server hosts, and bind it to `/backup`.
+  ```
+  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=10001,gid=0,file_mode=0660,dir_mode=0770,vers=3.0,_netdev  0  0
+  ```
+
+- [ ] Mount it, and check that user 10001 can write and delete there:
+
+  ```sh
+  sudo mount /mnt/sqlbackup
+  docker run --rm -u 10001:0 -v /mnt/sqlbackup:/b busybox:1.37 sh -c 'touch /b/.test && rm /b/.test && echo OK'
+  ```
+
+#### 3. Bind it into the containers
+
+- [ ] On each SQL Server host, bind the share into the SQL Server container: `- /mnt/sqlbackup:/var/opt/mssql/backup` under its `volumes`.
+- [ ] On the Mostly-On host, in `docker-compose.yml`, replace `- backup:/backup` with `- /mnt/sqlbackup:/backup`, and remove `backup:` from the `volumes` list at the bottom.
+- [ ] Register each SQL Server in Mostly-On with `/var/opt/mssql/backup` as its backup folder.
 
 Mostly-On's own `/data` needs no preparation: the named volume `controller-data` gets the right owner from the image.
 
-**SQL Server installed on Linux, not in a container?** It runs as the `mssql` user, whose user ID differs from machine to machine. See [On a Linux machine](#on-a-linux-machine) for an export that handles that.
+**SQL Server installed on Linux, not in a container?** It runs as the `mssql` user, whose user ID differs from machine to machine. With SMB, mount the share on that machine with `uid=mssql,gid=mssql` instead. With NFS, see [On a Linux machine](#on-a-linux-machine).
 
-**Everything on one machine?** Skip NFS: create the folder on that machine with the same three commands, and bind it into every container.
+**Everything on one machine?** Skip the share: create the folder there with the three NFS commands from step 1, and bind it into every container as in step 3, with `/srv/sqlbackup` in place of `/mnt/sqlbackup`.
 
 ### Permissions: Windows host
 
