@@ -143,6 +143,13 @@ export function databaseRoutes(router) {
         if (!schedules.list(db.id).some((x) => x.backup_type === type)) {
             throw new HttpError(409, db.name === 'master' && isBackupOnly(db) ? ONLY_FULL_MASTER : `${dbLabel(db)} has no ${type} schedule`);
         }
+        // { use_default: true }: follow the default schedule (Settings) again.
+        if (ctx.body?.use_default === true) {
+            const s = schedules.useDefault(db.id, type);
+            events.add('info', 'schedule', `${type} schedule of ${dbLabel(db)} follows the default again`, { databaseId: db.id, actor: actorOf(ctx) });
+            publish('database.changed', { databaseId: db.id });
+            return s;
+        }
         const v = validateSchedule(ctx.body || {});
         const s = schedules.update(db.id, type, v);
         events.add('info', 'schedule', `${type} schedule of ${dbLabel(db)} changed`, { databaseId: db.id, data: v, actor: actorOf(ctx) });

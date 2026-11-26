@@ -194,13 +194,25 @@ export function settingsView() {
         }
     }
 
-    function renderSchedules(values) {
+    /** "Used by 12 databases. Sales and HR have their own." (links to their pages, where they can follow the default again) */
+    function useLine(use) {
+        if (!use || (!use.follows && !use.own.length)) return null;
+        const count = (n) => (n === 1 ? '1 database' : `${n} databases`);
+        const links = use.own.flatMap((d, i) => [i ? (i === use.own.length - 1 ? ' and ' : ', ') : '', h('a', { href: `#/databases/${d.id}` }, d.name)]);
+        return h(
+            'div.small.muted',
+            use.follows ? `Used by ${count(use.follows)}.` : 'Not used by any database.',
+            use.own.length ? [' ', ...links, use.own.length === 1 ? ' has its own.' : ' have their own.'] : null,
+        );
+    }
+
+    function renderSchedules(values, use) {
         clear(schedulesBox).append(
             h(
                 'dl.schedule-list',
                 DEFAULT_SCHEDULES.map(([type, key]) => [
                     h('dt', type),
-                    h('dd', describeSchedule(values[key])),
+                    h('dd', describeSchedule(values[key]), useLine(use?.[type])),
                     h(
                         'dd',
                         h(
@@ -208,15 +220,17 @@ export function settingsView() {
                             {
                                 type: 'button',
                                 onclick: async () => {
+                                    const n = use?.[type]?.follows ?? 0;
                                     const updated = await scheduleDialog({
                                         title: `Default ${type} schedule`,
                                         schedule: values[key],
                                         withEnabled: type === 'DIFF', // FULL and LOG backups are never optional
+                                        note: n ? `Saving changes the ${type} schedule of the ${n === 1 ? 'database' : `${n} databases`} that follow this default, right away.` : null,
                                         onSubmit: (v) => put('/api/settings', { [key]: v }),
                                     });
                                     if (updated) {
                                         toast(`Default ${type} schedule saved`, 'ok');
-                                        renderSchedules(updated);
+                                        renderSchedules(updated, await scheduleUse());
                                     }
                                 },
                             },
@@ -229,9 +243,14 @@ export function settingsView() {
         );
     }
 
+    const scheduleUse = () =>
+        get('/api/info')
+            .then((i) => i.defaultScheduleUse)
+            .catch(() => null);
+
     return {
         async render(el) {
-            const values = await get('/api/settings');
+            const [values, use] = await Promise.all([get('/api/settings'), scheduleUse()]);
             channelBox = h('div.stack-tight');
             schedulesBox = h('div');
             const cards = Object.fromEntries(CARDS.map((c) => [c.id, settingsCard(c, values, c.top === 'channels' ? channelBox : null)]));
@@ -250,7 +269,7 @@ export function settingsView() {
                         h('h2', { id: 'h-schedules' }, 'Default schedules'),
                         h(
                             'p.muted.small',
-                            'For databases you start managing. Existing databases keep their own (edit those on the database’s page). Times are the controller’s local time. ' +
+                            'Every database follows these, unless it has its own schedule (set on the database’s page). Times are the controller’s local time. ' +
                                 'DIFF backups are optional: they make restoring and reinitializing a secondary faster, at the cost of more backup files.',
                         ),
                         schedulesBox,
@@ -258,7 +277,7 @@ export function settingsView() {
                     cards.msdb,
                 ),
             );
-            renderSchedules(values);
+            renderSchedules(values, use);
             await loadChannels();
         },
     };

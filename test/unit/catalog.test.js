@@ -6,6 +6,7 @@ import { openDb, closeDb, getDb, migrate } from '../../src/store/db.js';
 import * as servers from '../../src/store/repos/servers.js';
 import * as settings from '../../src/store/repos/settings.js';
 import * as databases from '../../src/store/repos/databases.js';
+import * as schedules from '../../src/store/repos/schedules.js';
 import * as ops from '../../src/store/repos/operations.js';
 import { removeBlocker } from '../../src/http/routes/servers.js';
 import { setLogLevel } from '../../src/log.js';
@@ -205,9 +206,49 @@ test('default schedules: DIFF is off unless switched on; a stored DIFF default f
     assert.deepEqual(sched(two.id).DIFF, [1, true]);
 
     // Managing again takes the whole default, not just the next run.
-    getDb().prepare("UPDATE schedules SET kind='interval', interval_minutes=1, at_time=NULL WHERE database_id=? AND backup_type='DIFF'").run(one.id);
+    getDb().prepare("UPDATE schedules SET kind='interval', interval_minutes=1, at_time=NULL, follows_default=0 WHERE database_id=? AND backup_type='DIFF'").run(one.id);
     databases.unmanage(one.id);
     databases.manage({ name: 'One', familyGuid: null, primaryServerId: a.id });
-    assert.deepEqual(getDb().prepare("SELECT enabled, kind, at_time FROM schedules WHERE database_id=? AND backup_type='DIFF'").get(one.id), { enabled: 1, kind: 'daily', at_time: '02:00' });
+    assert.deepEqual(getDb().prepare("SELECT enabled, kind, at_time, follows_default FROM schedules WHERE database_id=? AND backup_type='DIFF'").get(one.id), { enabled: 1, kind: 'daily', at_time: '02:00', follows_default: 1 });
+    closeDb();
+});
+
+test('schedules follow the default until edited on the database; Use default follows it again', () => {
+    openDb(':memory:');
+    const key = crypto.randomBytes(32);
+    const a = servers.create(servers.validate({ name: 'a', host: 'a', username: 'u', password: 'p', sql_backup_root: '/b' }), key);
+    const one = databases.manage({ name: 'One', familyGuid: null, primaryServerId: a.id });
+    const two = databases.manage({ name: 'Two', familyGuid: null, primaryServerId: a.id });
+    const gone = databases.manage({ name: 'Gone', familyGuid: null, primaryServerId: a.id });
+    databases.unmanage(gone.id);
+    const diff = (id) => schedules.get(id, 'DIFF');
+    assert.equal(diff(one.id).follows_default, true);
+
+    // Two gets its own DIFF schedule.
+    schedules.update(two.id, 'DIFF', { enabled: 1, kind: 'interval', interval_minutes: 60, at_time: null, weekday: null });
+    assert.equal(diff(two.id).follows_default, false);
+    const fullBefore = schedules.get(one.id, 'FULL').next_run_at;
+
+    // DIFF switched on by default: only the managed database that follows it changes.
+    settings.set('schedule.default_diff', { kind: 'daily', at_time: '02:00', enabled: true });
+    const now = new Date();
+    assert.deepEqual(schedules.applyDefaults(undefined, now), { FULL: [], DIFF: [one.id], LOG: [] });
+    const d1 = diff(one.id);
+    assert.deepEqual([d1.enabled, d1.kind, d1.at_time, d1.follows_default, d1.next_run_at !== null], [true, 'daily', '02:00', true, true]);
+    assert.equal(schedules.get(one.id, 'FULL').next_run_at, fullBefore, 'a schedule that already matches keeps its next run');
+    assert.equal(diff(two.id).kind, 'interval', 'its own schedule stays');
+    assert.equal(diff(gone.id).enabled, false, 'not managed: left alone');
+    assert.deepEqual(schedules.applyDefaults(), { FULL: [], DIFF: [], LOG: [] }, 'nothing left to change');
+
+    // Switched off again: no next run.
+    settings.set('schedule.default_diff', { kind: 'daily', at_time: '02:00', enabled: false });
+    schedules.applyDefaults(['DIFF']);
+    assert.deepEqual([diff(one.id).enabled, diff(one.id).next_run_at], [false, null]);
+
+    assert.deepEqual(schedules.defaultUse().DIFF, { follows: 1, own: [{ id: two.id, name: 'Two' }] });
+
+    // Use default: Two follows the default again.
+    const s = schedules.useDefault(two.id, 'DIFF');
+    assert.deepEqual([s.follows_default, s.enabled, s.kind, s.interval_minutes, s.at_time, s.next_run_at], [true, false, 'daily', null, '02:00', null]);
     closeDb();
 });

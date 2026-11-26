@@ -207,3 +207,39 @@ test('011: databases stopped before automatic management count as stopped by a p
     assert.deepEqual(conn.prepare('SELECT auto_manage, ship_to_server_id FROM servers').get(), { auto_manage: 0, ship_to_server_id: null });
     assert.throws(() => conn.prepare("UPDATE databases SET stopped_by='nobody' WHERE id=7").run(), /CHECK/);
 });
+
+test('013: schedules follow the defaults, except ones edited on the database page since it was last managed', () => {
+    const real = path.join(path.dirname(new URL(import.meta.url).pathname), '../../src/store/migrations');
+    const all = fs.readdirSync(real).filter((f) => /^\d{3}_.+\.sql$/.test(f)).sort();
+    const upTo = (n) => Object.fromEntries(all.filter((f) => Number(f.slice(0, 3)) <= n).map((f) => [f, fs.readFileSync(path.join(real, f), 'utf8')]));
+    const s = scratch(upTo(12));
+    let conn = openDb(s.file, { migrationsDir: s.dir });
+    const t = '2026-01-01T00:00:00Z';
+    const ev = (db, category, message) => `INSERT INTO events (ts, level, category, database_id, message) VALUES ('${t}', 'info', '${category}', ${db}, '${message}');`;
+    conn.exec(`
+        INSERT INTO databases (id, name, status, created_at, updated_at) VALUES (1, 'Untouched', 'managed', '${t}', '${t}'), (2, 'Edited', 'managed', '${t}', '${t}'), (3, 'Remanaged', 'managed', '${t}', '${t}');
+        INSERT INTO schedules (database_id, backup_type, enabled, kind, interval_minutes, at_time, weekday) VALUES
+            (1, 'FULL', 1, 'weekly', NULL, '01:00', 0), (1, 'DIFF', 1, 'daily', NULL, '01:30', NULL), (1, 'LOG', 1, 'interval', 5, NULL, NULL),
+            (2, 'FULL', 0, 'weekly', NULL, '01:00', 0), (2, 'DIFF', 1, 'daily', NULL, '03:00', NULL), (2, 'LOG', 1, 'interval', 5, NULL, NULL),
+            (3, 'DIFF', 1, 'daily', NULL, '01:30', NULL);
+        ${ev(1, 'database', 'Started managing Untouched with primary sql1')}
+        ${ev(2, 'database', 'Started managing Edited with primary sql1')}
+        ${ev(2, 'schedule', 'DIFF schedule of Edited changed')}
+        ${ev(3, 'schedule', 'DIFF schedule of Remanaged changed')}
+        ${ev(3, 'database', 'Started managing Remanaged with primary sql1')}
+    `);
+    closeDb();
+
+    write(s.dir, upTo(13));
+    conn = openDb(s.file, { migrationsDir: s.dir });
+    const rows = conn.prepare('SELECT database_id, backup_type, follows_default FROM schedules ORDER BY database_id, backup_type').all();
+    assert.deepEqual(rows.map((r) => `${r.database_id} ${r.backup_type} ${r.follows_default}`), [
+        '1 DIFF 1',
+        '1 FULL 1',
+        '1 LOG 1',
+        '2 DIFF 0', // edited after it was managed
+        '2 FULL 0', // switched off: FULL and LOG defaults are always on
+        '2 LOG 1',
+        '3 DIFF 1', // edited, but managed again since (which reset it to the default)
+    ]);
+});

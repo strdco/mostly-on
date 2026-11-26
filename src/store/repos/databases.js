@@ -1,7 +1,6 @@
 // Managed databases, their replicas, and databases discovered on servers.
 import { getDb, nowIso, tx } from '../db.js';
-import * as settings from './settings.js';
-import { nextRun } from '../../engine/schedule-math.js';
+import * as schedules from './schedules.js';
 import { dbLabel, isSystemName, manageKind } from '../../engine/backup-rules.js';
 
 // backup_only_server_id is set for a backups-only database (see engine/backup-rules.js):
@@ -199,32 +198,14 @@ export function removeReplica(databaseId, serverId) {
     return getDb().prepare("DELETE FROM database_replicas WHERE database_id=? AND server_id=? AND role!='primary'").run(databaseId, serverId).changes > 0;
 }
 
-export const DEFAULT_SCHEDULE_KEYS = Object.freeze([
-    ['FULL', 'schedule.default_full'],
-    ['DIFF', 'schedule.default_diff'],
-    ['LOG', 'schedule.default_log'],
-]);
-
 /**
- * Gives a database the default schedules (all of each schedule, also when it
- * was managed before). Only the DIFF default can be off; a stored default
- * without `enabled` is on, as it was before that switch existed.
+ * Gives a database the default schedules, following them (also when it was
+ * managed before and had schedules of its own).
  * fullOnly: master, which SQL Server only allows FULL backups of.
  */
 function defaultSchedules(databaseId, { fullOnly = false } = {}) {
     const now = new Date();
-    const ins = getDb().prepare(
-        `INSERT INTO schedules (database_id, backup_type, enabled, kind, interval_minutes, at_time, weekday, next_run_at)
-         VALUES (@database_id, @backup_type, @enabled, @kind, @interval_minutes, @at_time, @weekday, @next_run_at)
-         ON CONFLICT (database_id, backup_type) DO UPDATE SET enabled=excluded.enabled, kind=excluded.kind,
-             interval_minutes=excluded.interval_minutes, at_time=excluded.at_time, weekday=excluded.weekday, next_run_at=excluded.next_run_at`,
-    );
-    for (const [type, key] of fullOnly ? DEFAULT_SCHEDULE_KEYS.slice(0, 1) : DEFAULT_SCHEDULE_KEYS) {
-        const d = settings.get(key);
-        const enabled = type !== 'DIFF' || d.enabled !== false;
-        const sched = { kind: d.kind, interval_minutes: d.interval_minutes ?? null, at_time: d.at_time ?? null, weekday: d.weekday ?? null };
-        ins.run({ database_id: databaseId, backup_type: type, enabled: enabled ? 1 : 0, ...sched, next_run_at: enabled ? nextRun(sched, now).toISOString() : null });
-    }
+    for (const type of fullOnly ? ['FULL'] : ['FULL', 'DIFF', 'LOG']) schedules.useDefault(databaseId, type, now);
     if (fullOnly) getDb().prepare("DELETE FROM schedules WHERE database_id=? AND backup_type!='FULL'").run(databaseId);
 }
 

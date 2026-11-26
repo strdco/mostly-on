@@ -14,10 +14,10 @@ export function describeSchedule(s) {
 }
 
 /**
- * Opens the editor. `onSubmit` gets { enabled?, kind, interval_minutes, at_time, weekday }
+ * Opens the editor. `note`: a line above the fields (what saving does). `onSubmit` gets { enabled?, kind, interval_minutes, at_time, weekday }
  * with only the fields that apply to the chosen kind.
  */
-export function scheduleDialog({ title, schedule: s, withEnabled = true, onSubmit }) {
+export function scheduleDialog({ title, schedule: s, withEnabled = true, note = null, onSubmit }) {
     const kind = h(
         'select',
         { name: 'kind' },
@@ -40,6 +40,7 @@ export function scheduleDialog({ title, schedule: s, withEnabled = true, onSubmi
     return formDialog({
         title,
         fields: [
+            note ? h('p.small.muted', note) : null,
             withEnabled ? field('Enabled', h('input.switch', { type: 'checkbox', switch: true, role: 'switch', name: 'enabled', checked: isOn(s) })) : null,
             field('Repeat', kind),
             interval,

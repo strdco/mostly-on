@@ -6,7 +6,9 @@ import * as events from '../../store/repos/events.js';
 import * as sessions from '../../store/repos/sessions.js';
 import { validateSchedule } from '../../engine/schedule-math.js';
 import * as databases from '../../store/repos/databases.js';
-import { DEFAULT_SCHEDULE_KEYS } from '../../store/repos/databases.js';
+import * as schedules from '../../store/repos/schedules.js';
+import { DEFAULT_SCHEDULE_KEYS } from '../../store/repos/schedules.js';
+import { applyDefaultSchedules } from '../../engine/scheduler.js';
 import { checkAllRetention, globalRetention } from '../../engine/retention-rules.js';
 
 /**
@@ -29,6 +31,8 @@ export function miscRoutes(router, { cfg }) {
         maxParallel: settings.get('servers.max_parallel'),
         // What a database gets when it starts being managed (the Manage dialog says so).
         defaultSchedules: Object.fromEntries(DEFAULT_SCHEDULE_KEYS.map(([type, key]) => [type, settings.get(key)])),
+        // How many databases follow each default schedule, and how many have their own (Settings says so).
+        defaultScheduleUse: schedules.defaultUse(),
     }));
 
     router.get('/api/settings', async () => settings.all());
@@ -57,6 +61,9 @@ export function miscRoutes(router, { cfg }) {
             throw new HttpError(400, err.message);
         }
         if (changed.length) events.add('info', 'settings', `Settings changed: ${changed.join(', ')}`, { data: body, actor: actorOf(ctx) });
+        // Databases that follow a default schedule take the new one.
+        const types = DEFAULT_SCHEDULE_KEYS.filter(([, key]) => changed.includes(key)).map(([type]) => type);
+        if (types.length) applyDefaultSchedules(types, { actor: actorOf(ctx) });
         return settings.all();
     });
 

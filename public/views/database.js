@@ -11,8 +11,21 @@ function editSchedule(db, s) {
     return scheduleDialog({
         title: `${s.backup_type} schedule for ${db.name}`,
         schedule: s,
+        note: s.follows_default ? `This schedule follows the default ${s.backup_type} schedule in Settings. Saving gives ${db.name} its own, which stays as it is when the default changes.` : null,
         onSubmit: (v) => put(`/api/databases/${db.id}/schedules/${s.backup_type}`, v),
     });
+}
+
+/** Follow the default schedule again (after asking: the database's own schedule is replaced). */
+async function useDefaultSchedule(db, s) {
+    const ok = await formDialog({
+        title: `Use the default ${s.backup_type} schedule?`,
+        fields: [h('p', `${db.name} will get the default ${s.backup_type} schedule, as configured in Settings, starting immediately.`)],
+        submitLabel: 'Use default',
+        onSubmit: () => put(`/api/databases/${db.id}/schedules/${s.backup_type}`, { use_default: true }),
+    });
+    if (ok) toast(`${db.name} follows the default ${s.backup_type} schedule`, 'ok');
+    return ok;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -950,6 +963,7 @@ export function databaseView(id) {
                 ],
             }),
             h('h2', 'Schedules'),
+            h('p.muted', 'Schedules follow the ', h('a', { href: '#/settings' }, 'default schedules in Settings'), ', unless you edit them here.'),
             dataTable({
                 caption: 'Backup schedules',
                 rows: db.schedules,
@@ -957,7 +971,14 @@ export function databaseView(id) {
                     { label: 'Type', header: true, cell: (s) => s.backup_type },
                     {
                         label: 'Schedule',
-                        cell: (s) => (s.enabled && db.skipped?.[s.backup_type] ? [describeSchedule(s), ' ', tipBadge('only in FULL recovery', '', db.skipped[s.backup_type])] : describeSchedule(s)),
+                        cell: (s) => [
+                            describeSchedule(s),
+                            s.enabled && db.skipped?.[s.backup_type] ? [' ', tipBadge('only in FULL recovery', '', db.skipped[s.backup_type])] : null,
+                            ' ',
+                            s.follows_default
+                                ? tipBadge('default', '', `Follows the default ${s.backup_type} schedule in Settings, and changes with it.`)
+                                : tipBadge('custom', '', `${db.name} has its own ${s.backup_type} schedule: changing the default in Settings does not change it. Use default to follow the default again.`),
+                        ],
                     },
                     { label: 'Last backup', cell: (s) => lastBackupBadge(db, s.backup_type) },
                     {
@@ -972,14 +993,29 @@ export function databaseView(id) {
                         label: 'Actions',
                         cell: (s) =>
                             h(
-                                'button',
-                                {
-                                    type: 'button',
-                                    onclick: async () => {
-                                        if (await editSchedule(db, s)) load();
+                                'div.inline-row',
+                                h(
+                                    'button',
+                                    {
+                                        type: 'button',
+                                        onclick: async () => {
+                                            if (await editSchedule(db, s)) load();
+                                        },
                                     },
-                                },
-                                'Edit',
+                                    'Edit',
+                                ),
+                                s.follows_default
+                                    ? null
+                                    : h(
+                                          'button',
+                                          {
+                                              type: 'button',
+                                              onclick: async () => {
+                                                  if (await useDefaultSchedule(db, s)) load();
+                                              },
+                                          },
+                                          'Use default',
+                                      ),
                             ),
                     },
                 ],

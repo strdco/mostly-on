@@ -8,6 +8,7 @@
 // database that is not in FULL recovery) is skipped quietly until its next run.
 import * as schedules from '../store/repos/schedules.js';
 import * as databases from '../store/repos/databases.js';
+import * as events from '../store/repos/events.js';
 import { startBackup } from './backup.js';
 import { nextRun } from './schedule-math.js';
 import { BusyError } from './locks.js';
@@ -83,6 +84,21 @@ export function tick(now = new Date()) {
         }
         runOne(s);
     }
+}
+
+/**
+ * Brings the schedules that follow a default in line with it (after a default
+ * is saved, and at start), and says so in the event log. `actor`: who saved it.
+ */
+export function applyDefaultSchedules(types, { actor = null } = {}) {
+    const changed = schedules.applyDefaults(types);
+    for (const [type, ids] of Object.entries(changed)) {
+        if (!ids.length) continue;
+        const n = ids.length === 1 ? '1 database' : `${ids.length} databases`;
+        events.add('info', 'schedule', `Changed the ${type} schedule of ${n} to the default`, { data: { databaseIds: ids }, actor });
+        for (const id of ids) publish('database.changed', { databaseId: id });
+    }
+    return changed;
 }
 
 export function start() {

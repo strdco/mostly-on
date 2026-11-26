@@ -76,6 +76,7 @@ await reconcileOnStartup();
 health.start();
 discovery.start();
 autoManage.start(); // after discovery: both run after each health check, in this order
+scheduler.applyDefaultSchedules(); // schedules that follow a default (after a catalog upgrade, they may not match it yet)
 scheduler.start();
 retention.start();
 restoreLoop.start();
