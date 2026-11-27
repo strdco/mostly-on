@@ -188,13 +188,15 @@ function restartStream(delay) {
     clearTimeout(live.retryTimer);
     live.retryTimer = setTimeout(async () => {
         if (!state.user) return;
+        let me;
         try {
-            await get('/api/auth/me');
-        } catch (err) {
-            if (err.status !== 401) restartStream(RETRY_MS); // 401: api.js signs out ('auth-required')
+            me = await get('/api/auth/me');
+        } catch {
+            restartStream(RETRY_MS);
             return;
         }
-        if (state.user) connectStream();
+        if (!me.user) sessionEnded();
+        else if (state.user) connectStream();
     }, delay);
 }
 
@@ -280,14 +282,16 @@ async function signOut() {
     render();
 }
 
-window.addEventListener('auth-required', () => {
+/** The server no longer knows this session (expired, signed out elsewhere, user disabled). */
+function sessionEnded() {
     if (!state.user) return;
     state.user = null;
     state.mustChangePassword = false;
     disconnectStream();
     toast('Your session has ended. Please sign in again.');
     render();
-});
+}
+window.addEventListener('auth-required', sessionEnded);
 
 document.getElementById('skip-to-content').addEventListener('click', () => app.focus());
 
@@ -298,7 +302,8 @@ window.addEventListener('hashchange', () => {
 
 try {
     const me = await get('/api/auth/me');
-    onLogin(me);
+    if (me.user) onLogin(me);
+    else render();
 } catch {
     render();
 }

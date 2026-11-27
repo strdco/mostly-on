@@ -26,11 +26,13 @@ export async function serverInfo(serverId) {
 
 /**
  * Where the instance runs: { platform: 'Linux'|'Windows'|null, distribution,
- * release, container: e.g. 'LINUX CONTAINER', or null when not in one }.
+ * release, container: e.g. 'LINUX CONTAINER', false when not in one, or null
+ * when unknown (an older version, or a login the setup script has not given
+ * VIEW SERVER STATE yet) }.
  */
 export function hostOf(row) {
-    const container = row.container_type && row.container_type !== 'NONE' ? row.container_type : null;
-    return { platform: row.host_platform ?? null, distribution: row.host_distribution ?? null, release: row.host_release ?? null, container };
+    const container = row.container_type ?? null;
+    return { platform: row.host_platform ?? null, distribution: row.host_distribution ?? null, release: row.host_release ?? null, container: container === 'NONE' ? false : container };
 }
 
 /** The files of a database on a server: [{ logicalName, physicalName, type }] (empty if it does not exist). */
@@ -138,7 +140,8 @@ export function classifyHelperStatus(r, server = null) {
             problems.push(`the setup script was last run with ${shown(r.setup_standby_root)} as the folder for undo files, but this server's settings in Mostly-On say ${shown(server.standby_root)}.`);
         }
     }
-    if (!r.is_sysadmin && !(r.view_server_state && r.view_any_definition && r.read_msdb)) {
+    // Before the script's first run the login is expected to have no permissions: the script grants them.
+    if (r.helper_version != null && !r.is_sysadmin && !(r.view_server_state && r.view_any_definition && r.read_msdb)) {
         problems.push(`the login ${r.login_name} is missing read permissions (VIEW SERVER STATE, VIEW ANY DEFINITION, or reading msdb).`);
     }
     return { ready: problems.length === 0, version: r.helper_version ?? null, expected, problems, login: r.login_name };

@@ -165,9 +165,11 @@ export async function withDedicated(serverId, fn, { connectTimeoutMs = 15000 } =
     }
 }
 
+const TEST_CONNECT_TIMEOUT_MS = 10_000;
+
 /** Connect with ad-hoc settings (used by "test connection" before saving). */
 export async function testConnection(s) {
-    const pool = new sql.ConnectionPool(poolConfig(s, { connectTimeoutMs: 10000, max: 1 }));
+    const pool = new sql.ConnectionPool(poolConfig(s, { connectTimeoutMs: TEST_CONNECT_TIMEOUT_MS, max: 1 }));
     pool.on('error', () => {});
     await pool.connect();
     try {
@@ -187,4 +189,52 @@ export function sqlErrorText(err) {
     const pre = err.precedingErrors?.map((e) => e.message).filter(Boolean);
     if (pre?.length) parts.push(`(${pre.join(' | ')})`);
     return parts.join(': ').slice(0, 2000);
+}
+
+/** Every error code in err and its causes (the driver wraps socket errors, sometimes in an AggregateError). */
+function errorCodes(err, depth = 0) {
+    if (!err || depth > 4) return [];
+    const inner = [...(err.errors ?? []), err.cause, err.originalError !== err ? err.originalError : null];
+    return [err.code, ...inner.flatMap((e) => errorCodes(e, depth + 1))].filter(Boolean);
+}
+
+/**
+ * Why testConnection(s) failed, saying what to check: for the Register dialog,
+ * where it is usually a typo. Anything not recognised gets the driver's own text.
+ */
+export function connectErrorText(s, err) {
+    const codes = new Set(errorCodes(err));
+    const where = s.instance_name ? `${s.host}\\${s.instance_name}` : `${s.host}:${s.port}`;
+    if (codes.has('ENOTFOUND') || codes.has('EAI_AGAIN')) {
+        return `Mostly-On could not find a computer called ${s.host}. Check the host name.` +
+            (s.host.includes('.') ? '' : ' If the name works elsewhere, try its full name (with the domain) or its IP address: Mostly-On looks it up from inside its container.');
+    }
+    if (codes.has('ECONNREFUSED')) {
+        const port = s.instance_name ? `the port of the instance ${s.instance_name}` : `port ${s.port}`;
+        return `${s.host} refused the connection: nothing accepts connections on ${port} there. Check the port, and that SQL Server is running and accepts TCP/IP connections.` +
+            (/^(localhost|127\.|::1$)/i.test(s.host) ? ' Note that localhost is the Mostly-On container itself: use the SQL Server’s host name or IP address.' : '');
+    }
+    if (codes.has('ELOGIN')) {
+        // SQL Server tells the client no more than this on purpose; its error log on the server says why.
+        if (/^Login failed for user '.*'\.$/.test(err.message)) {
+            return `${where} turned down the login ${s.username}. Either the login does not exist there yet (create it first, with CREATE LOGIN), the password is different, ` +
+                `or the server only allows Windows authentication. The SQL Server error log on ${s.host} says which.`;
+        }
+        return `${where} turned down the login ${s.username}: ${err.message}`;
+    }
+    if ([...codes].some((c) => /CERT|SIGNATURE/.test(c))) {
+        return `${where} uses a certificate Mostly-On does not trust (${err.message.replace(/^.* - /, '')}). Tick Trust server certificate under More options, or give the server a trusted certificate.`;
+    }
+    if (codes.has('EHOSTUNREACH') || codes.has('ENETUNREACH')) {
+        return `Mostly-On has no network route to ${s.host}. Check the host name or IP address, and that the network lets Mostly-On reach it.`;
+    }
+    if (codes.has('ETIMEOUT') || codes.has('ETIMEDOUT')) {
+        const seconds = TEST_CONNECT_TIMEOUT_MS / 1000;
+        if (s.instance_name) {
+            return `No answer from ${where} within ${seconds} seconds. Mostly-On finds a named instance's port through the SQL Server Browser service (UDP port 1434): ` +
+                'check the instance name, that the service is running, and that no firewall blocks it. Or leave the instance name empty and enter the port instead.';
+        }
+        return `No answer from ${where} within ${seconds} seconds. Check the host name and port, and that no firewall blocks connections from Mostly-On to SQL Server.`;
+    }
+    return `Mostly-On could not connect to ${where}: ${sqlErrorText(err)}`;
 }

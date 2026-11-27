@@ -48,6 +48,11 @@ test('readiness: ready, missing, out of date, unsigned, no permissions', () => {
     assert.match(classifyHelperStatus({ ...ready, read_msdb: 0 }).problems[0], /read permissions/);
 });
 
+test('readiness: a new login, before the script has run, is only told to run it', () => {
+    const fresh = { helper_version: null, procedures: 0, signed_procedures: 0, can_execute: 0, view_server_state: 0, view_any_definition: 0, read_msdb: 1, is_sysadmin: 0, login_name: 'mostly_on' };
+    assert.deepEqual(classifyHelperStatus(fresh).problems, ['the helper procedures are not installed.']);
+});
+
 test('readiness: a backup or undo-file folder changed after setup needs the script again', () => {
     const run = { ...ready, setup_backup_root: '/var/opt/mssql/backup', setup_standby_root: null };
     const server = { sql_backup_root: '/var/opt/mssql/backup', standby_root: null };

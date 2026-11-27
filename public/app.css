@@ -348,6 +348,8 @@ form.stack { display: grid; gap: 0.75rem; }
 form.stack > .actions { margin-block: 0; }
 form.stack > p, form.stack > .callout { margin-block: 0; }
 .error-text:empty { margin: 0; }
+/* "Connecting to …" next to the dialog's buttons while it waits for the server. */
+.actions > .busy-text { margin: 0; align-self: center; }
 /* Retention days on the database page: three short number fields side by side. */
 fieldset.retention-days { display: grid; grid-template-columns: repeat(3, 9rem); gap: 0.75rem 1rem; margin: 0; padding: 0; border: 0; min-inline-size: 0; }
 fieldset.retention-days > legend { padding: 0; margin-block-end: 0.35rem; font-weight: 600; }

@@ -10,13 +10,14 @@ export function serverAddress(s) {
 /**
  * Where a server runs, from its last health check (inspect.js hostOf()):
  * { short: 'Linux container' | 'Linux' | 'Windows' ..., long: 'Ubuntu 24.04, in a container' }, or null.
+ * Whether it is in a container is left out while unknown (host.container null).
  */
 export function platformOf(host) {
     if (!host?.platform) return null;
     const os = host.platform === 'Windows' ? host.distribution || 'Windows' : [host.distribution, host.release].filter(Boolean).join(' ') || host.platform;
     return {
         short: host.container ? `${host.platform} container` : host.platform,
-        long: host.container ? `${os}, in a container (Docker, Kubernetes or similar)` : `${os}, not in a container`,
+        long: host.container ? `${os}, in a container (Docker, Kubernetes or similar)` : host.container === false ? `${os}, not in a container` : os,
     };
 }
 
@@ -119,13 +120,26 @@ function toPayload(v, isEdit) {
     return out;
 }
 
+/**
+ * Register: connects first, so a typo in the host, port, login or password shows
+ * in the dialog, with what to check, before anything is saved.
+ */
+async function register(v, { signal }) {
+    const payload = toPayload(v, false);
+    const test = await post('/api/servers/test-connection', payload);
+    if (!test.ok) throw new Error(test.error);
+    signal.throwIfAborted(); // closed while connecting: register nothing
+    return post('/api/servers', payload);
+}
+
 export async function editServerDialog(s) {
     const info = await get('/api/info').catch(() => ({}));
     return formDialog({
         title: s ? `Edit server ${s.name}` : 'Register server',
         fields: serverFields(s || {}, info),
         submitLabel: s ? 'Save' : 'Register',
-        onSubmit: (v) => (s ? put(`/api/servers/${s.id}`, toPayload(v, true)) : post('/api/servers', toPayload(v, false))),
+        busyText: s ? null : (v) => `Connecting to ${v.host}…`,
+        onSubmit: s ? (v) => put(`/api/servers/${s.id}`, toPayload(v, true)) : register,
     });
 }
 
@@ -218,11 +232,8 @@ async function afterRegister(s) {
         return;
     }
     const steps = [];
-    if (hh && !hh.ok) {
-        steps.push(
-            h('li', 'Make sure Mostly-On can connect. It could not: ', h('span.mono', String(hh.error).replace(/\.$/, '')), '. If the login does not exist yet, create it on ', h('strong', s.name), ' first.'),
-        );
-    }
+    // Rare: the Register dialog connected a moment ago.
+    if (hh && !hh.ok) steps.push(h('li', 'Make sure Mostly-On can connect. It could not: ', h('span.mono', String(hh.error).replace(/\.$/, '')), '.'));
     steps.push(
         h('li', 'Download the setup script. It already has this server’s backup folder and the login ', h('strong', s.username), ' filled in.'),
         h('li', 'Run it on ', h('strong', s.name), ' as a sysadmin, in SSMS, Azure Data Studio or sqlcmd. Running it again later is always safe.'),
@@ -231,8 +242,10 @@ async function afterRegister(s) {
     await formDialog({
         title: `One more step for ${s.name}`,
         fields: [
-            h('p', `${s.name} is registered, but Mostly-On cannot back up or restore there until its setup script has been run. `
-                + 'The script installs a few signed procedures in master, so Mostly-On can do its job without a sysadmin login.'),
+            hh?.ok
+                ? h('p', `${s.name} is registered, and Mostly-On connected as `, h('strong', s.username), '. Before it can back up or restore there, the setup script has to run once.')
+                : h('p', `${s.name} is registered, but Mostly-On cannot back up or restore there until its setup script has been run.`),
+            h('p', 'The login needs no permissions of its own: the script grants the few Mostly-On needs, and installs signed procedures in master so it can do its job without sysadmin.'),
             h('ol.steps-list', steps),
         ],
         submitLabel: 'Download setup script',

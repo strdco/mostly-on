@@ -5,7 +5,7 @@ import * as databases from '../../store/repos/databases.js';
 import * as ops from '../../store/repos/operations.js';
 import { evaluateSoon } from '../../notify/alerts.js';
 import * as health from '../../engine/health.js';
-import { resetPool, testConnection, sqlErrorText } from '../../sql/pool.js';
+import { resetPool, testConnection, connectErrorText } from '../../sql/pool.js';
 import { setupScriptFor } from '../../sql/setup-script.js';
 import { slotStatus } from '../../sql/slots.js';
 import { runPass } from '../../engine/auto-manage.js';
@@ -221,7 +221,7 @@ export function serverRoutes(router, { cfg }) {
             const r = await testConnection(v);
             return { ok: true, productVersion: r.product_version };
         } catch (err) {
-            return { ok: false, error: sqlErrorText(err) };
+            return { ok: false, error: connectErrorText(v, err) };
         }
     });
 }

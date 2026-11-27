@@ -227,37 +227,54 @@ export function ago(iso) {
  * Modal dialog built from a form. Resolves with FormData values or null on dismiss.
  * onOpen({ form, submit }) runs before it opens, e.g. to set aria-disabled on the
  * submit button while the form cannot be sent (it stays focusable; the form refuses it).
+ * While onSubmit(values, { signal }) runs, the form cannot be sent again and busyText
+ * (a string, or a function of the values) is shown; signal aborts if the dialog is closed.
  */
-export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit, onOpen }) {
+export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, busyText = null, onSubmit, onOpen }) {
     return new Promise((resolve) => {
         const titleId = `dlg-${Math.random().toString(36).slice(2, 9)}`;
         const err = h('p.error-text', { role: 'alert' });
+        const status = h('p.muted.busy-text', { role: 'status' });
         const submit = h(danger ? 'button.danger' : 'button.primary', { type: 'submit', value: 'ok' }, submitLabel);
         const form = h(
             'form.stack',
             { method: 'dialog' },
             fields,
             err,
-            h('div.actions', h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, cancelLabel), submit),
+            h('div.actions', h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, cancelLabel), submit, status),
         );
         const dlg = h('dialog', { 'aria-labelledby': titleId }, h('h2', { id: titleId }, title), form);
         document.body.append(dlg);
+        const closed = new AbortController();
+        let busy = false;
         form.addEventListener('submit', async (e) => {
             if (e.submitter?.value !== 'ok') return; // Cancel: let method=dialog close it
             e.preventDefault();
-            if (submit.getAttribute('aria-disabled') === 'true') return;
+            if (busy || submit.getAttribute('aria-disabled') === 'true') return;
             err.textContent = '';
             const values = Object.fromEntries(new FormData(form));
             for (const cb of form.querySelectorAll('input[type=checkbox]')) values[cb.name] = cb.checked;
+            // aria-disabled, not disabled: the button keeps focus while it waits.
+            busy = true;
+            const wasDisabled = submit.getAttribute('aria-disabled');
+            submit.setAttribute('aria-disabled', 'true');
+            status.textContent = (typeof busyText === 'function' ? busyText(values) : busyText) ?? '';
             try {
-                const result = onSubmit ? await onSubmit(values) : values;
+                const result = onSubmit ? await onSubmit(values, { signal: closed.signal }) : values;
+                if (closed.signal.aborted) return;
                 dlg.close('ok');
                 resolve(result);
             } catch (ex) {
                 err.textContent = ex.message;
+            } finally {
+                busy = false;
+                status.textContent = '';
+                if (wasDisabled === null) submit.removeAttribute('aria-disabled');
+                else submit.setAttribute('aria-disabled', wasDisabled);
             }
         });
         dlg.addEventListener('close', () => {
+            closed.abort();
             if (dlg.returnValue !== 'ok') resolve(null);
             dlg.remove();
         });

@@ -41,6 +41,13 @@ after(() => {
     closeDb();
 });
 
+/** Who /api/auth/me says is signed in with this cookie (null: nobody; it answers 200 either way). */
+async function whoIs(cookie) {
+    const res = await fetch(`${base}/api/auth/me`, { headers: cookie ? { Cookie: cookie } : {} });
+    assert.equal(res.status, 200);
+    return (await res.json()).user;
+}
+
 async function login(password = 'test-password', username = 'admin') {
     const res = await fetch(`${base}/api/auth/login`, {
         method: 'POST',
@@ -93,10 +100,11 @@ test('state-changing requests need the CSRF token', async () => {
 
 test('GET works with the cookie alone; logout ends the session', async () => {
     const { body, cookie } = await login();
-    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: cookie } })).status, 200);
-    const out = await fetch(`${base}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken } });
+    assert.equal(await whoIs(null), null, 'not signed in: an answer, not a 401');
+    assert.equal(await whoIs(cookie), 'admin');
+    const out =await fetch(`${base}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken } });
     assert.equal(out.status, 200);
-    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: cookie } })).status, 401);
+    assert.equal(await whoIs(cookie), null);
 });
 
 test('static files and security headers', async () => {
@@ -159,7 +167,7 @@ test('users: disabling ends sessions and blocks login; the last enabled user and
     const c = await as('carol', 'carol-pass-1');
     assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: c.cookie } })).status, 200);
     assert.equal((await admin.call('POST', `/api/users/${carol.id}/disable`)).status, 200);
-    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: c.cookie } })).status, 401, 'her session ended');
+    assert.equal(await whoIs(c.cookie), null, 'her session ended');
     const denied = await login('carol-pass-1', 'carol');
     assert.equal(denied.res.status, 401);
     assert.equal(denied.body.error, (await login('whatever', 'nobody')).body.error, 'same answer as an unknown user');
@@ -179,7 +187,7 @@ test('users: a reset password logs the user out and must be changed', async () =
     const reset = await admin.call('POST', `/api/users/${dave.id}/password`, { password: 'dave-temp-pass' });
     assert.equal(reset.status, 200);
     assert.equal(reset.body.mustChangePassword, true);
-    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { Cookie: d.cookie } })).status, 401);
+    assert.equal(await whoIs(d.cookie), null);
     const again = await as('dave', 'dave-temp-pass');
     assert.equal(again.me.mustChangePassword, true);
 });
