@@ -1,5 +1,5 @@
 // Alerts: what is wrong right now, and what was wrong recently.
-import { h, clear, dataTable, badge, formatTime } from '../dom.js';
+import { h, clear, dataTable, badge, timeTag } from '../dom.js';
 import { get } from '../api.js';
 import { formatDuration } from './overview.js';
 import { resolveOperation } from './operations.js';
@@ -80,7 +80,7 @@ export function alertsView() {
             ...[
                 configured
                     ? delivery.lastError
-                        ? h('div.callout.err', h('strong', 'Notifications are failing. '), delivery.lastError, delivery.nextAttemptAt ? ` Next attempt ${formatTime(delivery.nextAttemptAt)}.` : '')
+                        ? h('div.callout.err', h('strong', 'Notifications are failing. '), delivery.lastError, delivery.nextAttemptAt ? [' Next attempt ', timeTag(delivery.nextAttemptAt), '.'] : '')
                         : null
                     : h('div.callout.warn', 'No notification channel is configured, so alerts are only shown here. See ', h('a', { href: '#/settings' }, 'Settings'), '.'),
                 dataTable({
@@ -90,8 +90,8 @@ export function alertsView() {
                     columns: [
                         { label: 'Severity', cell: (a) => badge(a.severity === 'error' ? 'error' : 'warning', a.severity === 'error' ? 'err' : 'warn') },
                         { label: 'Alert', header: true, cell: (a) => [h('div.small.muted', KIND_LABEL[a.kind] || a.kind), a.message] },
-                        { label: 'Since', cell: (a) => [formatTime(a.first_seen_at), h('div.small.muted', since(a.first_seen_at))] },
-                        { label: 'Last notified', cell: (a) => (a.last_notified_at ? formatTime(a.last_notified_at) : h('span.muted', 'not sent')) },
+                        { label: 'Since', cell: (a) => [timeTag(a.first_seen_at), h('div.small.muted', since(a.first_seen_at))] },
+                        { label: 'Last notified', cell: (a) => (a.last_notified_at ? timeTag(a.last_notified_at) : h('span.muted', 'not sent')) },
                         { label: 'Go to', cell: target },
                         { label: 'What to do', cell: (a) => alertAction(a) },
                     ],
@@ -103,8 +103,8 @@ export function alertsView() {
                     empty: 'No resolved alerts.',
                     columns: [
                         { label: 'Alert', header: true, cell: (a) => [h('div.small.muted', KIND_LABEL[a.kind] || a.kind), a.message] },
-                        { label: 'Started', cell: (a) => formatTime(a.first_seen_at) },
-                        { label: 'Resolved', cell: (a) => formatTime(a.resolved_at) },
+                        { label: 'Started', cell: (a) => timeTag(a.first_seen_at) },
+                        { label: 'Resolved', cell: (a) => timeTag(a.resolved_at) },
                         {
                             label: 'Lasted',
                             num: true,

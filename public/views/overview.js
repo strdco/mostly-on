@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, formatTime, tooltip } from '../dom.js';
+import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, timeTag, tooltip } from '../dom.js';
 import { get, post } from '../api.js';
 import { activeAlertsCallout } from './alerts.js';
 import { stopManagingBlocker, stopManagingDialog } from './database.js';
@@ -154,12 +154,12 @@ export function lagTipBadge(lag, limits, rep = null) {
     const parts = [];
     const delay = limits.delayMinutes;
     if (delay) parts.push(`This copy is kept ${delayText(delay)} behind on purpose (restore delay): it restores a log backup only once that backup is ${delayText(delay)} old.`);
-    if (restoresPaused(rep)) parts.push(`Its restores are paused until ${formatTime(rep.restores_paused_until)}, so nobody using it is disconnected meanwhile.`);
+    if (restoresPaused(rep)) parts.push(['Its restores are paused until ', timeTag(rep.restores_paused_until), ', so nobody using it is disconnected meanwhile.']);
     else if (rep?.restores_paused_until) parts.push('It is catching up after a pause or a smaller delay.');
     const finish = lag.lastRestored?.backup_finish;
     parts.push(
         finish
-            ? `The newest data on this copy is from ${formatTime(finish)}: when the last log backup restored here was taken.`
+            ? ['The newest data on this copy is from ', timeTag(finish), ': when the last log backup restored here was taken.']
             : `The newest data on this copy is ${formatDuration(lag.seconds)} old.`,
     );
     const n = lag.files;
@@ -173,7 +173,7 @@ export function lagTipBadge(lag, limits, rep = null) {
         const normal = normalMin ? `Up to ${minutesText(normalMin)} is normal (${delay ? 'its delay plus ' : ''}the time between log backups). ` : '';
         parts.push(`${normal}It turns amber after ${minutesText(limits.warn / 60)}, and red with an alert after ${minutesText(limits.alert / 60)}.`);
     }
-    return tipBadge(lagText(lag, limits, rep), lagKind(lag, limits, rep), parts.join(' '));
+    return tipBadge(lagText(lag, limits, rep), lagKind(lag, limits, rep), parts.flatMap((p, i) => (i ? [' ', p] : [p])));
 }
 
 /**

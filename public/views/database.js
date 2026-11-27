@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, formatBytes, formatTime, tooltip, menuButton } from '../dom.js';
+import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, formatBytes, formatTime, timeTag, tooltip, menuButton } from '../dom.js';
 import { get, post, put } from '../api.js';
 import { stateTipBadge, stateText, chainBadge, lagTipBadge, formatDuration, busyText, backupOnlyTag, typeNotApplicable, lastBackupBadge } from './overview.js';
 import { operationsTable } from './operations.js';
@@ -302,7 +302,7 @@ function previewList(pf) {
 /** What happens to the old primary, for the current state of the tail-log checkbox. */
 function tailOutcome(pf, tailLog) {
     const old = pf.oldPrimary.name;
-    const since = pf.dataLoss.since ? `${formatTime(pf.dataLoss.since)} (${formatDuration(pf.dataLoss.seconds)} ago)` : 'the last shipped log (time unknown)';
+    const since = pf.dataLoss.since ? [timeTag(pf.dataLoss.since), ` (${formatDuration(pf.dataLoss.seconds)} ago)`] : 'the last shipped log (time unknown)';
     if (tailLog && pf.plannedPossible) {
         return h('p', `${old} disconnects all users of the database, takes the tail-log backup and becomes the secondary. Nothing is lost.`);
     }
@@ -310,14 +310,18 @@ function tailOutcome(pf, tailLog) {
         return h(
             'div.callout.warn',
             h('strong', 'Data may be lost. '),
-            `A failover without data loss is not possible: ${pf.plannedBlocker}. Mostly-On attempts a best-effort tail-log backup on ${old}; transactions committed after ${since} that it cannot capture are lost. `,
+            `A failover without data loss is not possible: ${pf.plannedBlocker}. Mostly-On attempts a best-effort tail-log backup on ${old}; transactions committed after `,
+            since,
+            ' that it cannot capture are lost. ',
             `${old} is then marked out of sync and must be reinitialized from the new primary (Reinitialize).`,
         );
     }
     return h(
         'div.callout.err',
         h('strong', 'Without a tail-log backup, data will be lost. '),
-        `Transactions committed on ${old} after ${since} will never reach ${pf.target.name}. `,
+        `Transactions committed on ${old} after `,
+        since,
+        ` will never reach ${pf.target.name}. `,
         `${old} will be set OFFLINE so nothing can keep writing to it. `,
         pf.plannedPossible ? h('strong', `${old} looks healthy: with the tail-log backup, nothing would be lost.`) : '',
     );
@@ -333,7 +337,7 @@ async function failoverDialog(db, r) {
     const sync = () => clear(outcome).append(tailOutcome(pf, tail.checked));
     tail.addEventListener('change', sync);
     sync();
-    const lastCheck = pf.oldPrimary.checkedAt ? ` at the last check (${formatTime(pf.oldPrimary.checkedAt)})` : '';
+    const lastCheck = pf.oldPrimary.checkedAt ? [' at the last check (', timeTag(pf.oldPrimary.checkedAt), ')'] : '';
     return formDialog({
         title: `Fail over ${db.name} to ${r.server_name}`,
         fields: [
@@ -341,8 +345,12 @@ async function failoverDialog(db, r) {
             field(
                 `Perform tail log backup on ${old}`,
                 tail,
-                `A final log backup of ${old} that captures the transactions not yet copied to ${r.server_name}. ` +
-                    `${old} was ${pf.oldPrimary.reachable ? `reachable (${pf.oldPrimary.state ? stateText({ state: pf.oldPrimary.state, isInStandby: pf.oldPrimary.state === 'STANDBY' }, 'primary') : 'database state unknown'})` : 'unreachable'}${lastCheck}.`,
+                [
+                    `A final log backup of ${old} that captures the transactions not yet copied to ${r.server_name}. ` +
+                        `${old} was ${pf.oldPrimary.reachable ? `reachable (${pf.oldPrimary.state ? stateText({ state: pf.oldPrimary.state, isInStandby: pf.oldPrimary.state === 'STANDBY' }, 'primary') : 'database state unknown'})` : 'unreachable'}`,
+                    lastCheck,
+                    '.',
+                ],
             ),
             outcome,
         ],
@@ -470,7 +478,7 @@ async function pointInTimeDialog(db) {
     const sliderBlock = h(
         'div.range-block',
         slider,
-        h('div.range-ends.small.muted', { 'aria-hidden': 'true' }, h('span', 'earliest possible'), h('span', range.untilNow ? 'now' : formatTime(range.to ?? range.from))),
+        h('div.range-ends.small.muted', { 'aria-hidden': 'true' }, h('span', 'earliest possible'), h('span', range.untilNow ? 'now' : timeTag(range.to ?? range.from))),
     );
 
     const servers = range.servers.filter((s) => s.ok);
@@ -531,7 +539,7 @@ async function pointInTimeDialog(db) {
         const rollback = modes.querySelector('input[value=rollback]').checked;
         copyGroup.hidden = copyGroup.disabled = rollback;
         rollbackGroup.hidden = rollbackGroup.disabled = !rollback;
-        lost.textContent = d ? formatTime(d.toISOString()) : 'the moment you choose';
+        lost.replaceChildren(d ? timeTag(d.toISOString()) : 'the moment you choose');
         if (d && !nameEdited) nameInput.value = copyName(db, d);
         const offset = range.primary.tz_offset_minutes;
         clear(clock).append(d && offset != null && offset !== -d.getTimezoneOffset() ? `That is ${serverClock(d, offset)} on ${primaryName}'s clock.` : '');
@@ -542,13 +550,13 @@ async function pointInTimeDialog(db) {
     sync();
 
     const span = range.untilNow
-        ? `any point in time from ${formatTime(range.from)} until now.`
-        : `any point in time from ${formatTime(range.from)}, but no later than ${formatTime(range.to ?? range.from)} because ${primaryName} is not reachable.`;
+        ? ['any point in time from ', timeTag(range.from), ' until now.']
+        : ['any point in time from ', timeTag(range.from), ', but no later than ', timeTag(range.to ?? range.from), ` because ${primaryName} is not reachable.`];
 
     return formDialog({
         title: `Restore ${db.name}`,
         fields: [
-            h('p', `Mostly-On can restore ${db.name} to ${span}`),
+            h('p', `Mostly-On can restore ${db.name} to `, span),
             field(`Restore to (your time, ${offsetText(-new Date().getTimezoneOffset())})`, moment, 'Date and time, to the second, or drag the slider below.'),
             sliderBlock,
             clock,
@@ -805,7 +813,7 @@ export function databaseView(id) {
     function latestForeignLine(db) {
         const f = db.latest_foreign;
         if (!f || !f.acknowledged_at) return null;
-        return h('p.small.muted', `Also backed up by another tool: ${f.type}, ${formatTime(f.finish_at)}, to `, h('span.mono', f.device), '. Turn that job off if Mostly-On should be the only one.');
+        return h('p.small.muted', `Also backed up by another tool: ${f.type}, `, timeTag(f.finish_at), ', to ', h('span.mono', f.device), '. Turn that job off if Mostly-On should be the only one.');
     }
 
     // Disabled (but focusable, with its reason as a tooltip) while other copies exist.
@@ -914,7 +922,9 @@ export function databaseView(id) {
                           unacked.map((f) =>
                               h(
                                   'li',
-                                  `${f.type} backup on ${f.server_name} at ${formatTime(f.finish_at)} to `,
+                                  `${f.type} backup on ${f.server_name} at `,
+                                  timeTag(f.finish_at),
+                                  ' to ',
                                   h('span.mono', f.device),
                                   ' ',
                                   h(
@@ -986,10 +996,10 @@ export function databaseView(id) {
                         label: 'Last run',
                         cell: (s) =>
                             s.last_status
-                                ? [formatTime(s.last_run_at), ' ', badge(s.last_status, s.last_status.startsWith('ok') ? 'ok' : s.last_status.startsWith('skipped') ? '' : 'err')]
+                                ? [timeTag(s.last_run_at), ' ', badge(s.last_status, s.last_status.startsWith('ok') ? 'ok' : s.last_status.startsWith('skipped') ? '' : 'err')]
                                 : '–',
                     },
-                    { label: 'Next run', cell: (s) => formatTime(s.next_run_at) },
+                    { label: 'Next run', cell: (s) => timeTag(s.next_run_at) },
                     {
                         label: 'Actions',
                         cell: (s) =>
@@ -1044,7 +1054,7 @@ export function databaseView(id) {
                     empty: 'No backups yet.',
                     columns: [
                         { label: 'Type', header: true, cell: (f) => f.type + (f.is_tail ? ' (tail-log, from a failover)' : '') },
-                        { label: 'Finished', cell: (f) => formatTime(f.backup_finish) },
+                        { label: 'Finished', cell: (f) => timeTag(f.backup_finish) },
                         { label: 'File', cell: (f) => h('span.mono', f.rel_path.split('/').pop()) },
                         { label: 'Size', num: true, cell: (f) => formatBytes(f.size_bytes) },
                         { label: 'Status', cell: (f) => badge(...(FILE_STATUS[f.file_status] || [f.file_status, ''])) },
@@ -1057,7 +1067,7 @@ export function databaseView(id) {
                     limit: 10,
                     empty: 'Nothing restored yet.',
                     columns: [
-                        { label: 'Started', header: true, cell: (x) => formatTime(x.started_at) },
+                        { label: 'Started', header: true, cell: (x) => timeTag(x.started_at) },
                         { label: 'Server', cell: (x) => x.server_name },
                         { label: 'Backup', cell: (x) => [`${x.backup_type} `, h('span.mono', x.rel_path.split('/').pop())] },
                         { label: 'Outcome', cell: (x) => [badge(OUTCOME_TEXT[x.outcome] || x.outcome, OUTCOME_KIND[x.outcome]), x.error ? h('div.small.error-text', x.error) : null] },

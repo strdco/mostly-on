@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, tooltip, formatTime } from '../dom.js';
+import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, tooltip, timeTag } from '../dom.js';
 import { get, post, put, del } from '../api.js';
 import { stateText, stateBadge, chainBadge } from './overview.js';
 
@@ -526,7 +526,9 @@ export function serverDetailView(id) {
                 h('h1', `Server ${s.name}`),
                 h(
                     'div.callout.warn',
-                    `${s.name} was removed on ${formatTime(s.removed_at)}. Mostly-On no longer connects to it; the backup files it wrote stay usable until retention removes them. ` +
+                    `${s.name} was removed on `,
+                    timeTag(s.removed_at),
+                    '. Mostly-On no longer connects to it; the backup files it wrote stay usable until retention removes them. ' +
                         'To use it again, register a server under the same name (Servers page).',
                 ),
             );
