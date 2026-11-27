@@ -105,6 +105,28 @@ export function busyText(busy, replicas = []) {
     return [...new Set(busy.map((k) => (k.startsWith('restore:') ? `restoring on ${name(k.slice(8))}` : words[k] || k)))].join(', ');
 }
 
+/**
+ * `content` (a badge) with a tiny icon after it while work runs: 'backup'
+ * (play) or 'restore' (fast-forward). The icon sits in the table cell's end
+ * padding, out of the flow (app.css .activity), so it comes and goes without
+ * moving anything. label: what runs, in words (its name and tooltip).
+ */
+export function withActivity(content, icon, label) {
+    if (!icon) return content;
+    const i = h(`span.activity-icon.${icon}`, { role: 'img', 'aria-label': label });
+    const { tip } = tooltip(i, label);
+    i.removeAttribute('aria-describedby'); // the label already says it
+    return [h('span.activity', content, i), tip];
+}
+
+const BACKUP_LOCKS = ['full', 'diff', 'log'];
+
+/** What runs on a database that has no icon of its own on the Overview (a failover, retention ...), in lock names. */
+function busyWithoutIcon(d) {
+    const restoreShown = (k) => !d.backup_only && d.replicas.some((r) => r.role !== 'primary' && k === `restore:${r.server_id}`);
+    return d.busy.filter((k) => !BACKUP_LOCKS.includes(k) && !restoreShown(k));
+}
+
 const CHAIN = {
     ok: ['shipping', 'ok'],
     seeding: ['being set up', ''],
@@ -337,10 +359,12 @@ export function overviewView() {
                         cell: (d) => {
                             if (!d.managed) return null;
                             const x = health.get(d.id);
+                            // Backups and restores show as icons in their own columns; only the rest needs a line here.
+                            const other = busyWithoutIcon(d);
                             return [
                                 badge(x.label, x.kind),
                                 x.reasons.length ? h('ul.health-reasons', x.reasons.map((r) => h('li', r))) : null,
-                                d.busy.length ? h('p.running', `Running: ${busyText(d.busy, d.replicas)}`) : null,
+                                other.length ? h('p.running', `Running: ${busyText(other, d.replicas)}`) : null,
                             ];
                         },
                     },
@@ -358,15 +382,22 @@ export function overviewView() {
                                           ' ',
                                           stateBadge(r.live, r.role),
                                           ' ',
-                                          r.chain_state === 'ok' && r.role === 'secondary' && !r.lag?.loop?.failures
-                                              ? lagBadge(r.lag, lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), threshold, r.restore_delay_minutes), r)
-                                              : chainBadge(r),
+                                          withActivity(
+                                              r.chain_state === 'ok' && r.role === 'secondary' && !r.lag?.loop?.failures
+                                                  ? lagBadge(r.lag, lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), threshold, r.restore_delay_minutes), r)
+                                                  : chainBadge(r),
+                                              d.busy.includes(`restore:${r.server_id}`) && 'restore',
+                                              `${r.server_name} is restoring backups now`,
+                                          ),
                                       ),
                                   )
                                 : h('span.muted', 'none');
                         },
                     },
-                    ...['FULL', 'DIFF', 'LOG'].map((t) => ({ label: `Last ${t}`, cell: (d) => (d.managed ? lastBackupBadge(d, t) : null) })),
+                    ...['FULL', 'DIFF', 'LOG'].map((t) => ({
+                        label: `Last ${t}`,
+                        cell: (d) => (d.managed ? withActivity(lastBackupBadge(d, t), d.busy.includes(t.toLowerCase()) && 'backup', `A ${t} backup is running now`) : null),
+                    })),
                 ],
             }),
         );

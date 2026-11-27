@@ -82,7 +82,7 @@ test('the setup script: its version matches, and only take_backup may touch syst
     assert.equal(Number(version?.[1]), P.HELPER_VERSION);
     assert.match(sql, new RegExp(`helper procedures, version ${P.HELPER_VERSION}\\.`), 'the header says the same version');
     // check_database refuses system databases unless @backup=1, which only take_backup passes.
-    const calls = [...sql.matchAll(/EXEC mostly_on\.check_database ([^;]*);/g)].map((m) => m[1]);
+    const calls = [...sql.matchAll(/EXEC(?:UTE)? mostly_on\.check_database ([^;]*);/g)].map((m) => m[1]);
     assert.ok(calls.length >= 6);
     assert.equal(calls.filter((c) => /@backup=1/.test(c)).length, 1);
     const takeBackup = /CREATE PROCEDURE mostly_on\.take_backup[\s\S]*?\nGO/.exec(sql)[0];
