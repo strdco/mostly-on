@@ -48,7 +48,7 @@ IF (N'$(BackupRoot)' NOT LIKE N'/%' AND N'$(BackupRoot)' NOT LIKE N'[A-Za-z]:\%'
 END;
 GO
 
-IF (SCHEMA_ID(N'mostly_on') IS NULL) EXEC (N'CREATE SCHEMA mostly_on AUTHORIZATION dbo;');
+IF (SCHEMA_ID(N'mostly_on') IS NULL) EXEC(N'CREATE SCHEMA mostly_on AUTHORIZATION dbo;');
 GO
 
 -- Start clean: dropping the old procedures also removes their signatures, so the
@@ -60,7 +60,7 @@ FROM sys.objects AS o
 WHERE o.schema_id=SCHEMA_ID(N'mostly_on')
   AND o.type IN ('P', 'FN');
 
-IF (@drop IS NOT NULL) EXEC sys.sp_executesql @drop;
+IF (@drop IS NOT NULL) EXECUTE sys.sp_executesql @drop;
 IF (SUSER_ID(N'mostly_on_signing') IS NOT NULL) DROP LOGIN mostly_on_signing;
 IF (CERT_ID(N'mostly_on_signing') IS NOT NULL) DROP CERTIFICATE mostly_on_signing;
 GO
@@ -82,7 +82,7 @@ IF (OBJECT_ID(N'mostly_on.stand_in_owners', N'U') IS NULL)
 CREATE TABLE mostly_on.stand_in_owners (
     database_name       sysname NOT NULL,
     family_guid         uniqueidentifier NOT NULL,               -- tells the database apart from a later one of the same name
-    CONSTRAINT PK_stand_in_owners PRIMARY KEY CLUSTERED (database_name, family_guid)
+    CONSTRAINT PK_stand_in_owners PRIMARY KEY CLUSTERED ([database_name], family_guid)
 );
 GO
 
@@ -109,7 +109,11 @@ CREATE FUNCTION mostly_on.setup_values()
 RETURNS nvarchar(max)
 AS
 BEGIN;
-    RETURN (SELECT s.backup_root, s.standby_root FROM mostly_on.settings AS s FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES);
+    RETURN (
+        SELECT s.backup_root, s.standby_root
+        FROM mostly_on.settings AS s
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
 END;
 GO
 
@@ -133,6 +137,7 @@ CREATE PROCEDURE mostly_on.check_path
     @path               nvarchar(400),
     @kind               varchar(10)
 AS
+
 SET NOCOUNT ON;
 DECLARE @ok bit=0;
 
@@ -168,15 +173,20 @@ CREATE PROCEDURE mostly_on.check_database
     @must_exist         bit=1,
     @backup             bit=0
 AS
+
 SET NOCOUNT ON;
+
 IF (@db IS NULL OR @db=N'tempdb' OR DB_ID(@db)=2)
     THROW 50001, N'Mostly-On never touches tempdb.', 1;
+
 IF (@backup=0 AND (@db IN (N'master', N'model', N'msdb') OR DB_ID(@db) BETWEEN 1 AND 4))
     THROW 50001, N'Mostly-On only backs up system databases (master, model, msdb); it never restores or changes them.', 1;
+
 IF (@must_exist=1 AND DB_ID(@db) IS NULL) BEGIN;
     DECLARE @message nvarchar(2048)=N'Database '+@db+N' does not exist on this server.';
     THROW 50002, @message, 1;
 END;
+
 GO
 
 -- --- privileged actions (signed) --------------------------------------------------
@@ -194,9 +204,12 @@ CREATE PROCEDURE mostly_on.take_backup
     @copy_only          bit=0,
     @continue_after_error bit=0
 AS
+
 SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db, @backup=1;
-EXEC mostly_on.check_path @path=@path, @kind='backup';
+
+EXECUTE mostly_on.check_database @db=@db, @backup=1;
+EXECUTE mostly_on.check_path @path=@path, @kind='backup';
+
 IF (DB_ID(@db)=1 AND @type!='FULL')
     THROW 50022, N'SQL Server only allows full backups of master.', 1;
 
@@ -212,6 +225,7 @@ ELSE IF (@type='LOG')
     BACKUP LOG @db TO DISK=@path WITH CHECKSUM, INIT, NO_COMPRESSION, NAME=@name, DESCRIPTION=@description, STATS=10;
 ELSE
     THROW 50020, N'Unknown backup type.', 1;
+
 GO
 
 -- The tail-log backup of a failover. 'planned': disconnect everyone
@@ -225,13 +239,15 @@ CREATE PROCEDURE mostly_on.tail_log
     @mode               varchar(8),
     @continue_after_error bit=0
 AS
+
 SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db;
-EXEC mostly_on.check_path @path=@path, @kind='backup';
+
+EXECUTE mostly_on.check_database @db=@db;
+EXECUTE mostly_on.check_path @path=@path, @kind='backup';
 
 IF (@mode='planned') BEGIN;
     DECLARE @sql nvarchar(max)=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;';
-    EXEC sys.sp_executesql @sql;
+    EXECUTE sys.sp_executesql @sql;
     BACKUP LOG @db TO DISK=@path WITH NORECOVERY, CHECKSUM, INIT, NO_COMPRESSION, NAME=@name, DESCRIPTION=@description, STATS=10;
 END;
 ELSE IF (@mode='forced' AND @continue_after_error=0)
@@ -240,6 +256,7 @@ ELSE IF (@mode='forced' AND @continue_after_error=1)
     BACKUP LOG @db TO DISK=@path WITH NO_TRUNCATE, NORECOVERY, CONTINUE_AFTER_ERROR, CHECKSUM, INIT, NO_COMPRESSION, NAME=@name, DESCRIPTION=@description, STATS=10;
 ELSE
     THROW 50021, N'Unknown tail-log mode.', 1;
+
 GO
 
 -- RESTORE DATABASE of a FULL or DIFF, always WITH NORECOVERY. @moves is a JSON
@@ -252,15 +269,18 @@ CREATE PROCEDURE mostly_on.restore_database
     @replace            bit=0,
     @must_not_exist     bit=0
 AS
+
 SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db, @must_exist=0;
+
+EXECUTE mostly_on.check_database @db=@db, @must_exist=0;
 
 -- A copy restored under a new name never replaces a database that is already there.
 IF (@must_not_exist=1 AND DB_ID(@db) IS NOT NULL) BEGIN;
     DECLARE @exists nvarchar(2048)=N'A database named '+@db+N' already exists on this server; choose another name.';
     THROW 50003, @exists, 1;
 END;
-EXEC mostly_on.check_path @path=@path, @kind='backup';
+
+EXECUTE mostly_on.check_path @path=@path, @kind='backup';
 
 DECLARE @moves_table TABLE (
     logical_name        sysname NOT NULL,
@@ -277,7 +297,7 @@ DECLARE targets CURSOR LOCAL FAST_FORWARD FOR SELECT m.physical_name FROM @moves
 OPEN targets;
 FETCH NEXT FROM targets INTO @target;
 WHILE (@@FETCH_STATUS=0) BEGIN;
-    EXEC mostly_on.check_path @path=@target, @kind='data';
+    EXECUTE mostly_on.check_path @path=@target, @kind='data';
     FETCH NEXT FROM targets INTO @target;
 END;
 CLOSE targets;
@@ -292,7 +312,7 @@ IF (@replace=1) BEGIN;
     WHERE s.database_id=DB_ID(@db)
       AND s.session_id!=@@SPID;
 
-    IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+    IF (@kill IS NOT NULL) EXECUTE sys.sp_executesql @kill;
 END;
 
 -- MOVE clauses as escaped N'...' literals; @db and @path stay parameters.
@@ -301,11 +321,13 @@ DECLARE @move nvarchar(max);
 SELECT @move=STRING_AGG(CAST(N', MOVE N'''+REPLACE(m.logical_name, N'''', N'''''')+N''' TO N'''+REPLACE(m.physical_name, N'''', N'''''')+N'''' AS nvarchar(max)), N'')
 FROM @moves_table AS m;
 
-DECLARE @sql nvarchar(max)=N'RESTORE DATABASE @db FROM DISK=@path WITH NORECOVERY, CHECKSUM, STATS=10'
+DECLARE @sql nvarchar(max)=
+    N'RESTORE DATABASE @db FROM DISK=@path WITH NORECOVERY, CHECKSUM, STATS=10'
     +CASE WHEN @replace=1 THEN N', REPLACE' ELSE N'' END
     +ISNULL(@move, N'')+N';';
 
-EXEC sys.sp_executesql @sql, N'@db sysname, @path nvarchar(400)', @db=@db, @path=@path;
+EXECUTE sys.sp_executesql @sql, N'@db sysname, @path nvarchar(400)', @db=@db, @path=@path;
+
 GO
 
 -- RESTORE LOG WITH NORECOVERY, or STANDBY (readable copy) when @undo is given.
@@ -319,10 +341,15 @@ CREATE PROCEDURE mostly_on.restore_log
     @undo               nvarchar(400)=NULL,
     @stop_at            datetime2(3)=NULL
 AS
+
 SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db;
-EXEC mostly_on.check_path @path=@path, @kind='backup';
-IF (@undo IS NOT NULL) EXEC mostly_on.check_path @path=@undo, @kind='undo';
+
+EXECUTE mostly_on.check_database @db=@db;
+EXECUTE mostly_on.check_path @path=@path, @kind='backup';
+
+IF (@undo IS NOT NULL)
+    EXECUTE mostly_on.check_path @path=@undo, @kind='undo';
+
 IF (@undo IS NOT NULL AND @stop_at IS NOT NULL)
     THROW 50004, N'A point-in-time restore cannot leave a readable (STANDBY) copy.', 1;
 
@@ -333,7 +360,7 @@ FROM sys.dm_exec_sessions AS s
 WHERE s.database_id=DB_ID(@db)
   AND s.session_id!=@@SPID;
 
-IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+IF (@kill IS NOT NULL) EXECUTE sys.sp_executesql @kill;
 
 DECLARE @stop nvarchar(30)=CONVERT(nvarchar(30), @stop_at, 126);
 
@@ -355,14 +382,18 @@ GO
 -- Any other database keeps its owner, and Mostly-On's login never becomes the
 -- owner, so this procedure cannot give Mostly-On access to any data.
 -- Returns the owner and how it was chosen.
+
 CREATE PROCEDURE mostly_on.recover
     @db                 sysname,
     @owner_sid          varbinary(85)=NULL,
     @owner_name         sysname=NULL
 AS
-SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db;
+
 DECLARE @sql nvarchar(max);
+SET NOCOUNT ON;
+
+EXECUTE mostly_on.check_database @db=@db;
+
 
 IF (EXISTS (SELECT NULL FROM sys.databases AS d WHERE d.name=@db AND d.is_in_standby=1)) BEGIN;
     DECLARE @kill nvarchar(max);
@@ -370,7 +401,9 @@ IF (EXISTS (SELECT NULL FROM sys.databases AS d WHERE d.name=@db AND d.is_in_sta
     FROM sys.dm_exec_sessions AS s
     WHERE s.database_id=DB_ID(@db)
       AND s.session_id!=@@SPID;
-    IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+
+    IF (@kill IS NOT NULL)
+        EXECUTE sys.sp_executesql @kill;
 END;
 
 IF (EXISTS (SELECT NULL FROM sys.databases AS d WHERE d.name=@db AND (d.state_desc=N'RESTORING' OR d.is_in_standby=1)))
@@ -378,7 +411,7 @@ IF (EXISTS (SELECT NULL FROM sys.databases AS d WHERE d.name=@db AND (d.state_de
 
 IF ((SELECT d.user_access_desc FROM sys.databases AS d WHERE d.name=@db)!=N'MULTI_USER') BEGIN;
     SET @sql=N'ALTER DATABASE '+QUOTENAME(@db)+N' SET MULTI_USER;';
-    EXEC sys.sp_executesql @sql;
+    EXECUTE sys.sp_executesql @sql;
 END;
 
 DECLARE @owner sysname, @matched_by varchar(10), @note nvarchar(2048);
@@ -426,7 +459,7 @@ BEGIN TRY;
     IF (SUSER_SID(@owner)=@self)
         THROW 50050, N'Mostly-On never makes its own login the owner of a database. Run the setup script again with another FallbackOwner.', 1;
     SET @sql=N'ALTER AUTHORIZATION ON DATABASE::'+QUOTENAME(@db)+N' TO '+QUOTENAME(@owner)+N';';
-    EXEC sys.sp_executesql @sql;
+    EXECUTE sys.sp_executesql @sql;
 
     DELETE FROM mostly_on.stand_in_owners WHERE database_name=@db;
     IF (@matched_by='fallback' AND @family IS NOT NULL)
@@ -449,15 +482,21 @@ CREATE PROCEDURE mostly_on.set_state
     @db                 sysname,
     @state              varchar(20)
 AS
+
 SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db;
+
+EXECUTE mostly_on.check_database @db=@db;
+
 DECLARE @sql nvarchar(max)=CASE @state
     WHEN 'OFFLINE' THEN N'ALTER DATABASE '+QUOTENAME(@db)+N' SET OFFLINE WITH ROLLBACK IMMEDIATE;'
     WHEN 'ONLINE_RESTRICTED' THEN N'ALTER DATABASE '+QUOTENAME(@db)+N' SET ONLINE; ALTER DATABASE '+QUOTENAME(@db)+N' SET RESTRICTED_USER WITH ROLLBACK IMMEDIATE;'
     WHEN 'MULTI_USER' THEN N'ALTER DATABASE '+QUOTENAME(@db)+N' SET MULTI_USER;'
     END;
+
 IF (@sql IS NULL) THROW 50030, N'Unknown database state.', 1;
-EXEC sys.sp_executesql @sql;
+
+EXECUTE sys.sp_executesql @sql;
+
 GO
 
 -- Drops a secondary copy: one being removed, or the copy of a database that
@@ -466,37 +505,47 @@ GO
 CREATE PROCEDURE mostly_on.drop_database
     @db                 sysname
 AS
+
 SET NOCOUNT ON;
-EXEC mostly_on.check_database @db=@db;
 DECLARE @state nvarchar(60), @standby bit;
+
+EXECUTE mostly_on.check_database @db=@db;
+
 SELECT @state=d.state_desc, @standby=d.is_in_standby FROM sys.databases AS d WHERE d.name=@db;
 IF (@state!=N'RESTORING' AND @standby=0) BEGIN;
     DECLARE @message nvarchar(2048)=N'Mostly-On only drops a copy nobody can write to (RESTORING or STANDBY), and '+@db+N' is '+@state+N'.';
     THROW 50031, @message, 1;
 END;
+
 DECLARE @kill nvarchar(max);
 SELECT @kill=STRING_AGG(CAST(N'KILL '+CONVERT(nvarchar(11), s.session_id)+N';' AS nvarchar(max)), N'')
 FROM sys.dm_exec_sessions AS s
 WHERE s.database_id=DB_ID(@db)
   AND s.session_id!=@@SPID;
-IF (@kill IS NOT NULL) EXEC sys.sp_executesql @kill;
+
+IF (@kill IS NOT NULL) EXECUTE sys.sp_executesql @kill;
+
 DECLARE @sql nvarchar(max)=N'DROP DATABASE '+QUOTENAME(@db)+N';';
-EXEC sys.sp_executesql @sql;
+EXECUTE sys.sp_executesql @sql;
+
 GO
 
 CREATE PROCEDURE mostly_on.header_only
     @path               nvarchar(400)
 AS
-SET NOCOUNT ON;
-EXEC mostly_on.check_path @path=@path, @kind='backup';
-RESTORE HEADERONLY FROM DISK=@path;
-GO
 
+SET NOCOUNT ON;
+
+EXECUTE mostly_on.check_path @path=@path, @kind='backup';
+
+RESTORE HEADERONLY FROM DISK=@path;
+
+GO
 CREATE PROCEDURE mostly_on.filelist_only
     @path               nvarchar(400)
 AS
 SET NOCOUNT ON;
-EXEC mostly_on.check_path @path=@path, @kind='backup';
+EXECUTE mostly_on.check_path @path=@path, @kind='backup';
 RESTORE FILELISTONLY FROM DISK=@path;
 GO
 
@@ -504,10 +553,15 @@ GO
 CREATE PROCEDURE mostly_on.purge_backup_history
     @keep_days          int
 AS
+
 SET NOCOUNT ON;
+
 IF (@keep_days IS NULL OR @keep_days<1) THROW 50040, N'Keep at least one day of backup history.', 1;
+
 DECLARE @oldest datetime2(0)=DATEADD(day, -@keep_days, GETDATE());
-EXEC msdb.dbo.sp_delete_backuphistory @oldest_date=@oldest;
+
+EXECUTE msdb.dbo.sp_delete_backuphistory @oldest_date=@oldest;
+
 GO
 
 -- A line in the error log (and on Windows the Application event log) for key
@@ -517,9 +571,13 @@ GO
 CREATE PROCEDURE mostly_on.write_errorlog
     @message            nvarchar(1800)
 AS
+
 SET NOCOUNT ON;
+
 IF (@message IS NULL) RETURN;
+
 RAISERROR(N'Mostly-On: %s', 10, 1, @message) WITH LOG;
+
 GO
 
 -- --- signing ------------------------------------------------------------------
@@ -529,18 +587,19 @@ GO
 DECLARE @password nvarchar(128)=CONVERT(nvarchar(36), NEWID())+N'-Mo!'+CONVERT(nvarchar(36), NEWID());
 DECLARE @sql nvarchar(max)=N'CREATE CERTIFICATE mostly_on_signing ENCRYPTION BY PASSWORD='+QUOTENAME(@password, N'''')
     +N' WITH SUBJECT=N''Mostly-On helper procedures'', EXPIRY_DATE=''2099-12-31'';';
-EXEC sys.sp_executesql @sql;
+EXECUTE sys.sp_executesql @sql;
 
 SELECT @sql=STRING_AGG(CAST(N'ADD SIGNATURE TO mostly_on.'+QUOTENAME(p.name)+N' BY CERTIFICATE mostly_on_signing WITH PASSWORD='+QUOTENAME(@password, N'''')+N';' AS nvarchar(max)), N'')
 FROM sys.procedures AS p
 WHERE p.schema_id=SCHEMA_ID(N'mostly_on');
-EXEC sys.sp_executesql @sql;
+EXECUTE sys.sp_executesql @sql;
 
 CREATE LOGIN mostly_on_signing FROM CERTIFICATE mostly_on_signing;
 GRANT CONTROL SERVER TO mostly_on_signing;
 -- RESTORE onto an existing database checks dbcreator membership, not a permission.
 ALTER SERVER ROLE dbcreator ADD MEMBER mostly_on_signing;
 ALTER CERTIFICATE mostly_on_signing REMOVE PRIVATE KEY;
+
 GO
 
 -- --- Mostly-On's own login ------------------------------------------------------------
@@ -554,17 +613,20 @@ IF (IS_SRVROLEMEMBER(N'sysadmin', @login)=0) BEGIN;
         +N'GRANT EXECUTE ON SCHEMA::mostly_on TO '+QUOTENAME(@login)+N'; '
         +N'GRANT VIEW SERVER STATE TO '+QUOTENAME(@login)+N'; '
         +N'GRANT VIEW ANY DEFINITION TO '+QUOTENAME(@login)+N';';
-    EXEC sys.sp_executesql @sql;
+    EXECUTE sys.sp_executesql @sql;
 
     SET @sql=CASE WHEN (SELECT COUNT(*) FROM msdb.sys.database_principals AS dp WHERE dp.name=@login)=0
                   THEN N'CREATE USER '+QUOTENAME(@login)+N' FOR LOGIN '+QUOTENAME(@login)+N'; ' ELSE N'' END
         +N'ALTER ROLE db_datareader ADD MEMBER '+QUOTENAME(@login)+N';';
-    EXEC msdb.sys.sp_executesql @sql;
+    EXECUTE msdb.sys.sp_executesql @sql;
 END;
 GO
 
 USE master;
+
 SELECT N'Mostly-On helper procedures version '+CONVERT(nvarchar(11), mostly_on.helper_version())+N' are installed for $(ServiceLogin).' AS result;
+
 GO
-SET NOEXEC OFF;
+
+SET NOEXECUTE OFF;
 GO
