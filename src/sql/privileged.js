@@ -155,12 +155,15 @@ function explain(err, serverId) {
  *          abortWhen?:()=>string|false, onWait?:(text:string)=>void}} [opts]
  *   abortWhen: while still waiting, a reason to give way (throws with err.gaveWay).
  *   onWait: progress text while waiting ("Waiting for a free connection to ...").
+ *   onStart: called right before the statement is sent, after any wait for its turn.
  */
 export async function run(serverId, c, opts = {}) {
     assertReady(serverId);
-    const { priority = false, abortWhen = null, onWait = null, ...queryOpts } = opts;
-    if (!c.work) return runQuery(serverId, c, queryOpts);
-    if (priority) return runQuery(serverId, c, { ...queryOpts, pool: 'work' });
+    const { priority = false, abortWhen = null, onWait = null, onStart = null, ...queryOpts } = opts;
+    if (!c.work || priority) {
+        onStart?.();
+        return runQuery(serverId, c, c.work ? { ...queryOpts, pool: 'work' } : queryOpts);
+    }
     const name = serversRepo.get(serverId)?.name ?? `server ${serverId}`;
     const release = await acquireSlot(serverId, {
         abortWhen,
@@ -168,6 +171,7 @@ export async function run(serverId, c, opts = {}) {
     });
     try {
         assertReady(serverId); // the setup may have changed while it waited
+        onStart?.();
         return await runQuery(serverId, c, { ...queryOpts, pool: 'work' });
     } finally {
         release();

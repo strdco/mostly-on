@@ -229,7 +229,7 @@ function connectStream() {
         }
         state.current?.onEvent?.(evt);
     };
-    for (const type of ['event', 'server.health', 'database.changed', 'replica.changed', 'backup.finished', 'restore.finished', 'operation.updated', 'alert.changed', 'backup.failed', 'discovery.changed', 'foreign.detected', 'users.changed']) {
+    for (const type of ['event', 'server.health', 'database.changed', 'replica.changed', 'backup.started', 'backup.finished', 'restore.finished', 'operation.updated', 'alert.changed', 'backup.failed', 'discovery.changed', 'foreign.detected', 'users.changed']) {
         es.addEventListener(type, dispatch);
     }
 }

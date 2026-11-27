@@ -526,6 +526,13 @@ table.data tr.row-err > :first-child { box-shadow: inset 4px 0 0 var(--err); }
 @media (forced-colors: active) {
     .activity-icon { background-color: CanvasText; }
 }
+/* The Overview's Last FULL/DIFF/LOG columns keep one width while their ages tick over
+   ("9m ago" becomes "10.0h ago"), so the columns around them never shift. Room for a
+   "99.9d ago" badge plus the cell padding; an older backup only makes its column wider.
+   Not in the stacked layout, where each cell is a line of its own. */
+@container (width >= 640px) {
+    table.data .col-age { inline-size: 6.75rem; }
+}
 /* Show/hide toggles in tables: a group's extra rows (group-more), or a row's detail row. */
 table.data button.disclosure {
     display: inline-block;

@@ -29,6 +29,16 @@ function existsOnShare(file) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// RESTOREs running right now, as `${databaseId}:${serverId}`: only while SQL Server runs the
+// statement, not while it waits for a free connection or checks the file first. For the
+// Overview's restore icon. The restore:<server> or exclusive lock keeps it to one at a time.
+const running = new Set();
+
+/** Whether SQL Server is restoring a backup of this database on this server right now. */
+export function restoringNow(databaseId, serverId) {
+    return running.has(`${databaseId}:${serverId}`);
+}
+
 /**
  * Like fileOnDisk(), for decisions that stop shipping or an operation: a file
  * that seems absent is checked again for a few seconds before it counts as
@@ -100,9 +110,10 @@ export async function restoreFile({ db, server, file, operationId = null, mode =
     }
 
     const restoreId = restores.start({ backupFileId: file.id, databaseId: db.id, serverId: server.id, operationId });
+    const key = `${db.id}:${server.id}`;
     try {
         await assertSameBackup(server, file, sqlPath);
-        await P.run(server.id, c, { timeoutMs: 0, onInfo, onWait, priority, abortWhen });
+        await P.run(server.id, c, { timeoutMs: 0, onInfo, onWait, priority, abortWhen, onStart: () => running.add(key) });
     } catch (err) {
         const kind = err.restoreKind ?? (err.gaveWay ? 'gave_way' : classifyRestoreError(err));
         // "In use": someone reconnected between the disconnect and the restore. "Gave way": it never
@@ -111,6 +122,8 @@ export async function restoreFile({ db, server, file, operationId = null, mode =
         else restores.finish(restoreId, kind === 'already_applied' ? 'already_applied' : 'failed', sqlErrorText(err));
         err.restoreKind = kind;
         throw err;
+    } finally {
+        running.delete(key); // before restore.finished goes out, so a page reloading on it no longer shows it
     }
     restores.finish(restoreId, 'success');
     publish('restore.finished', { databaseId: db.id, serverId: server.id, fileId: file.id, type: file.type });

@@ -1,6 +1,6 @@
 import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, formatBytes, formatTime, timeTag, tooltip, menuButton } from '../dom.js';
 import { get, post, put } from '../api.js';
-import { stateTipBadge, stateText, chainBadge, lagTipBadge, formatDuration, busyText, backupOnlyTag, typeNotApplicable, lastBackupBadge } from './overview.js';
+import { stateTipBadge, stateText, chainBadge, lagTipBadge, formatDuration, busyText, busyNow, backupOnlyTag, typeNotApplicable, lastBackupBadge } from './overview.js';
 import { operationsTable } from './operations.js';
 import { eventsTable } from './events.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
@@ -944,7 +944,7 @@ export function databaseView(id) {
                   )
                 : null,
             db.backup_only ? latestForeignLine(db) : null,
-            db.busy.length ? h('p', badge(`Running now: ${busyText(db.busy, db.replicas)}`)) : null,
+            busyNow(db).length ? h('p', badge(`Running now: ${busyText(busyNow(db), db.replicas)}`)) : null,
             ...(db.backup_only ? serverTable(db) : [h('h2', 'Replicas')]),
             db.backup_only ? null : dataTable({
                 caption: 'Replicas',
@@ -1097,7 +1097,7 @@ export function databaseView(id) {
         onEvent(evt) {
             const p = evt.payload || {};
             const relevant =
-                (['database.changed', 'replica.changed', 'restore.finished', 'backup.finished', 'backup.failed', 'foreign.detected'].includes(evt.type) && p.databaseId === id) ||
+                (['database.changed', 'replica.changed', 'restore.finished', 'backup.started', 'backup.finished', 'backup.failed', 'foreign.detected'].includes(evt.type) && p.databaseId === id) ||
                 (evt.type === 'operation.updated' && p.databaseId === id && p.status !== 'running') ||
                 (evt.type === 'event' && p.databaseId === id) ||
                 evt.type === 'server.health';

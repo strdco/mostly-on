@@ -121,10 +121,22 @@ export function withActivity(content, icon, label) {
 
 const BACKUP_LOCKS = ['full', 'diff', 'log'];
 
-/** What runs on a database that has no icon of its own on the Overview (a failover, retention ...), in lock names. */
+/**
+ * What runs on a database that has no icon of its own on the Overview (a failover, retention ...), in lock names.
+ * A secondary's restore lock is left out even while its icon is off: the restore loop also takes it for
+ * its quick "anything new?" check, and the icon (r.restoring) shows only while a RESTORE really runs.
+ */
 function busyWithoutIcon(d) {
     const restoreShown = (k) => !d.backup_only && d.replicas.some((r) => r.role !== 'primary' && k === `restore:${r.server_id}`);
     return d.busy.filter((k) => !BACKUP_LOCKS.includes(k) && !restoreShown(k));
+}
+
+/**
+ * d.busy (lock names) without a secondary's restore lock while no RESTORE runs there: the restore
+ * loop also takes that lock for its quick "anything new?" check (r.restoring: the API's live flag).
+ */
+export function busyNow(d) {
+    return d.busy.filter((k) => !k.startsWith('restore:') || d.replicas.some((r) => `restore:${r.server_id}` === k && r.restoring));
 }
 
 const CHAIN = {
@@ -314,12 +326,14 @@ function manageControl({ state, system = false, who, reason, onActivate }) {
 export function overviewView() {
     let listBox;
     let alertsBox;
-    let timer;
+    let timer = null;
+    let loads = 0;
 
     // Servers whose "Not managed" list is open, so a live re-render keeps it open.
     const openLists = new Set();
 
     async function load() {
+        const mine = ++loads;
         const [dbs, discovered, settings, alerts, servers] = await Promise.all([
             get('/api/databases'),
             get('/api/discovered?include_dismissed=1'),
@@ -327,6 +341,7 @@ export function overviewView() {
             get('/api/alerts?status=active'),
             get('/api/servers'),
         ]);
+        if (mine !== loads) return; // a newer load started meanwhile: its data is fresher
         clear(alertsBox).append(...[activeAlertsCallout(alerts)].filter((x) => x !== null));
         const threshold = settings['alerts.lag_threshold_minutes'];
         const health = new Map(dbs.map((d) => [d.id, dbHealth(d, alerts, threshold)]));
@@ -386,7 +401,7 @@ export function overviewView() {
                                               r.chain_state === 'ok' && r.role === 'secondary' && !r.lag?.loop?.failures
                                                   ? lagBadge(r.lag, lagLimits(d.schedules.find((s) => s.backup_type === 'LOG'), threshold, r.restore_delay_minutes), r)
                                                   : chainBadge(r),
-                                              d.busy.includes(`restore:${r.server_id}`) && 'restore',
+                                              r.restoring && 'restore',
                                               `${r.server_name} is restoring backups now`,
                                           ),
                                       ),
@@ -396,6 +411,7 @@ export function overviewView() {
                     },
                     ...['FULL', 'DIFF', 'LOG'].map((t) => ({
                         label: `Last ${t}`,
+                        className: 'col-age',
                         cell: (d) => (d.managed ? withActivity(lastBackupBadge(d, t), d.busy.includes(t.toLowerCase()) && 'backup', `A ${t} backup is running now`) : null),
                     })),
                 ],
@@ -538,9 +554,16 @@ export function overviewView() {
             await load();
         },
         onEvent(evt) {
-            if (!['database.changed', 'replica.changed', 'backup.finished', 'backup.failed', 'discovery.changed', 'server.health', 'foreign.detected', 'alert.changed'].includes(evt.type)) return;
-            clearTimeout(timer);
-            timer = setTimeout(() => load().catch(() => {}), 400);
+            // backup.started: the backup's icon shows at once. A restore's icon goes with the
+            // replica.changed sent when its pass is over.
+            if (!['database.changed', 'replica.changed', 'backup.started', 'backup.finished', 'backup.failed', 'discovery.changed', 'server.health', 'foreign.detected', 'alert.changed'].includes(evt.type)) return;
+            // One reload 400 ms after the first event of a burst. Not pushed back by each new one, so a
+            // steady stream of events (backups starting one after another) cannot hold it off.
+            if (timer) return;
+            timer = setTimeout(() => {
+                timer = null;
+                load().catch(() => {});
+            }, 400);
         },
     };
 }

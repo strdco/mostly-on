@@ -13,6 +13,7 @@ import { startBackup, BACKUP_TYPES } from '../../engine/backup.js';
 import { validateSchedule } from '../../engine/schedule-math.js';
 import { holders } from '../../engine/locks.js';
 import { lagOf } from '../../engine/restore-loop.js';
+import { restoringNow } from '../../engine/restore.js';
 import { canResume, canResolve } from '../../engine/ops/index.js';
 import { evaluateSoon } from '../../notify/alerts.js';
 import { syncFromHealth } from '../../engine/discovery.js';
@@ -39,6 +40,8 @@ function summary(db) {
             reachable: h ? h.ok : null,
             live: live ? { state: live.state, recoveryModel: live.recoveryModel, userAccess: live.userAccess, isInStandby: live.isInStandby } : null,
             lag: lags.get(r.server_id) || null,
+            // A RESTORE runs there right now (not just its restore lock, which a quick "anything new?" check also takes).
+            restoring: restoringNow(db.id, r.server_id),
         };
     });
     const primary = replicas.find((r) => r.role === 'primary') || null;
