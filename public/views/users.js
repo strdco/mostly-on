@@ -1,6 +1,6 @@
 // User accounts. Everyone with an account can do everything, including
 // managing the other accounts; the event log records who did what.
-import { h, clear, dataTable, badge, formatTime, ago, formDialog, field, toast } from '../dom.js';
+import { h, clear, dataTable, badge, formatTime, timeTag, ago, formDialog, field, toast } from '../dom.js';
 import { get, post } from '../api.js';
 function passwordInput() {
     // Not this browser user's own password: keep password managers from saving or filling it.
@@ -76,7 +76,7 @@ export function usersView({ currentUser }) {
                     { label: 'User', header: true, cell: (u) => (u.username === currentUser() ? [u.username, ' ', h('span.muted', '(you)')] : u.username) },
                     { label: 'Status', cell: status },
                     { label: 'Last sign-in', cell: (u) => (u.lastLoginAt ? h('time', { datetime: u.lastLoginAt, title: formatTime(u.lastLoginAt) }, ago(u.lastLoginAt)) : 'Never') },
-                    { label: 'Added', cell: (u) => `${formatTime(u.createdAt)}${u.createdBy ? ` by ${u.createdBy}` : ' (first user)'}` },
+                    { label: 'Added', cell: (u) => [timeTag(u.createdAt), u.createdBy ? ` by ${u.createdBy}` : ' (first user)'] },
                     {
                         label: 'Actions',
                         cell: (u) =>

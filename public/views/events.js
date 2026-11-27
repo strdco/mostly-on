@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formatTime } from '../dom.js';
+import { h, clear, dataTable, badge, timeTag } from '../dom.js';
 import { get } from '../api.js';
 
 const LEVEL_KIND = { error: 'err', warn: 'warn', info: '', debug: '' };
@@ -13,7 +13,7 @@ export function eventsTable(events, caption = 'Events', limit = 0) {
         limit,
         empty: 'No events.',
         columns: [
-            { label: 'Time', cell: (e) => formatTime(e.ts) },
+            { label: 'Time', cell: (e) => timeTag(e.ts) },
             { label: 'Level', cell: (e) => badge(e.level, LEVEL_KIND[e.level]) },
             { label: 'Who', cell: (e) => actorText(e.actor) },
             { label: 'Category', cell: (e) => e.category },

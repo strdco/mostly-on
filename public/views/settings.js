@@ -1,7 +1,7 @@
 // Settings: notifications and alert rules, monitoring intervals, retention,
 // default schedules and msdb history, each in its own card. Every card saves on
 // its own; the server validates everything before storing.
-import { h, clear, toast, formatTime } from '../dom.js';
+import { h, clear, toast, timeTag } from '../dom.js';
 import { get, post, put } from '../api.js';
 import { scheduleDialog, describeSchedule } from './schedule.js';
 import { retentionProblem } from './retention.js';
@@ -175,8 +175,8 @@ export function settingsView() {
                     pushover?.configured ? testBtn : null,
                 ),
                 pushover?.configured ? null : h('p.small.muted', 'Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY in the controller’s environment and restart it.'),
-                d.lastSentAt ? h('p.small.muted', `Last notification sent ${formatTime(d.lastSentAt)}.`) : null,
-                d.lastError ? h('div.callout.err', h('strong', 'The last notification failed: '), d.lastError, d.nextAttemptAt ? ` Next attempt ${formatTime(d.nextAttemptAt)}.` : '') : null,
+                d.lastSentAt ? h('p.small.muted', 'Last notification sent ', timeTag(d.lastSentAt), '.') : null,
+                d.lastError ? h('div.callout.err', h('strong', 'The last notification failed: '), d.lastError, d.nextAttemptAt ? [' Next attempt ', timeTag(d.nextAttemptAt), '.'] : '') : null,
             ].filter((x) => x !== null),
         );
     }

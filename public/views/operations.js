@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, formatTime, formDialog, field, toast } from '../dom.js';
+import { h, clear, dataTable, badge, timeTag, formDialog, field, toast } from '../dom.js';
 import { get, post } from '../api.js';
 import { actorText } from './events.js';
 
@@ -8,8 +8,8 @@ const STEP_KIND = { done: 'ok', skipped: 'ok', running: '', pending: '', failed:
 export function opTitle(op) {
     if (op.type === 'backup') return `${op.params.type} backup${op.params.trigger ? ` (${op.params.trigger})` : ''}`;
     if (op.type === 'seed') return `Add secondary${op.params.overwrite ? ' (replacing an existing copy)' : ''}`;
-    if (op.type === 'pitr_copy') return `Restore a copy as it was at ${formatTime(op.params.at)} (${op.params.newName})`;
-    if (op.type === 'pitr_rollback') return `Roll back to ${formatTime(op.params.at)}`;
+    if (op.type === 'pitr_copy') return ['Restore a copy as it was at ', timeTag(op.params.at), ` (${op.params.newName})`];
+    if (op.type === 'pitr_rollback') return ['Roll back to ', timeTag(op.params.at)];
     const titles = {
         reseed: 'Reinitialize',
         planned_failover: 'Failover',
@@ -74,6 +74,7 @@ export function operationsTable(rows, caption = 'Operations', limit = 0) {
         rows,
         limit,
         empty: 'No operations.',
+        rowKey: (o) => o.id,
         columns: [
             { label: '#', header: true, cell: (o) => `#${o.id}` },
             { label: 'Operation', cell: (o) => opTitle(o) },
@@ -81,16 +82,13 @@ export function operationsTable(rows, caption = 'Operations', limit = 0) {
             { label: 'Status', cell: (o) => badge(o.status, STATUS_KIND[o.status]) },
             {
                 label: 'Steps',
-                cell: (o) =>
-                    h(
-                        'details',
-                        h('summary', o.error ? h('span.error-text', o.error) : o.current_step ? `Running: ${o.current_step}` : `${o.steps.length} step(s)`),
-                        stepList(o),
-                    ),
+                cell: (o) => (o.error ? h('span.error-text', o.error) : o.current_step ? `Running: ${o.current_step}` : `${o.steps.length} step(s)`),
+                // The steps open below the operation, across the whole table.
+                detail: (o) => (o.steps.length ? stepList(o) : null),
             },
-            { label: 'Started', cell: (o) => formatTime(o.created_at) },
+            { label: 'Started', cell: (o) => timeTag(o.created_at) },
             { label: 'Started by', cell: (o) => actorText(o.created_by) },
-            { label: 'Finished', cell: (o) => formatTime(o.finished_at) },
+            { label: 'Finished', cell: (o) => timeTag(o.finished_at) },
             ...(rows.some((o) => o.resumable || o.resolvable) ? [{ label: 'Actions', cell: opActions }] : []),
         ],
     });

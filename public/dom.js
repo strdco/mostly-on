@@ -41,11 +41,24 @@ export function clear(el) {
 }
 
 /**
- * Responsive data table. columns: [{label, cell:(row)=>node|string, num?:bool, header?:bool}]
+ * Responsive data table. columns: [{label, cell:(row)=>node|string, num?:bool, header?:bool, detail?:(row)=>node|null}]
  * The first column with header:true is rendered as a row header (<th scope=row>).
+ * A column with `detail` shows its cell as a show/hide toggle for a row of its own, right
+ * below, across the whole table (for a row that has a detail; the others show the cell as is).
  */
 // Tables the user expanded with "Show all", by caption, so a live re-render keeps them open.
 const expandedTables = new Set();
+// Detail rows the user opened, by caption and rowKey, so a live re-render keeps them open.
+const openDetails = new Set();
+
+/** Hides or shows a row and its detail row; a detail row only shows while its toggle is open. */
+function setRowHidden(tr, hidden) {
+    tr.hidden = hidden;
+    if (tr.detailRow) tr.detailRow.hidden = hidden || tr.detailToggle.getAttribute('aria-expanded') !== 'true';
+}
+
+/** A row, followed by its detail row if it has one. */
+const withDetail = (tr) => (tr.detailRow ? [tr, tr.detailRow] : tr);
 
 const isEmpty = (v) => v === null || v === undefined || v === '' || v === false || (Array.isArray(v) && v.every(isEmpty));
 
@@ -54,6 +67,7 @@ const isEmpty = (v) => v === null || v === undefined || v === '' || v === false 
  * @param {object} o
  * @param {number} [o.limit]  show this many rows, with a "Show all" toggle for the rest
  * @param {(row) => string} [o.rowClass]
+ * @param {(row) => string|number} [o.rowKey]  identifies a row across re-renders, so an open detail row stays open
  * @param {{header: any, rows: object[], more?: {summary: any, rows: object[], open: boolean, onToggle?: (open: boolean) => void}}[]} [o.groups]
  *   instead of rows: one <tbody> per group, its header in a row of its own (th scope=rowgroup),
  *   so the columns line up across groups (no "Show all" toggle). A group's `more` rows follow
@@ -68,39 +82,63 @@ function moreRows(more, colspan, row) {
     toggle.addEventListener('click', () => {
         open = !open;
         toggle.setAttribute('aria-expanded', String(open));
-        for (const tr of trs) tr.hidden = !open;
+        for (const tr of trs) setRowHidden(tr, !open);
         more.onToggle?.(open);
     });
-    return [h('tr.group-more', h('td', { colspan }, toggle)), trs];
+    return [h('tr.group-more', h('td', { colspan }, toggle)), trs.map(withDetail)];
 }
 
-export function dataTable({ caption, columns, rows = [], groups = null, empty = 'Nothing here yet.', limit = 0, rowClass = null }) {
+export function dataTable({ caption, columns, rows = [], groups = null, empty = 'Nothing here yet.', limit = 0, rowClass = null, rowKey = null }) {
     const captionId = `cap-${Math.random().toString(36).slice(2, 9)}`;
     if (groups ? !groups.some((g) => g.rows.length || g.more?.rows.length) : !rows.length) return h('p.muted', empty);
     if (groups) limit = 0;
     const extra = limit && rows.length > limit + 2 ? rows.length - limit : 0; // don't hide just one or two rows
     let open = expandedTables.has(caption);
-    const row = (r, hidden = false) =>
-        h(
+    const detailColumn = columns.find((c) => c.detail);
+    /** A row's detail row and the toggle that shows it, or null when the row has no detail. */
+    const detailFor = (r, hidden) => {
+        const body = detailColumn?.detail(r);
+        if (!body) return null;
+        const key = rowKey ? `${caption}\n${rowKey(r)}` : null;
+        let shown = key !== null && openDetails.has(key);
+        const id = `detail-${Math.random().toString(36).slice(2, 9)}`;
+        const tr = h('tr.row-detail', { id, hidden: hidden || !shown }, h('td', { colspan: columns.length }, body));
+        const toggle = h('button.disclosure.detail-toggle', { type: 'button', 'aria-expanded': String(shown), 'aria-controls': id }, detailColumn.cell(r));
+        toggle.addEventListener('click', () => {
+            shown = !shown;
+            toggle.setAttribute('aria-expanded', String(shown));
+            tr.hidden = !shown;
+            if (key === null) return;
+            if (shown) openDetails.add(key);
+            else openDetails.delete(key);
+        });
+        return { tr, toggle };
+    };
+    const row = (r, hidden = false) => {
+        const detail = detailFor(r, hidden);
+        const tr = h(
             'tr',
             { class: rowClass?.(r) || null, hidden },
             columns.map((c) => {
-                const content = c.cell(r);
+                const content = detail && c === detailColumn ? detail.toggle : c.cell(r);
                 if (c.header) return h('th', { scope: 'row' }, content);
                 return h(c.num ? 'td.num' : 'td', { 'data-label': c.label, 'data-empty': isEmpty(content) }, content);
             }),
         );
+        if (detail) Object.assign(tr, { detailRow: detail.tr, detailToggle: detail.toggle });
+        return tr;
+    };
     const trs = groups ? [] : rows.map((r, i) => row(r, extra > 0 && !open && i >= limit));
     const bodies = groups
         ? groups.map((g) =>
               h(
                   'tbody',
                   h('tr.group-head', h('th', { scope: 'rowgroup', colspan: columns.length }, g.header)),
-                  g.rows.map((r) => row(r)),
+                  g.rows.map((r) => withDetail(row(r))),
                   g.more?.rows.length ? moreRows(g.more, columns.length, row) : null,
               ),
           )
-        : [h('tbody', trs)];
+        : [h('tbody', trs.map(withDetail))];
     const table = h(
         'div.table-wrapper',
         { tabindex: 0, role: 'region', 'aria-labelledby': captionId },
@@ -114,7 +152,7 @@ export function dataTable({ caption, columns, rows = [], groups = null, empty = 
         open = !open;
         if (open) expandedTables.add(caption);
         else expandedTables.delete(caption);
-        trs.forEach((tr, i) => (tr.hidden = !open && i >= limit));
+        trs.forEach((tr, i) => setRowHidden(tr, !open && i >= limit));
         toggle.setAttribute('aria-expanded', String(open));
         toggle.textContent = label();
     });
@@ -161,6 +199,18 @@ export function formatTime(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return '–';
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+/**
+ * formatTime as a <time> element, for anything shown on the page (formatTime is for
+ * attributes and plain text). When it has to wrap, it wraps between the date and the
+ * time, never inside the date. Copied, it is the same plain text as formatTime.
+ */
+export function timeTag(iso) {
+    const text = formatTime(iso);
+    if (text === '–') return text;
+    const [date, time] = text.split(' ');
+    return h('time.datetime', { datetime: new Date(iso).toISOString() }, h('span', date), ' ', h('span', time));
 }
 
 export function ago(iso) {

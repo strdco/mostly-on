@@ -1,4 +1,4 @@
-import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, tooltip, formatTime } from '../dom.js';
+import { h, clear, dataTable, badge, tipBadge, formDialog, field, toast, ago, tooltip, timeTag } from '../dom.js';
 import { get, post, put, del } from '../api.js';
 import { stateText, stateBadge, chainBadge } from './overview.js';
 
@@ -366,14 +366,22 @@ function serverDatabasesTable(roles, hh) {
     // System databases (master, model, msdb) after the others.
     rows.sort((a, b) => Number(isSystem(a.live)) - Number(isSystem(b.live)) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
+    // A primary is only a primary while it ships to a secondary; without one it is backed up only.
     const roleText = (r) =>
-        r.backup_only_server_id != null
+        r.backup_only_server_id != null || (r.role === 'primary' && !r.secondary_names)
             ? 'backups only'
             : r.role === 'diverged'
               ? 'old primary, out of sync'
               : r.role === 'secondary' && r.restore_delay_minutes > 0
                 ? 'secondary (delayed)'
                 : r.role;
+    // A secondary: its shipping state. A primary with secondaries: "shipping", so it
+    // stands apart from a primary that is backed up only (no secondaries yet).
+    const shippingCell = (r) => {
+        if (r?.role === 'secondary') return chainBadge(r);
+        if (r?.role === 'primary' && r.secondary_names) return tipBadge('shipping', 'ok', `Log shipped to ${r.secondary_names}. Each secondary's own state is on the database's page.`);
+        return '';
+    };
     const roleBadge = (r) => (r ? badge(roleText(r), r.role === 'diverged' ? 'err' : '') : badge('unmanaged'));
     const stateCell = ({ role, live: d }) => {
         if (!d) return hh?.ok ? badge('not found', 'err') : badge('unknown');
@@ -391,7 +399,7 @@ function serverDatabasesTable(roles, hh) {
                 cell: (x) => [x.role ? h('a', { href: `#/databases/${x.role.database_id}` }, x.name) : x.name, isSystem(x.live) ? [' ', badge('system')] : null],
             },
             { label: 'Role', cell: (x) => roleBadge(x.role) },
-            { label: 'Shipping', cell: (x) => (x.role?.role === 'secondary' ? chainBadge(x.role) : '') },
+            { label: 'Shipping', cell: (x) => shippingCell(x.role) },
             { label: 'State', cell: stateCell },
             { label: 'Recovery model', cell: (x) => x.live?.recoveryModel ?? '' },
             { label: 'Access', cell: (x) => x.live?.userAccess ?? '' },
@@ -518,7 +526,9 @@ export function serverDetailView(id) {
                 h('h1', `Server ${s.name}`),
                 h(
                     'div.callout.warn',
-                    `${s.name} was removed on ${formatTime(s.removed_at)}. Mostly-On no longer connects to it; the backup files it wrote stay usable until retention removes them. ` +
+                    `${s.name} was removed on `,
+                    timeTag(s.removed_at),
+                    '. Mostly-On no longer connects to it; the backup files it wrote stay usable until retention removes them. ' +
                         'To use it again, register a server under the same name (Servers page).',
                 ),
             );
