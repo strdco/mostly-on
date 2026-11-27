@@ -229,17 +229,21 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
 
 On servers where databases are more frequently created and dropped, **Manage databases automatically** will automatically manage new databases and log-ship them to a secondary. The **Servers** list shows which servers have automatic management turned on, and where they ship new databases.
 
-- **New databases are managed by themselves.** A user database is managed a minute after it appears, so an application has time to set it up (switch it to FULL recovery, for example). Turning it on also manages the user databases already on the server that Mostly-On does not manage yet; the dialog lists them first. A few are taken on at every health check, so hundreds of them are taken on gradually.
-- **They are log shipped to the server you choose.** A database in FULL recovery gets a secondary on that server once its first FULL backup is there. One that is not in FULL recovery is backed up only. To have new databases start in FULL recovery, keep the `model` database in FULL recovery. If adding the secondary fails, an event says why, and you add it on the database's page; Mostly-On does not keep trying.
-- **Servers are paired.** When sql1 log ships to sql2 and sql2 has no server of its own yet, sql2 gets sql1. After a switchover (**Fail over databases…**), new databases are created on sql2 and shipped back to sql1, with nothing to change. After a failover without the old server, new secondaries wait until it is back.
-- **Dropped databases stop being managed.** A managed database that has been gone from its server for 30 minutes (Settings, **Monitoring**) is no longer managed. While it is gone, it raises no alerts and its backups wait; if it comes back in time, nothing happens. Its copies on secondaries are dropped, but only a copy nobody can write to (`RESTORING` or a read-only `STANDBY` copy) on a reachable server; any other copy is left for you, and an event says so. Its backups are kept until retention removes them, the newest ones too. A database dropped and created again under the same name counts as a new database.
-- **What it leaves alone.** System databases, a database with the name of a log-shipped database on another server (a log-shipped name is taken on every server), and databases you stopped managing yourself (until you manage them again). Databases you manage by hand never get a secondary automatically.
+- **New databases are managed by themselves.** A user database is managed a minute after it appears, so an application has time to set it up (switch it to FULL recovery, for example). Turning it on also manages the user databases already on the server that Mostly-On does not manage yet; the dialog lists them first.
+- **Databases are log-shipped to the server you choose.** A database in FULL recovery gets a secondary once its first FULL backup has completed. Databases not in FULL recovery are backed up only.
+- **Servers are paired.** Configuring sql1 to automatically ship to sql2 will also set sql2 to ship back to sql1. This is relevant in case of a failover, in which case the primary and secondary roles will reverse.
+- **Dropped databases stop being managed.** A managed database that has been gone from its server for 30 minutes (Settings, **Monitoring**) is no longer managed. Backups are kept until the retention policy removes them. A database dropped and created again under the same name counts as a new database.
+- **What it leaves untouched:** System databases, a database with the name of a log-shipped database on another server (a log-shipped name is taken on every server), and databases you stopped managing yourself (until you manage them again). Databases you manage by hand never get a secondary automatically.
 
 ---
 
 ## Failover, step by step
 
-Press **Failover** on a secondary replica of the database. The dialog shows how many log backups the secondary still needs and offers a choice: **Perform tail log backup**.
+Click the **Failover** button on a secondary replica of the database. The dialog shows how many log backups the secondary still needs and asks if you want to **perform tail log backup**.
+
+> [!WARNING]
+> Failing over a database *without* a tail-log backup loses all changes made to the primary after the most recently transaction log backup was taken.
+> If you still have a functioning primary database, always take a tail-log backup when failing over.
 
 ### With a tail-log backup (no data lost)
 
@@ -248,13 +252,15 @@ Use this when the primary is up. The box is ticked by default if it was reachabl
 1. Waits for running backups and restores of this database to finish.
 2. Checks both servers.
 3. Restores every log backup the secondary does not have yet.
-4. On the old primary, disconnects all users (`SINGLE_USER`) and takes a **tail-log backup**: a final log backup that captures every transaction not yet copied, and leaves the old primary waiting to become a secondary.
+4. On the old primary, disconnects all users (sets `SINGLE_USER`) and takes a **tail-log backup**: a final log backup that captures every transaction not yet copied, and leaves the old primary waiting to become a secondary.
 5. Restores the tail-log backup on the target replica.
 6. Brings the target database online (`RESTORE ... WITH RECOVERY`) and lets users back in (`MULTI_USER`).
-7. Swaps the roles: the target is the new primary; the old primary is now its secondary, with no copying needed.
-8. Takes the first log backup on the new primary; the schedules continue from there.
+7. Swaps the roles: the target is the new primary; the old primary is now its secondary.
+8. Takes the first log backup on the new primary.
 
 If a step fails, the job stops there and the Operations page says what state each server is in, with the exact SQL to run if you want to go back.
+
+After a failover, the primary and secondary roles are reversed, and backups are now taken from the new primary replica.
 
 ### Without a tail-log backup (data may be lost)
 
@@ -262,31 +268,30 @@ Use this when the primary is down or damaged. Transactions committed on the old 
 
 1. Checks the target.
 2. If the old primary can be reached, takes its database **offline**, so no application can write to it. If you left the box ticked while the primary is unhealthy, Mostly-On instead tries a best-effort tail-log backup.
-3. Restores every log backup the target can get.
-4. Brings the database online on the target.
+3. Restores every remaining log backup available on the secondary.
+4. Brings the database online on the secondary.
 5. Marks the old primary's copy **out of sync**, as it may hold transactions that the new primary never received. Mostly-On never restores onto it or backs it up.
 6. Checks that the other secondaries can follow the new primary; those that cannot are marked for reinitializing.
 7. Takes the first log backup on the new primary.
 
-When the old primary comes back, use **Take offline** if applications might still write to it, then **Reinitialize** it. A safety backup of the out-of-sync copy is kept first in the `DIVERGED/` folder, so no data is thrown away without a copy.
+If the old primary comes back, use **Take offline** in case applications might still write to it, then **Reinitialize** it. A safety backup of the out-of-sync copy is kept first in the `DIVERGED/` folder, so no data is thrown away without a copy.
 
 ### Fail over databases from a server
 
-For server maintenance, press **Fail over databases…** on a server's page and pick which server to move them to. The list only offers servers that hold a working secondary of at least one of the databases, with how many each covers ("sql2: 3 of 5 databases").
+For server maintenance, you can fail over all log-shipped databases by clicking **Fail over databases…** on that server's page and pick which server to move them to. The list only offers servers that hold a working secondary for at least one of the databases.
 
 - Every database with a working secondary on the chosen server moves, one at a time, each with a tail-log backup so nothing is lost. The old server becomes the secondary.
-- The dialog lists the databases that stay behind and why (no copy there, shipping stopped, still being set up, kept behind on purpose). They stay unavailable while the old server is down: run it again with another server, or fail them over from their own pages.
+- The dialog lists the databases that stay behind and why.
 - If the chosen server runs a newer SQL Server version, the old server cannot receive its log backups afterwards; the dialog warns about this per database.
-- If one failover fails, the rest wait; resume the batch once it is fixed.
-- The button is greyed out, with the reason, when it can't be used: the server isn't the primary of any log-shipped database, it is unreachable, or none of its databases has a working secondary.
+- If one failover is unsuccessful, the rest will wait; you can resume the batch when the problem is fixed.
 
 ## Restoring to a point in time
 
-Someone deleted the wrong rows at 14:03? On the database's page, press **Restore…**, pick the date and time (type it to the second, in your browser's time zone, or drag the slider across the restorable range) and choose what to do. The dialog shows the points-in-time you can restore to: from just after the oldest FULL backup that still has every log backup after it, up to now while the primary is reachable.
+Someone deleted the wrong rows at 14:03? On the database's page, press **Restore…**, pick the date and time (type it to the second, in your browser's time zone, or drag the slider across the restorable range) and choose what to do. The dialog shows the points-in-time you can restore to, depending on the recovery model and what backups are available.
 
 ### Restore a copy (safe)
 
-Mostly-On restores the database as it was at that moment under a **new name** (for example `Sales_20261121_1403`), on any registered server. Nothing that exists is changed, so this is the right choice almost every time: look at the copy, then copy the rows you need back into the live database.
+Restores the database as it was at that moment as a fresh copy, under a **new name** (for example `Sales_20261121_1403`), on any registered server. The original database is unchanged. Good if you need to look at an old snapshot of the database, then copy data you need back into the live database.
 
 Mostly-On does not back up or manage the copy. Drop it when you are done (`DROP DATABASE [Sales_20261121_1403];`).
 
@@ -294,19 +299,21 @@ Mostly-On does not back up or manage the copy. Drop it when you are done (`DROP 
 
 Puts the managed database itself back to that moment, on the primary and on every secondary. **Every change made after this point-in-time disappears from the database.**
 
-The tail-log backup and the other backups from after the point-in-time stay on the share until retention deletes them. However, the dashboard will only offer point-in-times on the database's *current* branch of history, so it cannot undo a rollback. **If you might need any of the changes made after the point-in-time, first restore a copy as it is now, then roll it back.**
+The tail-log backup and the other backups from after the point-in-time stay on the file share until retention deletes them. However, the dashboard will only offer point-in-times on the database's *current* branch, so there's no managed way to undo a rollback. **If you might need any of the changes made after the point-in-time, first restore a copy as it is now, then roll it back.**
 
 ### Removing a server
 
-**Remove** on a server's page is greyed out while the server still holds a copy of a managed database, or while an unfinished operation involves it; its tooltip says what to do first (fail over, or remove the copy). A removed server is no longer contacted or listed, and nothing on the SQL Server itself is changed. The backups it took stay usable until retention deletes them. Registering a server under the same name later brings its record back, with the new connection details.
+Click the **Remove** button on a server to stop managing it.
+
+A removed server is no longer contacted or listed, and nothing on the SQL Server itself is changed. The backups it took stay usable until retention deletes them. Registering a server under the same name later brings its record back, with the new connection details.
 
 ---
 
-## Users and the audit trail
+## Users and auditing changes
 
 Give everyone who works with Mostly-On an account of their own (**Users** page), so you can tell who did what. Every user can do everything, including adding users, setting their passwords and disabling them. A user whose password someone else chose (a new account, or **Set password**) has to choose their own at the next sign-in. Accounts are disabled, never deleted, so their names keep meaning something in the log.
 
-The first user comes from `ADMIN_USER` and `ADMIN_PASSWORD_HASH` when Mostly-On starts with an empty catalog. If nobody can sign in any more (say the only other user left, and you forgot your password), set a new password from the command line. It enables the account again, and its user chooses their own password at the next sign-in:
+The first user comes from `ADMIN_USER` and `ADMIN_PASSWORD_HASH` in the `.env` file when Mostly-On starts with an empty catalog. If nobody can sign in any more (say the only other user left, and you forgot your password), you can set a new password from the command line. It enables the account again, and its user chooses their own password at the next sign-in:
 
 ```sh
 docker compose exec controller npm run reset-password -- <user>   # without a user name: lists the users
@@ -314,15 +321,19 @@ docker compose exec controller npm run reset-password -- <user>   # without a us
 
 **Who did what** is recorded in three places:
 
-- **Events page.** Every event has a **Who** column: a user, or *Mostly-On* for what it does by itself. Tick **Only what people did** for the audit trail: failovers, rollbacks, secondaries added and removed, settings and schedules changed, sign-ins, user changes, and so on, without the scheduled backups and log shipping. Events that belong to an operation (a failover completing, say) name the user who started it. The **Operations** page shows who started each one.
-- **The container's log** (stdout, JSON lines). Each event is one line, with an `actor` field when a user did it. Docker's log drivers, and tools such as Loki, Datadog, Splunk or Elastic, can collect it from there.
-- **The SQL Server error log** of the servers involved, for key actions only: failovers, switch-overs, rollbacks and copies to a point in time, adding or reinitializing a secondary, removing one, no longer managing a database, failed operations of these kinds, and operations marked resolved by hand. The lines start with `Mostly-On:` and say who did it, for example `Mostly-On: Failover of Sales from SQL1 to SQL2 started (with a tail-log backup: no data loss) (by alice, operation #42)`. On Windows they also land in the Application event log, where monitoring tools that watch it pick them up. This is a best-effort copy: a server that is down at that moment (the old primary in a forced failover, typically) doesn't get the line, and SQL Server recycles its error log at every restart (6 old files by default). The Events page is the complete record.
+- **Events page.** Tick **Only what people did** to see filter only human-initiated actions: failovers, rollbacks, secondaries added and removed, settings and schedules changed, sign-ins, user changes, and so on.
+- **The container's log** (stdout, JSON lines). Each event is one line, with an `actor` field when a user did it. Docker's log drivers, and tools such as Loki, Datadog, Splunk or Elastic, can collect logs from there.
+- **The SQL Server error log** of each server holds records of key actions: failovers, switch-overs, rollbacks and copies to a point in time, and a few others. The lines start with `Mostly-On:` and say who did it, for example `Mostly-On: Failover of Sales from SQL1 to SQL2 started (with a tail-log backup: no data loss) (by alice, operation #42)`. On Windows they also land in the Application event log, where monitoring tools can pick them up. This is a best-effort copy: a server that is down at that moment (like a failed server in a forced failover) doesn't get the line, and SQL Server recycles its error log at every restart (6 old files by default).
 
-To find the lines on a server: `EXEC sys.xp_readerrorlog 0, 1, N'Mostly-On';`
+To find the lines on a server:
+
+```sql
+EXECUTE sys.xp_readerrorlog 0, 1, N'Mostly-On';
+```
 
 ---
 
-## Upgrading
+## Upgrading Mostly-On
 
 Pull the new image and restart the container:
 
@@ -336,11 +347,15 @@ The image `ghcr.io/strdco/mostly-on` has these tags:
 |---|---|
 | `latest` | The newest release. |
 | `0.2`, `0.2.1`, ... | A specific release. Pin `0.2` to get fixes for 0.2 without moving to 0.3 by surprise. |
-| `edge` | Every change on `main`, before it is released. For trying things out, not for servers you rely on. |
+| `edge` | Every change on `main`, pre-release. For trying things out, not for production. |
 
 Read the release notes before you upgrade.
 
-**Some versions need the setup script again** on every server (the helper procedures have a version; the one that backs up system databases is version 5, the one that drops copies and brings read-only copies online is version 6, and the one that writes key actions to the SQL Server error log is version 7). Until it has run on a server, Mostly-On backs up and restores nothing there, and the Servers page and an alert say so. A newer script keeps working the way the older one did, so you can run it on every server just before you upgrade.
+> [!IMPORTANT]
+> When upgrading Mostly-On, verify in the app if you need to upgrade the helper code on your SQL Servers
+> to a newer version.
+
+Some version upgrades of Mostly-On will require newer helper procedures on each server. An alert will tell you if this is the case after you've restarted the container. Until the helper code has been updated, Mostly-On cannot backup or restore on that server, and log-shipping will not work.
 
 The catalog in `/data` upgrades itself on start:
 
@@ -385,12 +400,7 @@ The integration suite uses those three files too. It starts its own isolated com
 10. Back up master on both servers and a SIMPLE database (backups only): each server gets its own folder, LOG backups are skipped until the database is in FULL recovery, and secondaries and restores are refused.
 11. Turn on automatic management for sql1, shipping to sql2, and check that sql2 is paired back. A new database on each server is managed and shipped to the other. Drop one: no alert while it is gone, then it is no longer managed, its copy on the secondary is dropped and its backup files are still there. Created again, it is managed again. The compose test file shortens the waits (`MOSTLY_ON_TEST_AUTO_SECONDS`).
 
-It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards for a look around, and `IT_REUSE=1` to rerun against it.
-
-**Publishing the image.** `.github/workflows/publish.yml` runs the unit tests, then builds the image for amd64 and arm64 and pushes it to `ghcr.io/strdco/mostly-on`.
-
-- **Every push to `main`** publishes `:edge`.
-- **A release:** on GitHub, open **Actions → Publish image → Run workflow** on `main`, and type the version: a number such as `0.2.0`, or `patch`, `minor` or `major` to bump the current one. The workflow sets that version in `package.json`, commits it to `main`, tags it `v0.2.0`, publishes `:0.2.0`, `:0.2`, `:latest` and `:edge`, and creates a GitHub release with notes from the commits since the last one. A pre-release such as `0.3.0-beta.1` gets only its own tag and leaves `:latest` alone. Pull afterwards, since the release adds a commit to `main`.
+The complete test takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards for a look around, and `IT_REUSE=1` to rerun against it.
 
 ---
 
@@ -399,11 +409,13 @@ It takes several minutes. Set `IT_KEEP=1` to leave the stack running afterwards 
 > [!IMPORTANT]
 > This is not an enterprise-grade high-availability solution, nor is it a professional monitoring solution.
 
+This is a mixed list of intentional design choices and possible future improvements.
+
 - **No automatic failover, no login sync, no client redirection.** These are out of scope by design; see the top of this file.
 - **The controller is a single point of failure.** While it is down, no backups are taken and nothing ships. The databases themselves keep running, and everything catches up when it returns.
 - **SQL Server 2019 or newer only.** Readable (STANDBY) secondaries need the same major version as the primary, and a secondary cannot run an older major version than its primary.
-- **A long backup can hold up others on the same server.** Work waits in order, so with the default of 2, two long FULL backups on one server make its LOG backups and restores wait until one of them finishes, and the secondaries fall behind meanwhile. Give the FULL backups of large databases different times, or raise the limit for that server.
-- **A short window during a failover with a tail-log backup.** Between disconnecting everyone (`SINGLE_USER`) and taking the tail-log backup, another program could grab the one allowed connection. The step then fails with "database is in use"; **Resume** tries again.
+- **A long backup can hold up others on the same server.** Work waits in order, so with the default of 2 concurrent operations, two long FULL backups on one server make its LOG backups and restores wait until one of them finishes, and secondaries will fall behind in the meantime. Give the FULL backups of large databases different times, or raise the limit for that server.
+- **A short window during a failover with a tail-log backup.** Between disconnecting everyone (`SINGLE_USER`) and taking the tail-log backup, another program *could* possibly grab the single-user connection. The step then fails with "database is in use"; **Resume** retries the failover.
 - **Backup times around daylight-saving changes.** SQL Server records backup times in the server's local time. Mostly-On converts them with the server's current UTC offset, so in the hour around a DST change, lag and "last backup" times can be off by an hour. Backups and restores themselves are not affected.
 - **Delayed readable secondaries are not readable for a while after reinitializing or a rollback.** Those restores cannot leave the copy readable, so it stays `RESTORING` until its next log backup is old enough (up to the delay plus one log backup interval). Around a DST change, a delay can also be an hour longer or shorter, for the reason above.
 - **Old undo files of readable secondaries stay behind.** A readable (STANDBY) copy needs an undo file (`.tuf`) in its standby folder, which is the server's data folder unless you set another one. Each time such a copy starts over (it is added, reinitialized or rolled back, or switched to readable), Mostly-On gives it a new undo file, `<database>.<date and time>.tuf`, and the previous one stays in the folder.
