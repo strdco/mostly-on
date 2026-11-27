@@ -48,6 +48,11 @@ test('readiness: ready, missing, out of date, unsigned, no permissions', () => {
     assert.match(classifyHelperStatus({ ...ready, read_msdb: 0 }).problems[0], /read permissions/);
 });
 
+test('readiness: a new login, before the script has run, is only told to run it', () => {
+    const fresh = { helper_version: null, procedures: 0, signed_procedures: 0, can_execute: 0, view_server_state: 0, view_any_definition: 0, read_msdb: 1, is_sysadmin: 0, login_name: 'mostly_on' };
+    assert.deepEqual(classifyHelperStatus(fresh).problems, ['the helper procedures are not installed.']);
+});
+
 test('readiness: a backup or undo-file folder changed after setup needs the script again', () => {
     const run = { ...ready, setup_backup_root: '/var/opt/mssql/backup', setup_standby_root: null };
     const server = { sql_backup_root: '/var/opt/mssql/backup', standby_root: null };
@@ -77,7 +82,7 @@ test('the setup script: its version matches, and only take_backup may touch syst
     assert.equal(Number(version?.[1]), P.HELPER_VERSION);
     assert.match(sql, new RegExp(`helper procedures, version ${P.HELPER_VERSION}\\.`), 'the header says the same version');
     // check_database refuses system databases unless @backup=1, which only take_backup passes.
-    const calls = [...sql.matchAll(/EXEC mostly_on\.check_database ([^;]*);/g)].map((m) => m[1]);
+    const calls = [...sql.matchAll(/EXEC(?:UTE)? mostly_on\.check_database ([^;]*);/g)].map((m) => m[1]);
     assert.ok(calls.length >= 6);
     assert.equal(calls.filter((c) => /@backup=1/.test(c)).length, 1);
     const takeBackup = /CREATE PROCEDURE mostly_on\.take_backup[\s\S]*?\nGO/.exec(sql)[0];

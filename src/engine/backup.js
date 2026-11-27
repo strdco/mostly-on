@@ -145,6 +145,8 @@ export async function startBackup(databaseId, requestedType, { trigger = 'manual
         if (reason) {
             events.add('info', 'backup', `Taking a FULL backup of ${databases.label(db)} instead of ${requestedType}: ${reason}`, { databaseId: db.id, serverId: server.id, operationId: operation.id });
         }
+        // The lock is held from here, so a page that reloads now shows the backup as running.
+        publish('backup.started', { databaseId: db.id, serverId: server.id, type, operationId: operation.id });
         const done = runOperation(operation.id, stepDefs)
             .then((op) => {
                 const file = op.ctx.fileId ? backups.get(op.ctx.fileId) : null;

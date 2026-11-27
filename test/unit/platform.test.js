@@ -9,8 +9,9 @@ const row = (over) => ({ host_platform: 'Linux', host_distribution: 'Ubuntu', ho
 
 test('the host as SQL Server reports it', () => {
     assert.deepEqual(hostOf(row({})), { platform: 'Linux', distribution: 'Ubuntu', release: '24.04', container: 'LINUX CONTAINER' });
-    assert.equal(hostOf(row({ container_type: 'NONE' })).container, null, 'NONE: not in a container');
+    assert.equal(hostOf(row({ container_type: 'NONE' })).container, false, 'NONE: not in a container');
     assert.deepEqual(hostOf({}), { platform: null, distribution: null, release: null, container: null }, 'an older version that cannot say');
+    assert.equal(hostOf(row({ container_type: null })).container, null, 'no VIEW SERVER STATE yet: unknown');
 });
 
 test('as a short tag and a longer description', () => {
@@ -21,6 +22,7 @@ test('as a short tag and a longer description', () => {
     });
     const windows = hostOf({ host_platform: 'Windows', host_distribution: 'Windows Server 2022 Standard', host_release: '10.0', container_type: 'NONE' });
     assert.deepEqual(platformOf(windows), { short: 'Windows', long: 'Windows Server 2022 Standard, not in a container' });
+    assert.deepEqual(platformOf(hostOf(row({ container_type: null }))), { short: 'Linux', long: 'Ubuntu 24.04' }, 'unknown: no claim either way');
     assert.equal(platformOf(null), null, 'never reached: nothing to show');
     assert.equal(platformOf(hostOf({})), null);
 });

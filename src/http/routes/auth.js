@@ -62,14 +62,9 @@ export function authRoutes(router, { cfg }) {
         { beforePasswordChange: true },
     );
 
-    router.get(
-        '/api/auth/me',
-        async (ctx) => {
-            if (!ctx.session) throw new HttpError(401, 'Not logged in');
-            return me(ctx.session);
-        },
-        { auth: false },
-    );
+    // "Not signed in" is an answer here, not an error: the dashboard asks at every start,
+    // and a 401 would show in the browser console as a failed request.
+    router.get('/api/auth/me', async (ctx) => (ctx.session ? me(ctx.session) : { user: null }), { auth: false });
 
     // A user changes their own password: { current, password }. Their other sessions end.
     router.post(

@@ -263,8 +263,10 @@ async function pass(dbId, serverId, w) {
     const release = tryAcquire(dbId, `restore:${serverId}`);
     if (!release) return; // a seed or failover owns this secondary; the poll comes back
     w.lastPassAt = nowIso();
+    let restored = 0;
     try {
         const r = await applyAvailableLogs({ db, server, yieldToExclusive: true, honorDelay: true });
+        restored = r.restored;
         if (r.status === 'broken') return stopShipping(db, server, 'broken', r.reason);
         if (r.status === 'reseed') return stopShipping(db, server, 'needs_reseed', r.reason);
         if (r.status === 'stopped' || r.status === 'yield') return;
@@ -274,7 +276,6 @@ async function pass(dbId, serverId, w) {
             return;
         }
         if (r.status === 'more') w.again = true;
-        const restored = r.restored;
         // 'delayed' and 'paused' are not failures: the next poll checks again.
         // Back where its delay says after a pause or a lowered delay: lag alerts apply again.
         if (r.status === 'delayed' || r.status === 'caught_up') {
@@ -308,6 +309,9 @@ async function pass(dbId, serverId, w) {
         changed(db, server);
     } finally {
         release();
+        // Only now, with the lock released: pages show a restore as running while it is held (the
+        // Overview's restore icon), and this copy's position moved. Passes that restored nothing stay quiet.
+        if (restored) changed(db, server);
     }
 }
 

@@ -41,8 +41,9 @@ export function clear(el) {
 }
 
 /**
- * Responsive data table. columns: [{label, cell:(row)=>node|string, num?:bool, header?:bool, detail?:(row)=>node|null}]
+ * Responsive data table. columns: [{label, cell:(row)=>node|string, num?:bool, header?:bool, detail?:(row)=>node|null, className?:string}]
  * The first column with header:true is rendered as a row header (<th scope=row>).
+ * className goes on every cell of the column, its heading too (for a fixed width, say).
  * A column with `detail` shows its cell as a show/hide toggle for a row of its own, right
  * below, across the whole table (for a row that has a detail; the others show the cell as is).
  */
@@ -59,6 +60,9 @@ function setRowHidden(tr, hidden) {
 
 /** A row, followed by its detail row if it has one. */
 const withDetail = (tr) => (tr.detailRow ? [tr, tr.detailRow] : tr);
+
+/** A column's className as a tag suffix for h() (".a.b"), or ''. */
+const colClass = (c) => (c.className ? `.${c.className.trim().split(/\s+/).join('.')}` : '');
 
 const isEmpty = (v) => v === null || v === undefined || v === '' || v === false || (Array.isArray(v) && v.every(isEmpty));
 
@@ -121,8 +125,8 @@ export function dataTable({ caption, columns, rows = [], groups = null, empty = 
             { class: rowClass?.(r) || null, hidden },
             columns.map((c) => {
                 const content = detail && c === detailColumn ? detail.toggle : c.cell(r);
-                if (c.header) return h('th', { scope: 'row' }, content);
-                return h(c.num ? 'td.num' : 'td', { 'data-label': c.label, 'data-empty': isEmpty(content) }, content);
+                if (c.header) return h(`th${colClass(c)}`, { scope: 'row' }, content);
+                return h(`td${c.num ? '.num' : ''}${colClass(c)}`, { 'data-label': c.label, 'data-empty': isEmpty(content) }, content);
             }),
         );
         if (detail) Object.assign(tr, { detailRow: detail.tr, detailToggle: detail.toggle });
@@ -142,7 +146,7 @@ export function dataTable({ caption, columns, rows = [], groups = null, empty = 
     const table = h(
         'div.table-wrapper',
         { tabindex: 0, role: 'region', 'aria-labelledby': captionId },
-        h('table.data', h('caption', { id: captionId }, caption), h('thead', h('tr', columns.map((c) => h('th', { scope: 'col' }, c.label)))), bodies),
+        h('table.data', h('caption', { id: captionId }, caption), h('thead', h('tr', columns.map((c) => h(`th${colClass(c)}`, { scope: 'col' }, c.label)))), bodies),
     );
     if (!extra) return table;
     // The toggle stays in place (and keeps focus) in both states.
@@ -227,37 +231,54 @@ export function ago(iso) {
  * Modal dialog built from a form. Resolves with FormData values or null on dismiss.
  * onOpen({ form, submit }) runs before it opens, e.g. to set aria-disabled on the
  * submit button while the form cannot be sent (it stays focusable; the form refuses it).
+ * While onSubmit(values, { signal }) runs, the form cannot be sent again and busyText
+ * (a string, or a function of the values) is shown; signal aborts if the dialog is closed.
  */
-export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit, onOpen }) {
+export function formDialog({ title, fields, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, busyText = null, onSubmit, onOpen }) {
     return new Promise((resolve) => {
         const titleId = `dlg-${Math.random().toString(36).slice(2, 9)}`;
         const err = h('p.error-text', { role: 'alert' });
+        const status = h('p.muted.busy-text', { role: 'status' });
         const submit = h(danger ? 'button.danger' : 'button.primary', { type: 'submit', value: 'ok' }, submitLabel);
         const form = h(
             'form.stack',
             { method: 'dialog' },
             fields,
             err,
-            h('div.actions', h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, cancelLabel), submit),
+            h('div.actions', h('button', { type: 'submit', value: 'cancel', formnovalidate: true, autofocus: danger }, cancelLabel), submit, status),
         );
         const dlg = h('dialog', { 'aria-labelledby': titleId }, h('h2', { id: titleId }, title), form);
         document.body.append(dlg);
+        const closed = new AbortController();
+        let busy = false;
         form.addEventListener('submit', async (e) => {
             if (e.submitter?.value !== 'ok') return; // Cancel: let method=dialog close it
             e.preventDefault();
-            if (submit.getAttribute('aria-disabled') === 'true') return;
+            if (busy || submit.getAttribute('aria-disabled') === 'true') return;
             err.textContent = '';
             const values = Object.fromEntries(new FormData(form));
             for (const cb of form.querySelectorAll('input[type=checkbox]')) values[cb.name] = cb.checked;
+            // aria-disabled, not disabled: the button keeps focus while it waits.
+            busy = true;
+            const wasDisabled = submit.getAttribute('aria-disabled');
+            submit.setAttribute('aria-disabled', 'true');
+            status.textContent = (typeof busyText === 'function' ? busyText(values) : busyText) ?? '';
             try {
-                const result = onSubmit ? await onSubmit(values) : values;
+                const result = onSubmit ? await onSubmit(values, { signal: closed.signal }) : values;
+                if (closed.signal.aborted) return;
                 dlg.close('ok');
                 resolve(result);
             } catch (ex) {
                 err.textContent = ex.message;
+            } finally {
+                busy = false;
+                status.textContent = '';
+                if (wasDisabled === null) submit.removeAttribute('aria-disabled');
+                else submit.setAttribute('aria-disabled', wasDisabled);
             }
         });
         dlg.addEventListener('close', () => {
+            closed.abort();
             if (dlg.returnValue !== 'ok') resolve(null);
             dlg.remove();
         });

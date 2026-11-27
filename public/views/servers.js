@@ -10,13 +10,14 @@ export function serverAddress(s) {
 /**
  * Where a server runs, from its last health check (inspect.js hostOf()):
  * { short: 'Linux container' | 'Linux' | 'Windows' ..., long: 'Ubuntu 24.04, in a container' }, or null.
+ * Whether it is in a container is left out while unknown (host.container null).
  */
 export function platformOf(host) {
     if (!host?.platform) return null;
     const os = host.platform === 'Windows' ? host.distribution || 'Windows' : [host.distribution, host.release].filter(Boolean).join(' ') || host.platform;
     return {
         short: host.container ? `${host.platform} container` : host.platform,
-        long: host.container ? `${os}, in a container (Docker, Kubernetes or similar)` : `${os}, not in a container`,
+        long: host.container ? `${os}, in a container (Docker, Kubernetes or similar)` : host.container === false ? `${os}, not in a container` : os,
     };
 }
 
@@ -71,8 +72,14 @@ function serverFields(s = {}, { backupRoot = '/backup', maxParallel = 2 } = {}) 
         field(
             'Shared backup folder, as this SQL Server sees it',
             h('input', { type: 'text', name: 'sql_backup_root', required: true, value: s.sql_backup_root || '/var/opt/mssql/backup', spellcheck: 'false', autocapitalize: 'none' }),
-            'The folder all servers back up to, as a path on this server: for example /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup.'
-                + (isEdit ? ' If you change it, run this server’s setup script again.' : ''),
+            [
+                'The folder all servers back up to, as a path on this server: for example /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup.',
+                // Known once a health check has read it (not yet while registering). Only a suggestion: never filled in.
+                s.default_backup_path
+                    ? [' This server’s own default backup folder is ', h('span.mono', s.default_backup_path), '. Use only if this is the correct shared folder.']
+                    : null,
+                isEdit ? ' If you change it, run this server’s setup script again.' : null,
+            ],
         ),
         h(
             'details.more',
@@ -119,13 +126,26 @@ function toPayload(v, isEdit) {
     return out;
 }
 
+/**
+ * Register: connects first, so a typo in the host, port, login or password shows
+ * in the dialog, with what to check, before anything is saved.
+ */
+async function register(v, { signal }) {
+    const payload = toPayload(v, false);
+    const test = await post('/api/servers/test-connection', payload);
+    if (!test.ok) throw new Error(test.error);
+    signal.throwIfAborted(); // closed while connecting: register nothing
+    return post('/api/servers', payload);
+}
+
 export async function editServerDialog(s) {
     const info = await get('/api/info').catch(() => ({}));
     return formDialog({
         title: s ? `Edit server ${s.name}` : 'Register server',
         fields: serverFields(s || {}, info),
         submitLabel: s ? 'Save' : 'Register',
-        onSubmit: (v) => (s ? put(`/api/servers/${s.id}`, toPayload(v, true)) : post('/api/servers', toPayload(v, false))),
+        busyText: s ? null : (v) => `Connecting to ${v.host}…`,
+        onSubmit: s ? (v) => put(`/api/servers/${s.id}`, toPayload(v, true)) : register,
     });
 }
 
@@ -218,11 +238,8 @@ async function afterRegister(s) {
         return;
     }
     const steps = [];
-    if (hh && !hh.ok) {
-        steps.push(
-            h('li', 'Make sure Mostly-On can connect. It could not: ', h('span.mono', String(hh.error).replace(/\.$/, '')), '. If the login does not exist yet, create it on ', h('strong', s.name), ' first.'),
-        );
-    }
+    // Rare: the Register dialog connected a moment ago.
+    if (hh && !hh.ok) steps.push(h('li', 'Make sure Mostly-On can connect. It could not: ', h('span.mono', String(hh.error).replace(/\.$/, '')), '.'));
     steps.push(
         h('li', 'Download the setup script. It already has this server’s backup folder and the login ', h('strong', s.username), ' filled in.'),
         h('li', 'Run it on ', h('strong', s.name), ' as a sysadmin, in SSMS, Azure Data Studio or sqlcmd. Running it again later is always safe.'),
@@ -231,8 +248,10 @@ async function afterRegister(s) {
     await formDialog({
         title: `One more step for ${s.name}`,
         fields: [
-            h('p', `${s.name} is registered, but Mostly-On cannot back up or restore there until its setup script has been run. `
-                + 'The script installs a few signed procedures in master, so Mostly-On can do its job without a sysadmin login.'),
+            hh?.ok
+                ? h('p', `${s.name} is registered, and Mostly-On connected as `, h('strong', s.username), '. Before it can back up or restore there, the setup script has to run once.')
+                : h('p', `${s.name} is registered, but Mostly-On cannot back up or restore there until its setup script has been run.`),
+            h('p', 'The login needs no permissions of its own: the script grants the few Mostly-On needs, and installs signed procedures in master so it can do its job without sysadmin.'),
             h('ol.steps-list', steps),
         ],
         submitLabel: 'Download setup script',
@@ -407,6 +426,30 @@ function serverDatabasesTable(roles, hh) {
     });
 }
 
+/** The same folder, trailing separators aside (Windows paths ignore case). */
+function sameFolder(a, b) {
+    const key = (p) => {
+        const t = String(p).replace(/[\\/]+$/, '');
+        return /^([A-Za-z]:|\\\\)/.test(p) ? t.toLowerCase() : t;
+    };
+    return key(a) === key(b);
+}
+
+/**
+ * The server's own default backup folder (SQL Server's setting, read at each
+ * health check). Mostly-On never uses it, and never changes the shared backup
+ * folder to match it: when the two differ, a note says which one it uses.
+ */
+function defaultBackupPathCell(s) {
+    if (!s.default_backup_path) return '–';
+    return [
+        h('span.mono', s.default_backup_path),
+        sameFolder(s.default_backup_path, s.sql_backup_root)
+            ? null
+            : h('div.small.muted', 'SQL Server’s own default, for backups taken outside Mostly-On (in SSMS, for example). Mostly-On always uses the backup path above.'),
+    ];
+}
+
 /** "A, B, C and 9 more": database names for a dialog, without a wall of text. */
 function someNames(names, max = 8) {
     if (names.length <= max) return names.join(', ');
@@ -563,6 +606,7 @@ export function serverDetailView(id) {
                     h('dt', 'Backup path (Mostly-On)'), h('dd.mono', s.controller_backup_root || `${info.backupRoot ?? 'BACKUP_ROOT'} (default)`),
                     h('dt', 'Default data path'), h('dd.mono', s.default_data_path || '–'),
                     h('dt', 'Default log path'), h('dd.mono', s.default_log_path || '–'),
+                    h('dt', 'Default backup path'), h('dd', defaultBackupPathCell(s)),
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
                     h('dt', 'Backups and restores at a time'),
                     h('dd', s.work ? `${s.work.limit}${s.max_parallel == null ? ' (default)' : ''}: ${s.work.running} running now${s.work.waiting ? `, ${s.work.waiting} waiting` : ''}` : '–'),

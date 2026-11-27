@@ -7,7 +7,7 @@ import { MAXIMUMS } from './settings.js';
 
 const PUBLIC_COLS = `id, name, host, port, instance_name, username, encrypt, trust_server_cert, sql_backup_root,
     controller_backup_root, standby_root, enabled, last_seen_at, last_error, product_version, edition,
-    engine_edition, default_data_path, default_log_path, created_at, updated_at, removed_at, max_parallel, auto_manage, ship_to_server_id`;
+    engine_edition, default_data_path, default_log_path, default_backup_path, created_at, updated_at, removed_at, max_parallel, auto_manage, ship_to_server_id`;
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const MAX_PARALLEL = MAXIMUMS['servers.max_parallel'];
@@ -199,9 +199,9 @@ export function recordHealth(id, h) {
         getDb()
             .prepare(
                 `UPDATE servers SET last_seen_at=?, last_error=NULL, product_version=?, edition=?, engine_edition=?,
-                    default_data_path=?, default_log_path=? WHERE id=?`,
+                    default_data_path=?, default_log_path=?, default_backup_path=? WHERE id=?`,
             )
-            .run(now, h.productVersion, h.edition, h.engineEdition, h.defaultDataPath, h.defaultLogPath, id);
+            .run(now, h.productVersion, h.edition, h.engineEdition, h.defaultDataPath, h.defaultLogPath, h.defaultBackupPath, id);
     } else {
         getDb().prepare('UPDATE servers SET last_error=? WHERE id=?').run(String(h.error).slice(0, 1000), id);
     }
