@@ -24,7 +24,7 @@ SQL Server Express Edition has no SQL Server Agent, and for anything less than E
 > This project was largely vibe-coded and is in early beta. Please test it properly
 > before deploying to important or sensitive environments.
 
-Contents: [Quick start demo](#quick-start-trying-it-out-in-a-sandbox) · [Deploying](#deploying) · [The shared backup folder](#the-shared-backup-folder) · [Configuration](#configuration) · [SQL Server requirements](#sql-server-requirements) · [How it works](#how-it-works) · [Failover, step by step](#failover-step-by-step) · [Upgrading](#upgrading) · [Development and tests](#development-and-tests) · [Known limitations](#known-limitations) · [License](#license)
+Contents: [Quick start demo](#quick-start-trying-it-out-in-a-sandbox) · [Deploying](#deploying) · [The shared backup folder](#the-shared-backup-folder) · [Configuration](#configuration) · [SQL Server requirements](#sql-server-requirements) · [How it works](#how-it-works) · [Failover, step by step](#failover-step-by-step) · [Upgrading](#upgrading-mostly-on) · [Development and tests](#development-and-tests) · [Known limitations](#known-limitations) · [License](#license)
 
 ---
 

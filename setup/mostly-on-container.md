@@ -147,4 +147,4 @@ Set up each SQL Server with the guide that matches how it runs. You can mix them
 | installed on a Linux machine | [SQL Server on Linux](sql-on-linux.md) |
 | installed on a Windows machine | [SQL Server on Windows](sql-on-windows.md) |
 
-To update Mostly-On later: `docker compose pull && docker compose up -d`. See [Upgrading](../README.md#upgrading).
+To update Mostly-On later: `docker compose pull && docker compose up -d`. See [Upgrading](../README.md#upgrading-mostly-on).
