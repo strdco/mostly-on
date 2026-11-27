@@ -1,6 +1,6 @@
 {
   "name": "mostly-on",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Log shipping and backup orchestrator for SQL Server Express in Linux containers",
   "type": "module",
   "private": true,
