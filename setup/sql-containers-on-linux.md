@@ -112,6 +112,8 @@ The SQL Server container only sees the folders you hand it. So you mount the sha
   | SQL login / Password | `mostly_on` and its password. |
   | Shared backup folder, as this SQL Server sees it | `/var/opt/mssql/backup` |
 
+  <img src="../docs/images/register-server-container.png" width="624" alt="The Register server dialog, filled in: display name sql1, host linuxhost01, port 1433, SQL login mostly_on, and the shared backup folder /var/opt/mssql/backup highlighted">
+
 - [ ] Download the server's setup script. Mostly-On offers it right after you register the server, or later on the server's page, under **Setup**. It has the server's backup folder and login filled in.
 - [ ] Run the script on the server as `sa` (or another sysadmin). Running it again is always safe.
 - [ ] Within a minute, the server's page shows **ready**.

@@ -73,6 +73,8 @@ Mostly-On is published as a container image, `ghcr.io/strdco/mostly-on`. The dem
 
    The icon next to the database shows how Mostly-On manages the database: **O** not managed, **I** managed without secondaries (only backed up), **II** log-shipped to one or more secondaries. To stop managing a database, press the toggle switch. System databases (master, model, msdb) and databases in SIMPLE or BULK_LOGGED recovery can be managed, too, but they are tagged **backups only** because they cannot be log-shipped (see [How it works](#how-it-works)).
 
+   ![The Overview page: Inventory, Reporting and master managed with an I switch, Sales and Billing log-shipped with a II switch, Reporting and master tagged "backups only", and HR, model and msdb under "Not managed" with an O switch](docs/images/overview-database-states.png)
+
 - [ ] You can fail over a database to it's secondary replica by clicking on the database, and then the **Failover** button for one of its secondary replicas. This makes the secondary the new primary, and the former primary becomes a secondary.
 
 ---
@@ -115,6 +117,8 @@ In order to be able to ship logs and fail over from one server to another, all p
 ```
 
 A log-shipped database has one folder, whichever server is its primary. A **backups-only** database (a system database, or one not in FULL recovery) belongs to one server, so its folder carries that server's name: every server has its own `master`, for example `master@sql1` and `master@sql2`.
+
+![One shared backup folder on a file server or NAS. Mostly-On sees it as /backup, sql1 (SQL Server in a Linux container) as /var/opt/mssql/backup, and sql2 (SQL Server on Windows) as a UNC path. sql1 writes backups to it, sql2 reads and restores them, and Mostly-On creates folders and deletes expired backups.](docs/images/shared-backup-folder.png)
 
 **The folder can have a different path on each machine.** When you register a server, you tell Mostly-On where the folder is *as that SQL Server sees it*. This is important when your database server runs in a container where, for example, `/var/opt/mssql/backup` might map to an SMB share. If the controller has it somewhere other than what you've configured as `BACKUP_ROOT`, set that path on the server too.
 
@@ -210,6 +214,8 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
   - A delayed secondary only restores entire log backups, so the replica will end up *at least* as old as the configured delay.
   - You cannot fail over to a delayed secondary.
   - Only a readable (STANDBY) copy can be queried. Readers are forcibly disconnected at every restore. To prevent this, press **Pause sync**.
+
+  ![With a 60-minute delay and log backups every 15 minutes, a delayed secondary is always between 60 and 75 minutes old](docs/images/delayed-secondary.png)
 - **Retention.** Old backup files are deleted after the number of days you define (Settings), per backup type; a database can have its own, overriding, values. Files required by a secondary are always kept even after the retention period. Backups from dropped databases are subject to the same retention policies. A database you stop managing yourself keeps its files until you delete them.
 - FULL backups are always kept at least as long as DIFF and LOG backups, as those would be useless without the FULL they build on; Mostly-On will refuse settings that would break this rule.
 - **Alerts.** Mostly-On alerts you once when a problem starts, then reminds you every few hours while it lasts, and sends one notice when it is resolved. Alerts cover:
@@ -222,8 +228,12 @@ The **Servers** page shows whether each server is ready. A new version of Mostly
   - an old primary is out of sync, or is accepting writes (split brain);
   - a failover or other operation failed.
 
+  ![With log backups every 15 minutes, a secondary is normally up to 15 minutes old. With an alert threshold of 10 minutes, Mostly-On alerts once it is more than 25 minutes old](docs/images/alert-threshold.png)
+
   Alert state survives restarts, so nothing is sent twice.
 - **Crash safety.** Every multi-step job (failovers, adding or reinitializing a secondary) is recorded step by step. After a restart, an interrupted job is never continued on its own: the **Operations** page shows exactly where it stopped, what to check, and offers **Resume** or **Mark resolved**.
+
+  ![The Operations page with an interrupted "Add secondary" job: steps 1 and 2 done, step 3 (restore the FULL backup on sql3) interrupted at 11 percent, steps 4 and 5 pending, and the buttons Resume and Mark resolved](docs/images/operations-interrupted.png)
 
 ## Automatic management
 
@@ -241,9 +251,13 @@ On servers where databases are more frequently created and dropped, **Manage dat
 
 Click the **Failover** button on a secondary replica of the database. The dialog shows how many log backups the secondary still needs and asks if you want to **perform tail log backup**.
 
+<img src="docs/images/failover-dialog.png" width="624" alt="The dialog Fail over Sales to sql2: sql2 has restored every log backup taken so far, the box Perform tail log backup on sql1 is ticked, and the buttons Cancel and Fail over">
+
 > [!WARNING]
 > Failing over a database *without* a tail-log backup loses all changes made to the primary after the most recently transaction log backup was taken.
 > If you still have a functioning primary database, always take a tail-log backup when failing over.
+
+![Two timelines. With a tail-log backup, the changes made on sql1 after its last log backup are restored on sql2 at failover, and nothing is lost. Without one, sql2 becomes the primary with the data up to the last log backup, and the changes after it are lost.](docs/images/failover-tail-log.png)
 
 ### With a tail-log backup (no data lost)
 
@@ -289,6 +303,8 @@ For server maintenance, you can fail over all log-shipped databases by clicking 
 
 Someone deleted the wrong rows at 14:03? On the database's page, press **Restore…**, pick the date and time (type it to the second, in your browser's time zone, or drag the slider across the restorable range) and choose what to do. The dialog shows the points-in-time you can restore to, depending on the recovery model and what backups are available.
 
+<img src="docs/images/restore-dialog.png" width="624" alt="The dialog Restore Sales: a date and time field with a slider from the earliest possible moment to now, a choice between restoring a fresh copy and rolling back Sales on all replicas, the server to restore to, and the name of the restored database">
+
 ### Restore a copy (safe)
 
 Restores the database as it was at that moment as a fresh copy, under a **new name** (for example `Sales_20261121_1403`), on any registered server. The original database is unchanged. Good if you need to look at an old snapshot of the database, then copy data you need back into the live database.
@@ -300,6 +316,8 @@ Mostly-On does not back up or manage the copy. Drop it when you are done (`DROP 
 Puts the managed database itself back to that moment, on the primary and on every secondary. **Every change made after this point-in-time disappears from the database.**
 
 The tail-log backup and the other backups from after the point-in-time stay on the file share until retention deletes them. However, the dashboard will only offer point-in-times on the database's *current* branch, so there's no managed way to undo a rollback. **If you might need any of the changes made after the point-in-time, first restore a copy as it is now, then roll it back.**
+
+![Rolling Sales back to 14:03 at 14:30. The backups after 14:03, up to the tail-log backup at 14:30, become an old branch that stays on the share until retention deletes it but is no longer offered. Sales continues from 14:03 on a new, current branch, and its secondaries follow it.](docs/images/rollback-branches.png)
 
 ### Removing a server
 

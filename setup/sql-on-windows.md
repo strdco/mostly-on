@@ -48,6 +48,8 @@ SQL Server writes its backups to the share as its **service account**, so that a
   | SQL login / Password | `mostly_on` and its password. |
   | Shared backup folder, as this SQL Server sees it | The share's path, `\\fileserver\sqlbackup` |
 
+  <img src="../docs/images/register-server-windows.png" width="624" alt="The Register server dialog, filled in: display name sql2, host winsql02, port 1433, SQL login mostly_on, and the shared backup folder \\fileserver\sqlbackup highlighted">
+
 - [ ] Download the server's setup script. Mostly-On offers it right after you register the server, or later on the server's page, under **Setup**. It has the server's backup folder and login filled in.
 - [ ] Run the script in SSMS as a sysadmin. Running it again is always safe.
 - [ ] Within a minute, the server's page shows **ready**.

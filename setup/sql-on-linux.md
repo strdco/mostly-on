@@ -83,6 +83,8 @@ SQL Server uses the share directly, at `/mnt/sqlbackup`.
   | SQL login / Password | `mostly_on` and its password. |
   | Shared backup folder, as this SQL Server sees it | `/mnt/sqlbackup` |
 
+  <img src="../docs/images/register-server-linux.png" width="624" alt="The Register server dialog, filled in: display name sql1, host linuxsql01, port 1433, SQL login mostly_on, and the shared backup folder /mnt/sqlbackup highlighted">
+
 - [ ] Download the server's setup script. Mostly-On offers it right after you register the server, or later on the server's page, under **Setup**. It has the server's backup folder and login filled in.
 - [ ] Run the script on the server as `sa` (or another sysadmin). Running it again is always safe.
 - [ ] Within a minute, the server's page shows **ready**.

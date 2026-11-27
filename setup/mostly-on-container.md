@@ -14,6 +14,8 @@ You need:
 
 ## 1. Prepare the backup share
 
+![One shared backup folder on a file server or NAS. Mostly-On sees it as /backup, sql1 (SQL Server in a Linux container) as /var/opt/mssql/backup, and sql2 (SQL Server on Windows) as a UNC path. sql1 writes backups to it, sql2 reads and restores them, and Mostly-On creates folders and deletes expired backups.](../docs/images/shared-backup-folder.png)
+
 Do this once, on the file server. Pick NFS or SMB:
 
 - **NFS** is native to Linux and needs no passwords. But the server trusts any listed host and whatever user ID it claims, and traffic isn't encrypted (short of setting up Kerberos). Use it on a network you control.
