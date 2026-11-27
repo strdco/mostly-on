@@ -61,7 +61,7 @@ function serverFields(s = {}, { backupRoot = '/backup', maxParallel = 2 } = {}) 
             field(
                 'SQL login',
                 h('input', { type: 'text', name: 'username', required: true, value: s.username || '', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none' }),
-                'Should be a low-privileged login.',
+                'Use a new, unprivileged login.',
             ),
             field(
                 'Password',
@@ -617,13 +617,13 @@ export function serverDetailView(id) {
             h('h2', 'Setup'),
             h(
                 'p.muted',
-                `Mostly-On uses a non-privileged service login (without sysadmin). Backups, restores and failovers run through signed helper procedures in master, which are installed through the setup script. `,
+                `Mostly-On uses an unprivileged service login. Backups, restores and failovers run through signed helper procedures in master. `,
             ),
             h(
                 'p',
                 setupBadge(hh?.setup),
                 ' ',
-                hh?.setup?.login ? h('span.muted', `Mostly-On uses the login "${hh.setup.login}".`) : null,
+                hh?.setup?.login ? h('span.muted', `Mostly-On uses the SQL Server login "${hh.setup.login}".`) : null,
             ),
             h('p', h(hh?.setup?.ready ? 'a.button' : 'a.button.primary', { href: `/api/servers/${id}/setup-script`, download: '' }, 'Download setup script')),
             h('h2', 'Databases on this server'),

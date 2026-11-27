@@ -1,6 +1,6 @@
 -- Automatic management (engine/auto-manage.js).
 -- auto_manage: Mostly-On manages the user databases on this server by itself,
--- and stops managing one that is dropped. ship_to_server_id: the server new
+-- and stops managing those that are dropped. ship_to_server_id: the server new
 -- databases in FULL recovery are log shipped to (NULL = no secondary).
 ALTER TABLE servers ADD COLUMN auto_manage integer NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN ship_to_server_id integer NULL REFERENCES servers (id) ON DELETE SET NULL;

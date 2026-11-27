@@ -430,7 +430,7 @@ export function overviewView() {
             ? tipBadge(
                   shipTo ? `automatic → ${shipTo.name}` : 'automatic',
                   '',
-                  `Mostly-On manages the user databases on ${s.name} by itself, and stops managing one that is dropped. ` +
+                  `Mostly-On manages the user databases on ${s.name} automatically, and stops managing those that are dropped. ` +
                       (shipTo ? `New databases in FULL recovery are log shipped to ${shipTo.name}.` : 'New databases are backed up only.') +
                       ' Change it on the server page.',
               )
