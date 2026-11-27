@@ -4,12 +4,12 @@ Mostly-On runs as one container. This guide sets it up, together with the backup
 
 You need:
 
-- **A Linux machine with Docker Engine and the Docker Compose plugin.** It doesn't need much power: SQL Server does the backups and restores, and Mostly-On only tells it what to do.
+- **A Linux machine to run Docker on.** It doesn't need much power: SQL Server does the backups and restores, and Mostly-On only tells it what to do.
 - **A file server or NAS for the backup share**, which every SQL Server and this machine can reach. Not one of the SQL Servers: if that machine fails, its share fails with it, just when you need the backups to fail over.
 - **Network access** from this machine to each SQL Server's port (TCP 1433 by default).
 
 > [!NOTE]
-> **Only Windows servers?** Create a small Linux VM, for example in Hyper-V, install Docker Engine in it, and follow this guide inside the VM.
+> **Only Windows servers?** Create a small Linux VM, for example in Hyper-V, and follow this guide inside the VM.
 > Docker Desktop and WSL are fine for trying Mostly-On out, but they're built for desktops, not servers: they don't start by themselves when the machine boots.
 
 ## 1. Prepare the backup share
@@ -43,9 +43,32 @@ Do this once, on the file server. Pick NFS or SMB:
 
 - [ ] Create the share, for example `\\fileserver\sqlbackup`, and an account for it (for example `sqlbackup`) with **Modify** rights on the share and its folder. Linux machines connect with this account. SQL Servers on Windows use their own service account instead; see [SQL Server on Windows](sql-on-windows.md).
 
-## 2. Mount the share on this machine
+## 2. Install Docker on this machine
 
-Mostly-On runs in a container, and a container only sees the folders you hand it. So you mount the share on this machine first, at `/mnt/sqlbackup`, and hand it to the container in step 4.
+- [ ] Install Docker Engine and the Docker Compose plugin, following [Docker's instructions for your Linux distribution](https://docs.docker.com/engine/install/). Then check that both are there:
+
+  ```sh
+  docker --version
+  docker compose version
+  ```
+
+- [ ] Make sure Docker starts when the machine boots. Ubuntu and Debian do this already, Fedora and RHEL don't, and running it again does no harm:
+
+  ```sh
+  sudo systemctl enable --now docker
+  ```
+
+- [ ] This guide runs `docker` without `sudo`, which works for root and for members of the `docker` group. To add yourself to it, run this, then sign out and back in:
+
+  ```sh
+  sudo usermod -aG docker $USER
+  ```
+
+  Anyone in the `docker` group can do anything root can on this machine, so add only the people who manage it. Or leave it, and put `sudo` in front of each `docker` command.
+
+## 3. Mount the share on this machine
+
+Mostly-On runs in a container, and a container only sees the folders you hand it. So you mount the share on this machine first, at `/mnt/sqlbackup`, and hand it to the container in step 5.
 
 - [ ] Create the folder to mount the share on, and lock it while it's empty. If the share ever fails to mount, nothing can then land on the local disk by mistake:
 
@@ -54,10 +77,10 @@ Mostly-On runs in a container, and a container only sees the folders you hand it
   sudo chattr +i /mnt/sqlbackup
   ```
 
-- [ ] **NFS:** add this line to `/etc/fstab`, so the share is mounted at every start:
+- [ ] **NFS:** add this line to `/etc/fstab`, so the share is mounted at every start. `nofail` lets the machine start even when the share can't be reached:
 
   ```
-  nfs-server:/srv/sqlbackup  /mnt/sqlbackup  nfs  rw,nfsvers=4.1,_netdev  0  0
+  nfs-server:/srv/sqlbackup  /mnt/sqlbackup  nfs  rw,nfsvers=4.1,_netdev,nofail  0  0
   ```
 
 - [ ] **SMB:** install the SMB client, and store the share's account in a file that only root can read:
@@ -68,7 +91,7 @@ Mostly-On runs in a container, and a container only sees the folders you hand it
   sudo nano /etc/sqlbackup.cred
   ```
 
-  with these three lines:
+  with these lines. Leave out `domain=` unless it's a domain account (an account on a NAS or a storage service usually isn't):
 
   ```
   username=sqlbackup
@@ -76,27 +99,31 @@ Mostly-On runs in a container, and a container only sees the folders you hand it
   domain=EXAMPLE
   ```
 
-  Then add this line to `/etc/fstab`. `uid=10001,gid=0` makes the files appear owned by the user Mostly-On runs as. Add `seal` to the options to encrypt traffic.
+  Then add this line to `/etc/fstab`. `uid=10001,gid=0` makes the files appear owned by the user Mostly-On runs as, and `nofail` lets the machine start even when the share can't be reached.
 
   ```
-  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=10001,gid=0,file_mode=0660,dir_mode=0770,vers=3.0,_netdev  0  0
+  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=10001,gid=0,file_mode=0660,dir_mode=0770,vers=3.0,_netdev,nofail  0  0
   ```
 
-- [ ] Mount it, and check that user 10001 can write and delete there:
+  Add `seal` to the options to encrypt traffic, and always do so when the share is reached over the internet. If the file server supports SMB 3.1.1 (Windows Server 2016 or newer, and most current NAS), use `vers=3.1.1`.
+
+- [ ] Mount it, and check that user 10001 can write and delete there. `daemon-reload` makes the system read the changed `/etc/fstab`:
 
   ```sh
+  sudo systemctl daemon-reload
   sudo mount /mnt/sqlbackup
   docker run --rm -u 10001:0 -v /mnt/sqlbackup:/b busybox:1.37 sh -c 'touch /b/.test && rm /b/.test && echo OK'
   ```
 
-## 3. Get the files and fill in the settings
+## 4. Get the files and fill in the settings
 
-- [ ] Create a folder for Mostly-On, and download the compose file and the settings template into it:
+- [ ] Create a folder for Mostly-On, download the compose file and the settings template into it, and make the settings file readable only by you (it will hold the secret key):
 
   ```sh
   mkdir ~/mostly-on && cd ~/mostly-on
   curl -fsSLO https://raw.githubusercontent.com/strdco/mostly-on/main/docker-compose.yml
   curl -fsSL -o .env https://raw.githubusercontent.com/strdco/mostly-on/main/.env.example
+  chmod 600 .env
   ```
 
 - [ ] Generate the password hash for the first dashboard user (`admin`):
@@ -113,19 +140,36 @@ Mostly-On runs in a container, and a container only sees the folders you hand it
 
 - [ ] In `.env`, fill in `ADMIN_PASSWORD_HASH` and `SECRET_KEY`, set `PUBLIC_URL` to the address people will use (for example `http://mostly-on-host:8080`) and `TZ` to your time zone (for example `Europe/Stockholm`), and optionally the Pushover keys for notifications. The demo-only values at the bottom can stay empty. All settings: [Configuration](../README.md#configuration).
 
-## 4. Hand the share to the container
+## 5. Hand the share to the container
 
-- [ ] In `docker-compose.yml`, change `- backup:/backup` to `- /mnt/sqlbackup:/backup`, and remove the `backup:` line under `volumes:` at the bottom.
+- [ ] In `docker-compose.yml`, replace the line `- backup:/backup` with the share, and remove the `backup:` line under `volumes:` at the bottom. The end of the file then looks like this (comments left out):
+
+  ```yaml
+      volumes:
+        - controller-data:/data
+        - type: bind
+          source: /mnt/sqlbackup
+          target: /backup
+          bind:
+            propagation: rslave
+
+  volumes:
+    controller-data:
+  ```
+
+  Docker doesn't wait for the share when the machine starts, so Mostly-On can start before the share is mounted. `propagation: rslave` makes the share show up inside the container once it's mounted, without a restart. If the share couldn't be reached when the machine started, mount it with `sudo mount /mnt/sqlbackup` once it's back.
 
 Leave `controller-data` as it is. That volume holds Mostly-On's catalog (settings, history, operations), keeps it when you update the image, and needs no preparation. Back it up like any other application data.
 
-## 5. Start it
+## 6. Start it
 
 - [ ] Start Mostly-On:
 
   ```sh
   docker compose up -d
   ```
+
+  If it doesn't come up, `docker compose ps` shows whether it's running, and `docker compose logs --tail 50 controller` shows why not.
 
 - [ ] Check that it can write and delete on the share:
 
@@ -135,7 +179,7 @@ Leave `controller-data` as it is. That volume holds Mostly-On's catalog (setting
 
 - [ ] Open `PUBLIC_URL` (for example `http://mostly-on-host:8080`) and sign in as `admin`. Add the people who'll use Mostly-On on the **Users** page.
 
-## 6. Recommended: HTTPS
+## 7. Recommended: HTTPS
 
 - [ ] For anything but a lab, put a reverse proxy that handles HTTPS (nginx, Caddy, Traefik) in front of port 8080, and set `PUBLIC_URL` to its `https://` address. The login cookie is then marked Secure automatically.
 

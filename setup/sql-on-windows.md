@@ -2,7 +2,7 @@
 
 Repeat these steps on each SQL Server.
 
-Before you start: Mostly-On is running, and the backup share is ready as an **SMB share** ([Setting up the Mostly-On container](mostly-on-container.md), steps 1 to 5).
+Before you start: Mostly-On is running, and the backup share is ready as an **SMB share** ([Setting up the Mostly-On container](mostly-on-container.md), steps 1 to 6).
 
 ## 1. Prepare SQL Server
 

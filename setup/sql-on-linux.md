@@ -4,7 +4,7 @@
 
 Repeat these steps on each SQL Server.
 
-Before you start: Mostly-On is running, and the backup share is ready ([Setting up the Mostly-On container](mostly-on-container.md), steps 1 to 5).
+Before you start: Mostly-On is running, and the backup share is ready ([Setting up the Mostly-On container](mostly-on-container.md), steps 1 to 6).
 
 SQL Server runs as the `mssql` user, whose user ID differs from machine to machine. Mostly-On runs as user 10001. Both must be able to read, write and delete each other's files on the share. With SMB, the mount options take care of that; with NFS, the export options do.
 
