@@ -6,7 +6,8 @@ Repeat these steps on each SQL Server host.
 
 Before you start:
 
-- Mostly-On is running, and the backup share is ready ([Setting up the Mostly-On container](mostly-on-container.md), steps 1 to 5).
+- Mostly-On is running, and the backup share is ready ([Setting up the Mostly-On container](mostly-on-container.md), steps 1 to 6).
+- Docker is installed on this machine and starts when it boots ([step 2](mostly-on-container.md#2-install-docker-on-this-machine) of that guide).
 - **NFS:** this machine is in the share's export list on the NFS server (`sql1(rw,sync)` in `/etc/exports`, then `sudo exportfs -ra`).
 
 SQL Server in the container runs as user 10001, the same as Mostly-On, so the share needs no special treatment.
@@ -22,10 +23,10 @@ The SQL Server container only sees the folders you hand it. So you mount the sha
   sudo chattr +i /mnt/sqlbackup
   ```
 
-- [ ] **NFS:** add this line to `/etc/fstab`, so the share is mounted at every start:
+- [ ] **NFS:** add this line to `/etc/fstab`, so the share is mounted at every start. `nofail` lets the machine start even when the share can't be reached:
 
   ```
-  nfs-server:/srv/sqlbackup  /mnt/sqlbackup  nfs  rw,nfsvers=4.1,_netdev  0  0
+  nfs-server:/srv/sqlbackup  /mnt/sqlbackup  nfs  rw,nfsvers=4.1,_netdev,nofail  0  0
   ```
 
 - [ ] **SMB:** install the SMB client, and store the share's account in a file that only root can read:
@@ -36,7 +37,7 @@ The SQL Server container only sees the folders you hand it. So you mount the sha
   sudo nano /etc/sqlbackup.cred
   ```
 
-  with these three lines:
+  with these lines. Leave out `domain=` unless it's a domain account (an account on a NAS or a storage service usually isn't):
 
   ```
   username=sqlbackup
@@ -44,15 +45,18 @@ The SQL Server container only sees the folders you hand it. So you mount the sha
   domain=EXAMPLE
   ```
 
-  Then add this line to `/etc/fstab`. `uid=10001,gid=0` makes the files appear owned by the user SQL Server runs as. Add `seal` to the options to encrypt traffic.
+  Then add this line to `/etc/fstab`. `uid=10001,gid=0` makes the files appear owned by the user SQL Server runs as, and `nofail` lets the machine start even when the share can't be reached.
 
   ```
-  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=10001,gid=0,file_mode=0660,dir_mode=0770,vers=3.0,_netdev  0  0
+  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=10001,gid=0,file_mode=0660,dir_mode=0770,vers=3.0,_netdev,nofail  0  0
   ```
 
-- [ ] Mount it, and check that user 10001 can write and delete there:
+  Add `seal` to the options to encrypt traffic, and always do so when the share is reached over the internet. If the file server supports SMB 3.1.1 (Windows Server 2016 or newer, and most current NAS), use `vers=3.1.1`.
+
+- [ ] Mount it, and check that user 10001 can write and delete there. `daemon-reload` makes the system read the changed `/etc/fstab`:
 
   ```sh
+  sudo systemctl daemon-reload
   sudo mount /mnt/sqlbackup
   docker run --rm -u 10001:0 -v /mnt/sqlbackup:/b busybox:1.37 sh -c 'touch /b/.test && rm /b/.test && echo OK'
   ```
@@ -74,13 +78,19 @@ The SQL Server container only sees the folders you hand it. So you mount the sha
       ports: ["1433:1433"]
       volumes:
         - sql-data:/var/opt/mssql
-        - /mnt/sqlbackup:/var/opt/mssql/backup
+        - type: bind
+          source: /mnt/sqlbackup
+          target: /var/opt/mssql/backup
+          bind:
+            propagation: rslave
 
   volumes:
     sql-data:
   ```
 
   Give it a fixed `hostname`: otherwise SQL Server's name changes every time the container is recreated.
+
+  Docker doesn't wait for the share when the machine starts, so SQL Server can start before the share is mounted, and its backups then fail on the locked folder. `propagation: rslave` makes the share show up inside the container once it's mounted, without a restart. If the share couldn't be reached when the machine started, mount it with `sudo mount /mnt/sqlbackup` once it's back.
 
 - [ ] Start or restart it, and check that SQL Server can write to the share:
 
