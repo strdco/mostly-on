@@ -2,7 +2,7 @@
 
 SQL Server backup and log shipping for people who don't have SQL Server Agent or just don't have the patience for shell scripts and cron jobs.
 
-<img width="2764" height="1664" alt="image" src="https://github.com/user-attachments/assets/05361da9-5abd-4537-b2a7-8b61f9f2f891" />
+<img src="docs/images/overview.png" width="2764" height="1664" alt="The Overview screen">
 
 SQL Server Express Edition has no SQL Server Agent, and for anything less than Enterprise Edition, you won't have any kind of out-of-the-box high availability. Mostly-On is a small orchestrator, running in its own container, that takes care of:
 
