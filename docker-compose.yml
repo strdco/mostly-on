@@ -34,8 +34,8 @@ services:
       # without it, everything is lost when the container is replaced.
       - controller-data:/data
       # The shared backup folder that your SQL Servers write to. Replace this
-      # with that folder: a host path (/srv/mostly-on/backup:/backup) or a
-      # network share. See "The shared backup folder" in the README.
+      # with the share, mounted on this machine (/mnt/sqlbackup:/backup).
+      # See setup/mostly-on-container.md.
       - backup:/backup
 
 volumes:
