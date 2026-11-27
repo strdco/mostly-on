@@ -46,6 +46,7 @@ SELECT CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion')) AS product_vers
        CONVERT(int, SERVERPROPERTY(N'EngineEdition')) AS engine_edition,
        CONVERT(nvarchar(260), SERVERPROPERTY(N'InstanceDefaultDataPath')) AS default_data_path,
        CONVERT(nvarchar(260), SERVERPROPERTY(N'InstanceDefaultLogPath')) AS default_log_path,
+       CONVERT(nvarchar(260), SERVERPROPERTY(N'InstanceDefaultBackupPath')) AS default_backup_path,
        CONVERT(nvarchar(128), @@SERVERNAME) AS server_name,
        SYSUTCDATETIME() AS utc_now,
        DATEPART(TZOFFSET, SYSDATETIMEOFFSET()) AS tz_offset_minutes,

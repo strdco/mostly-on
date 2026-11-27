@@ -72,8 +72,14 @@ function serverFields(s = {}, { backupRoot = '/backup', maxParallel = 2 } = {}) 
         field(
             'Shared backup folder, as this SQL Server sees it',
             h('input', { type: 'text', name: 'sql_backup_root', required: true, value: s.sql_backup_root || '/var/opt/mssql/backup', spellcheck: 'false', autocapitalize: 'none' }),
-            'The folder all servers back up to, as a path on this server: for example /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup.'
-                + (isEdit ? ' If you change it, run this server’s setup script again.' : ''),
+            [
+                'The folder all servers back up to, as a path on this server: for example /var/opt/mssql/backup, D:\\Backup or \\\\fileserver\\backup.',
+                // Known once a health check has read it (not yet while registering). Only a suggestion: never filled in.
+                s.default_backup_path
+                    ? [' This server’s own default backup folder is ', h('span.mono', s.default_backup_path), '. Use only if this is the correct shared folder.']
+                    : null,
+                isEdit ? ' If you change it, run this server’s setup script again.' : null,
+            ],
         ),
         h(
             'details.more',
@@ -420,6 +426,30 @@ function serverDatabasesTable(roles, hh) {
     });
 }
 
+/** The same folder, trailing separators aside (Windows paths ignore case). */
+function sameFolder(a, b) {
+    const key = (p) => {
+        const t = String(p).replace(/[\\/]+$/, '');
+        return /^([A-Za-z]:|\\\\)/.test(p) ? t.toLowerCase() : t;
+    };
+    return key(a) === key(b);
+}
+
+/**
+ * The server's own default backup folder (SQL Server's setting, read at each
+ * health check). Mostly-On never uses it, and never changes the shared backup
+ * folder to match it: when the two differ, a note says which one it uses.
+ */
+function defaultBackupPathCell(s) {
+    if (!s.default_backup_path) return '–';
+    return [
+        h('span.mono', s.default_backup_path),
+        sameFolder(s.default_backup_path, s.sql_backup_root)
+            ? null
+            : h('div.small.muted', 'SQL Server’s own default, for backups taken outside Mostly-On (in SSMS, for example). Mostly-On always uses the backup path above.'),
+    ];
+}
+
 /** "A, B, C and 9 more": database names for a dialog, without a wall of text. */
 function someNames(names, max = 8) {
     if (names.length <= max) return names.join(', ');
@@ -576,6 +606,7 @@ export function serverDetailView(id) {
                     h('dt', 'Backup path (Mostly-On)'), h('dd.mono', s.controller_backup_root || `${info.backupRoot ?? 'BACKUP_ROOT'} (default)`),
                     h('dt', 'Default data path'), h('dd.mono', s.default_data_path || '–'),
                     h('dt', 'Default log path'), h('dd.mono', s.default_log_path || '–'),
+                    h('dt', 'Default backup path'), h('dd', defaultBackupPathCell(s)),
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
                     h('dt', 'Backups and restores at a time'),
                     h('dd', s.work ? `${s.work.limit}${s.max_parallel == null ? ' (default)' : ''}: ${s.work.running} running now${s.work.waiting ? `, ${s.work.waiting} waiting` : ''}` : '–'),

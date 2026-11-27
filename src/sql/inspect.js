@@ -17,6 +17,8 @@ export async function serverInfo(serverId) {
         engineEdition: row.engine_edition,
         defaultDataPath: row.default_data_path,
         defaultLogPath: row.default_log_path,
+        // Only shown: Mostly-On backs up to the shared backup folder, never here.
+        defaultBackupPath: row.default_backup_path,
         serverName: row.server_name,
         utcNow: row.utc_now,
         tzOffsetMinutes: row.tz_offset_minutes,
