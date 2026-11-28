@@ -52,9 +52,9 @@ const CARDS = [
         fields: [
             {
                 key: 'servers.max_parallel',
-                label: 'Backups and restores at a time, per server',
+                label: 'Maximum concurrent backups and restores, per server',
                 min: 1,
-                max: 10,
+                max: 16,
                 hint: 'Server settings can override this value.',
             },
         ],

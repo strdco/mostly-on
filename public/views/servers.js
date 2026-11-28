@@ -102,7 +102,7 @@ function serverFields(s = {}, { backupRoot = '/backup', maxParallel = 2 } = {}) 
                     'A path on this SQL Server. Only used by readable (STANDBY) secondaries.' + (isEdit ? ' If you change it, run this server’s setup script again.' : ''),
                 ),
                 field(
-                    'Backups and restores at a time (optional)',
+                    'Max concurrent backups and restores (optional)',
                     h('input', { type: 'number', name: 'max_parallel', min: 1, max: 10, step: 1, inputmode: 'numeric', value: s.max_parallel ?? '', placeholder: `${maxParallel} (default)` }),
                     `Leave empty to use the default (${maxParallel}, Settings). More wait their turn, in order. Health checks do not count, and failovers and rollbacks never wait.`,
                 ),
@@ -608,7 +608,7 @@ export function serverDetailView(id) {
                     h('dt', 'Default log path'), h('dd.mono', s.default_log_path || '–'),
                     h('dt', 'Default backup path'), h('dd', defaultBackupPathCell(s)),
                     h('dt', 'Last seen'), h('dd', ago(s.last_seen_at)),
-                    h('dt', 'Backups and restores at a time'),
+                    h('dt', 'Max concurrent operations'),
                     h('dd', s.work ? `${s.work.limit}${s.max_parallel == null ? ' (default)' : ''}: ${s.work.running} running now${s.work.waiting ? `, ${s.work.waiting} waiting` : ''}` : '–'),
                 ),
             ),
