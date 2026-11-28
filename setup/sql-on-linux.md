@@ -25,10 +25,10 @@ SQL Server uses the share directly, at `/mnt/sqlbackup`.
   /srv/sqlbackup  mostly-on-host(rw,sync) sql1(rw,sync,all_squash,anonuid=10001,anongid=0)
   ```
 
-  Then, on this machine, add this line to `/etc/fstab`:
+  Then, on this machine, add this line to `/etc/fstab`. `nofail` lets the machine start even when the share can't be reached:
 
   ```
-  nfs-server:/srv/sqlbackup  /mnt/sqlbackup  nfs  rw,nfsvers=4.1,_netdev  0  0
+  nfs-server:/srv/sqlbackup  /mnt/sqlbackup  nfs  rw,nfsvers=4.1,_netdev,nofail  0  0
   ```
 
 - [ ] **SMB:** install the SMB client, and store the share's account in a file that only root can read:
@@ -39,7 +39,7 @@ SQL Server uses the share directly, at `/mnt/sqlbackup`.
   sudo nano /etc/sqlbackup.cred
   ```
 
-  with these three lines:
+  with these lines. Leave out `domain=` unless it's a domain account (an account on a NAS or a storage service usually isn't):
 
   ```
   username=sqlbackup
@@ -47,18 +47,23 @@ SQL Server uses the share directly, at `/mnt/sqlbackup`.
   domain=EXAMPLE
   ```
 
-  Then add this line to `/etc/fstab`. `uid=mssql,gid=mssql` makes the files appear owned by the user SQL Server runs as. Add `seal` to the options to encrypt traffic.
+  Then add this line to `/etc/fstab`. `uid=mssql,gid=mssql` makes the files appear owned by the user SQL Server runs as, and `nofail` lets the machine start even when the share can't be reached.
 
   ```
-  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=mssql,gid=mssql,file_mode=0660,dir_mode=0770,vers=3.0,_netdev  0  0
+  //fileserver/sqlbackup  /mnt/sqlbackup  cifs  credentials=/etc/sqlbackup.cred,uid=mssql,gid=mssql,file_mode=0660,dir_mode=0770,vers=3.0,_netdev,nofail  0  0
   ```
 
-- [ ] Mount it, and check that SQL Server's user can write and delete there:
+  Add `seal` to the options to encrypt traffic, and always do so when the share is reached over the internet. If the file server supports SMB 3.1.1 (Windows Server 2016 or newer, and most current NAS), use `vers=3.1.1`.
+
+- [ ] Mount it, and check that SQL Server's user can write and delete there. `daemon-reload` makes the system read the changed `/etc/fstab`:
 
   ```sh
+  sudo systemctl daemon-reload
   sudo mount /mnt/sqlbackup
   sudo -u mssql sh -c 'touch /mnt/sqlbackup/.test && rm /mnt/sqlbackup/.test && echo OK'
   ```
+
+  If the share can't be reached when the machine starts, backups fail on the locked folder until it's back and you mount it with `sudo mount /mnt/sqlbackup`. SQL Server needs no restart.
 
 ## 2. Let Mostly-On connect
 
@@ -70,7 +75,7 @@ SQL Server uses the share directly, at `/mnt/sqlbackup`.
   ```
 
   Give it no other permissions. This is intended as a low-privilege account,
-  and the setup script in step 4 will grant the specific permissions it needs.
+  and the setup script in step 3 will grant the specific permissions it needs.
 
 ## 3. Register the server and run its setup script
 
